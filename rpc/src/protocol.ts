@@ -306,6 +306,18 @@ export class ProtocolCodec {
 
   /**
    * Encode an ACK message to binary format
+   *
+   * ACK Binary Format:
+   * - magic (2 bytes, offset 0-1)
+   * - version (1 byte, offset 2)
+   * - type (1 byte, offset 3)
+   * - flags (1 byte, offset 4)
+   * - reserved (3 bytes, offset 5-7)
+   * - timestamp (8 bytes, offset 8-15)
+   * - sequenceNumber (8 bytes, offset 16-23)
+   * - status (1 byte, offset 24)
+   * - [correlationIdLength (2 bytes, offset 25-26)] (if HAS_CORRELATION_ID)
+   * - [correlationId (variable, offset 27+)] (if HAS_CORRELATION_ID)
    */
   encodeAck(message: AckMessage): ArrayBuffer {
     const correlationIdBytes = message.correlationId
@@ -313,7 +325,11 @@ export class ProtocolCodec {
       : new Uint8Array(0);
 
     const statusCode = this.statusToCode(message.status);
-    const totalSize = 24 + correlationIdBytes.length;
+    // Base header is 25 bytes (0-24 inclusive for status byte)
+    // With correlation ID: add 2 bytes for length + correlationIdBytes.length
+    const totalSize = correlationIdBytes.length > 0
+      ? 27 + correlationIdBytes.length
+      : 25;
 
     const buffer = new ArrayBuffer(totalSize);
     const view = new DataView(buffer);
