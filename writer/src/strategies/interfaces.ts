@@ -78,7 +78,7 @@ export interface CDCBufferStrategy {
 /**
  * Result of a block write operation
  */
-export interface BlockWriteResult {
+export type BlockWriteResult = {
   success: true;
   metadata: BlockMetadata;
 } | {

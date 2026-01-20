@@ -70,7 +70,6 @@ export class R2BlockWriterAdapter implements BlockWriter {
 export class InMemoryBlockWriter implements BlockWriter {
   private storage: Map<string, Uint8Array> = new Map();
   private blockMetadata: Map<string, BlockMetadata> = new Map();
-  private seq = 0;
 
   async write(
     entries: WalEntry[],
@@ -156,7 +155,6 @@ export class InMemoryBlockWriter implements BlockWriter {
   clear(): void {
     this.storage.clear();
     this.blockMetadata.clear();
-    this.seq = 0;
   }
 }
 

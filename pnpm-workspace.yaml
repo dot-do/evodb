@@ -1,0 +1,13 @@
+packages:
+  - core
+  - rpc
+  - lakehouse
+  - writer
+  - reader
+  - query
+  - edge-cache
+  - lance-reader
+  - snippets-chain
+  - snippets-lance
+  - benchmark
+  - codegen

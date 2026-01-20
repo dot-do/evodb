@@ -140,10 +140,15 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
 
   async put(path: string, data: Uint8Array | ArrayBuffer): Promise<void> {
     const fullKey = this.getFullKey(path);
-    // Ensure data is an ArrayBuffer for R2
-    const buffer = data instanceof ArrayBuffer
-      ? data
-      : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    // Ensure data is an ArrayBuffer for R2 (not SharedArrayBuffer)
+    let buffer: ArrayBuffer;
+    if (data instanceof ArrayBuffer) {
+      buffer = data;
+    } else {
+      // Create a new ArrayBuffer copy from Uint8Array to avoid SharedArrayBuffer
+      buffer = new ArrayBuffer(data.byteLength);
+      new Uint8Array(buffer).set(data);
+    }
     await this.bucket.put(fullKey, buffer);
   }
 

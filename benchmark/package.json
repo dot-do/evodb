@@ -1,6 +1,7 @@
 {
   "name": "@evodb/benchmark",
   "version": "0.1.0-rc.1",
+  "private": true,
   "description": "EvoDB benchmarking utilities with JSONBench Bluesky data loader",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,7 +28,10 @@
       "import": "./dist/workers/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -56,7 +60,8 @@
     "@evodb/core": "file:../core"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.0.0",
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
     "vitest": "^2.1.0",
     "wrangler": "^3.0.0"

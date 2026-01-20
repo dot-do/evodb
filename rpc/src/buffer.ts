@@ -121,14 +121,6 @@ export class BackpressureController {
 // =============================================================================
 
 /**
- * Entry in the deduplication tracker with timestamp for expiration
- */
-interface DedupEntry {
-  sequenceNumber: number;
-  seenAt: number;
-}
-
-/**
  * Configuration for deduplication limits
  */
 export interface DedupConfig {
