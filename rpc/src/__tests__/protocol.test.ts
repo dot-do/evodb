@@ -195,10 +195,31 @@ describe('ProtocolCodec', () => {
   });
 
   describe('Binary ACK Encoding', () => {
-    // Note: ACK binary encoding has a buffer size bug in protocol.ts (line 316: totalSize = 24 but writes at offset 24)
-    // Skipping binary ACK encoding tests until protocol.ts is fixed
-    it.skip('should encode ACK message', () => {
-      // Bug in protocol.ts - buffer too small
+    it('should encode ACK message', () => {
+      const message: AckMessage = {
+        type: 'ack',
+        timestamp: Date.now(),
+        sequenceNumber: 42,
+        status: 'ok',
+      };
+
+      const buffer = codec.encodeAck(message);
+      expect(buffer).toBeInstanceOf(ArrayBuffer);
+      expect(buffer.byteLength).toBe(25);
+    });
+
+    it('should encode ACK message with correlation ID', () => {
+      const message: AckMessage = {
+        type: 'ack',
+        timestamp: Date.now(),
+        correlationId: 'corr-456',
+        sequenceNumber: 42,
+        status: 'buffered',
+      };
+
+      const buffer = codec.encodeAck(message);
+      expect(buffer).toBeInstanceOf(ArrayBuffer);
+      expect(buffer.byteLength).toBe(27 + 8); // 27 base + 'corr-456'.length
     });
   });
 
@@ -307,8 +328,17 @@ describe('Shared Codec Functions', () => {
       expect(typeof encoded).toBe('string');
     });
 
-    // ACK binary encoding has buffer size bug, skip test
-    it.skip('should encode ACK to binary', () => {});
+    it('should encode ACK to binary', () => {
+      const message: AckMessage = {
+        type: 'ack',
+        timestamp: Date.now(),
+        sequenceNumber: 1,
+        status: 'persisted',
+      };
+      const encoded = encodeMessage(message);
+
+      expect(encoded).toBeInstanceOf(ArrayBuffer);
+    });
 
     it('should encode NACK to binary', () => {
       const message: NackMessage = {
@@ -651,8 +681,39 @@ describe('Roundtrip Encoding', () => {
     }
   });
 
-  // ACK binary encoding has buffer size bug, skip test
-  it.skip('should roundtrip ACK message', () => {});
+  it('should roundtrip ACK message', () => {
+    const original: AckMessage = {
+      type: 'ack',
+      timestamp: Date.now(),
+      sequenceNumber: 50,
+      status: 'buffered',
+    };
+
+    const buffer = codec.encodeAck(original);
+    const decoded = codec.decode(buffer) as AckMessage;
+
+    expect(decoded.type).toBe(original.type);
+    expect(decoded.sequenceNumber).toBe(original.sequenceNumber);
+    expect(decoded.status).toBe(original.status);
+  });
+
+  it('should roundtrip ACK message with correlation ID', () => {
+    const original: AckMessage = {
+      type: 'ack',
+      timestamp: Date.now(),
+      correlationId: 'test-corr-id',
+      sequenceNumber: 75,
+      status: 'persisted',
+    };
+
+    const buffer = codec.encodeAck(original);
+    const decoded = codec.decode(buffer) as AckMessage;
+
+    expect(decoded.type).toBe(original.type);
+    expect(decoded.correlationId).toBe(original.correlationId);
+    expect(decoded.sequenceNumber).toBe(original.sequenceNumber);
+    expect(decoded.status).toBe(original.status);
+  });
 
   it('should roundtrip NACK message without correlation ID', () => {
     const original: NackMessage = {
