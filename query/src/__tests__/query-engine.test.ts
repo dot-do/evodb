@@ -38,7 +38,13 @@ import type {
   ZoneMap,
   R2Bucket,
   R2Object,
+  PlanOperator,
 } from '../types.js';
+
+import {
+  generatePartitionInfo,
+  generatePartitionedInfo,
+} from '@evodb/test-utils';
 
 // =============================================================================
 // Test Fixtures and Helpers
@@ -56,53 +62,25 @@ function createMockBucket(): R2Bucket {
 }
 
 /**
- * Create mock partition info
+ * Create mock partition info using test-utils
  */
 function createMockPartition(
   path: string,
   rowCount: number,
   columnStats: Record<string, { min: unknown; max: unknown; nullCount: number }> = {}
 ): PartitionInfo {
-  const zoneMap: ZoneMap = {
-    columns: Object.fromEntries(
-      Object.entries(columnStats).map(([col, stats]) => [
-        col,
-        {
-          min: stats.min,
-          max: stats.max,
-          nullCount: stats.nullCount,
-          allNull: stats.nullCount === rowCount,
-        },
-      ])
-    ),
-  };
-
-  return {
-    path,
-    partitionValues: {},
-    sizeBytes: rowCount * 100,
-    rowCount,
-    zoneMap,
-    isCached: false,
-  };
+  return generatePartitionInfo(path, rowCount, columnStats) as PartitionInfo;
 }
 
 /**
- * Create mock partition with partition values
+ * Create mock partition with partition values using test-utils
  */
 function createPartitionedMock(
   path: string,
   partitionValues: Record<string, unknown>,
   rowCount: number = 100
 ): PartitionInfo {
-  return {
-    path,
-    partitionValues,
-    sizeBytes: rowCount * 100,
-    rowCount,
-    zoneMap: { columns: {} },
-    isCached: false,
-  };
+  return generatePartitionedInfo(path, partitionValues, rowCount) as PartitionInfo;
 }
 
 /**
@@ -925,6 +903,182 @@ describe('EvoDB Query Engine - Bloom Filter Optimization', () => {
       expect(result.stats.bloomFilterChecks).toBeGreaterThan(0);
     });
   });
+
+  describe('Bloom Filter Accuracy', () => {
+    it('should correctly identify present values (no false negatives)', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 1000),
+        bloomFilter: {
+          column: 'user_id',
+          sizeBits: 10000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Register bloom filter with known values
+      const values = new Set<string>();
+      for (let i = 0; i < 100; i++) {
+        values.add(`user-${i}`);
+      }
+      bloomManager.registerFilter('data/p1.bin', 'user_id', values);
+
+      // All present values MUST return true (no false negatives)
+      for (let i = 0; i < 100; i++) {
+        const result = bloomManager.mightContain(partition, 'user_id', `user-${i}`);
+        expect(result).toBe(true);
+      }
+    });
+
+    it('should correctly identify absent values with acceptable false positive rate', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 1000),
+        bloomFilter: {
+          column: 'user_id',
+          sizeBits: 10000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Register bloom filter with known values (0-999)
+      const values = new Set<string>();
+      for (let i = 0; i < 1000; i++) {
+        values.add(`user-${i}`);
+      }
+      bloomManager.registerFilter('data/p1.bin', 'user_id', values);
+
+      // Test with values NOT in the filter (1000-1999)
+      let falsePositives = 0;
+      const testCount = 1000;
+      for (let i = 1000; i < 1000 + testCount; i++) {
+        const result = bloomManager.mightContain(partition, 'user_id', `user-${i}`);
+        if (result) {
+          falsePositives++;
+        }
+      }
+
+      // False positive rate should be reasonable (< 5% for well-sized filter)
+      const observedFpr = falsePositives / testCount;
+      expect(observedFpr).toBeLessThan(0.05);
+    });
+
+    it('should support serialization and deserialization of bloom filters', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 1000),
+        bloomFilter: {
+          column: 'email',
+          sizeBits: 10000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Create and register a bloom filter
+      const values = new Set<string>(['alice@test.com', 'bob@test.com', 'charlie@test.com']);
+      bloomManager.registerFilter('data/p1.bin', 'email', values);
+
+      // Get the raw bytes
+      const bytes = bloomManager.getFilterBytes('data/p1.bin', 'email');
+      expect(bytes).not.toBeNull();
+      expect(bytes).toBeInstanceOf(Uint8Array);
+      expect(bytes!.length).toBeGreaterThan(0);
+
+      // Create a new manager and load from bytes
+      const newManager = createBloomFilterManager();
+      newManager.registerFilterFromBytes('data/p1.bin', 'email', bytes!);
+
+      // Verify the deserialized filter works correctly
+      expect(newManager.mightContain(partition, 'email', 'alice@test.com')).toBe(true);
+      expect(newManager.mightContain(partition, 'email', 'bob@test.com')).toBe(true);
+      expect(newManager.mightContain(partition, 'email', 'charlie@test.com')).toBe(true);
+    });
+
+    it('should track false positive and true negative statistics', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 100),
+        bloomFilter: {
+          column: 'id',
+          sizeBits: 1000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Register bloom filter with values
+      const values = new Set<string>(['1', '2', '3', '4', '5']);
+      bloomManager.registerFilter('data/p1.bin', 'id', values);
+
+      // Query some values
+      bloomManager.mightContain(partition, 'id', '1'); // Present
+      bloomManager.mightContain(partition, 'id', '6'); // Absent
+
+      // Simulate recording accuracy metrics
+      bloomManager.recordTrueNegative(); // When we verify '6' is truly absent
+
+      const stats = bloomManager.getStats();
+      expect(stats.checks).toBe(2);
+      expect(stats.trueNegatives).toBe(1);
+      expect(stats.targetFpr).toBeDefined();
+    });
+
+    it('should handle numeric values correctly', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 1000),
+        bloomFilter: {
+          column: 'order_id',
+          sizeBits: 10000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Register with numeric values (as strings since bloom filter API takes strings)
+      const values = new Set<string>();
+      for (let i = 0; i < 100; i++) {
+        values.add(String(i));
+      }
+      bloomManager.registerFilter('data/p1.bin', 'order_id', values);
+
+      // Query with numeric values - should work correctly
+      expect(bloomManager.mightContain(partition, 'order_id', 50)).toBe(true);
+      expect(bloomManager.mightContain(partition, 'order_id', '50')).toBe(true);
+    });
+
+    it('should clear all filters and reset statistics', () => {
+      const partition: PartitionInfo = {
+        ...createMockPartition('data/p1.bin', 100),
+        bloomFilter: {
+          column: 'id',
+          sizeBits: 1000,
+          numHashFunctions: 7,
+          falsePositiveRate: 0.01,
+        },
+      };
+
+      // Register filter and perform checks
+      bloomManager.registerFilter('data/p1.bin', 'id', new Set(['1', '2', '3']));
+      bloomManager.mightContain(partition, 'id', '1');
+      bloomManager.mightContain(partition, 'id', '2');
+
+      // Clear everything
+      bloomManager.clear();
+
+      const stats = bloomManager.getStats();
+      expect(stats.checks).toBe(0);
+      expect(stats.hits).toBe(0);
+      expect(stats.falsePositiveRate).toBe(0);
+      expect(bloomManager.hasFilter('data/p1.bin', 'id')).toBe(false);
+    });
+
+    it('should report if a filter exists for a partition/column', () => {
+      bloomManager.registerFilter('data/p1.bin', 'user_id', new Set(['user-1']));
+
+      expect(bloomManager.hasFilter('data/p1.bin', 'user_id')).toBe(true);
+      expect(bloomManager.hasFilter('data/p1.bin', 'email')).toBe(false);
+      expect(bloomManager.hasFilter('data/p2.bin', 'user_id')).toBe(false);
+    });
+  });
 });
 
 // =============================================================================
@@ -1317,9 +1471,9 @@ describe('EvoDB Query Engine - Query Planning', () => {
       const plan = await planner.createPlan(query);
 
       // Should have aggregate operator
-      const findAggregateOp = (op: any): any => {
+      const findAggregateOp = (op: PlanOperator): PlanOperator | null => {
         if (op.type === 'aggregate') return op;
-        if (op.input) return findAggregateOp(op.input);
+        if ('input' in op) return findAggregateOp(op.input);
         return null;
       };
 

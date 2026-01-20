@@ -3,6 +3,15 @@
  * JSON Iceberg-inspired manifest types for Cloudflare R2 lakehouse
  */
 
+import type {
+  TableSchema as CoreTableSchema,
+  TableSchemaColumn as CoreTableSchemaColumn,
+  TableColumnType as CoreColumnType,
+} from '@evodb/core';
+
+// Re-export core types with lakehouse-specific names for compatibility
+export type { CoreTableSchema, CoreTableSchemaColumn, CoreColumnType };
+
 // =============================================================================
 // Core Table Types
 // =============================================================================
@@ -82,52 +91,21 @@ export interface TableStats {
 
 /**
  * Schema definition (stored in _schema/v{N}.json)
+ * Uses CoreTableSchema from @evodb/core for unified type definition.
  */
-export interface Schema {
-  schemaId: number;
-  version: number;
-  columns: SchemaColumn[];
-  createdAt: number;
-}
+export type Schema = CoreTableSchema;
 
 /**
- * Column definition within a schema
+ * Column definition within a schema.
+ * Uses CoreTableSchemaColumn from @evodb/core for unified type definition.
  */
-export interface SchemaColumn {
-  /** Column name/path (dot-notation for nested, e.g., "user.address.city") */
-  name: string;
-
-  /** Column data type */
-  type: ColumnType;
-
-  /** Whether column accepts null values */
-  nullable: boolean;
-
-  /** Optional default value */
-  defaultValue?: unknown;
-
-  /** Optional documentation */
-  doc?: string;
-}
+export type SchemaColumn = CoreTableSchemaColumn;
 
 /**
- * Supported column types (aligned with columnar-json-lite)
+ * Supported column types (aligned with columnar-json-lite).
+ * Uses CoreColumnType from @evodb/core for unified type definition.
  */
-export type ColumnType =
-  | 'null'
-  | 'boolean'
-  | 'int32'
-  | 'int64'
-  | 'float64'
-  | 'string'
-  | 'binary'
-  | 'timestamp'
-  | 'date'
-  | 'uuid'
-  | 'json'
-  | { type: 'array'; elementType: ColumnType }
-  | { type: 'map'; keyType: ColumnType; valueType: ColumnType }
-  | { type: 'struct'; fields: SchemaColumn[] };
+export type ColumnType = CoreColumnType;
 
 // =============================================================================
 // Snapshot Types

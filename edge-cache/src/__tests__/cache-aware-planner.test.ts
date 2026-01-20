@@ -7,14 +7,13 @@ import {
   CacheAwarePlanner,
   createCacheAwarePlanner,
   type QueryContext,
-  type PlannerOptions,
 } from '../cache-aware-planner.js';
 import type { PartitionInfo, CacheStatus } from '../index.js';
 import { setFetchFunction, resetFetchFunction, clearCacheStatusMap } from '../prefetch.js';
 
 // Mock fetch function
 function createMockFetch(cacheState: Map<string, boolean>) {
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  return async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
     const path = url.replace('https://cdn.workers.do/', '');
     const isCached = cacheState.get(path) ?? false;
@@ -380,5 +379,342 @@ describe('CacheAwarePlanner', () => {
 
       expect(planner).toBeInstanceOf(CacheAwarePlanner);
     });
+  });
+});
+
+describe('Prefetch Error Handling', () => {
+  beforeEach(() => {
+    clearCacheStatusMap();
+  });
+
+  afterEach(() => {
+    resetFetchFunction();
+    vi.restoreAllMocks();
+  });
+
+  it('should track errors when warmPartition fails', async () => {
+    // Mock fetch to fail on GET requests
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      void url; // Mark as used
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      // GET request fails
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 }, // Always prefetch
+    });
+
+    // Access partition to trigger prefetch
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing.parquet', sizeBytes: 1000 },
+    ];
+
+    await planner.plan(partitions, { table: 'users' });
+
+    // Wait for background prefetch to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const errorStats = planner.getPrefetchErrorStats();
+
+    // Error should be recorded
+    expect(errorStats.totalErrors).toBeGreaterThan(0);
+    expect(errorStats.recentErrors.length).toBeGreaterThan(0);
+
+    // Error should have context
+    const firstError = errorStats.recentErrors[0];
+    expect(firstError.partitionPath).toBe('data/users/failing.parquet');
+    expect(firstError.operation).toBeTruthy();
+    expect(firstError.timestamp).toBeInstanceOf(Date);
+    expect(firstError.error).toBeInstanceOf(Error);
+
+    // Console should be called
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('should call onPrefetchError callback when prefetch fails', async () => {
+    // Mock fetch to fail
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const errorCallback = vi.fn();
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+      onPrefetchError: errorCallback,
+    });
+
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing.parquet', sizeBytes: 1000 },
+    ];
+
+    await planner.plan(partitions, { table: 'users' });
+
+    // Wait for background prefetch
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Callback should have been called
+    expect(errorCallback).toHaveBeenCalled();
+    const callArg = errorCallback.mock.calls[0][0];
+    expect(callArg.partitionPath).toBe('data/users/failing.parquet');
+    expect(callArg.error).toBeInstanceOf(Error);
+  });
+
+  it('should track error counts over time', async () => {
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+    });
+
+    // Trigger multiple failures by planning partitions that will all fail
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing0.parquet', sizeBytes: 1000 },
+      { path: 'data/users/failing1.parquet', sizeBytes: 1000 },
+      { path: 'data/users/failing2.parquet', sizeBytes: 1000 },
+    ];
+    await planner.plan(partitions, { table: 'users' });
+
+    // Wait for all background prefetches
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const errorStats = planner.getPrefetchErrorStats();
+    expect(errorStats.totalErrors).toBe(3);
+    expect(errorStats.errorsLastMinute).toBe(3);
+    expect(errorStats.errorsLastHour).toBe(3);
+  });
+
+  it('should clear error history when clearPrefetchErrors is called', async () => {
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+    });
+
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing.parquet', sizeBytes: 1000 },
+    ];
+
+    await planner.plan(partitions, { table: 'users' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(planner.getPrefetchErrorStats().totalErrors).toBeGreaterThan(0);
+
+    planner.clearPrefetchErrors();
+
+    const stats = planner.getPrefetchErrorStats();
+    expect(stats.totalErrors).toBe(0);
+    expect(stats.recentErrors).toHaveLength(0);
+  });
+
+  it('should log verbose output when verboseLogging is enabled', async () => {
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+      verboseLogging: true,
+    });
+
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing.parquet', sizeBytes: 1000 },
+    ];
+
+    await planner.plan(partitions, { table: 'users' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Verbose logging should include starting message
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[edge-cache] Starting prefetch')
+    );
+
+    // Error log should include detailed object
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[edge-cache] Prefetch error'),
+      expect.objectContaining({ message: expect.any(String) })
+    );
+  });
+
+  it('should not swallow errors when warmPartition returns false', async () => {
+    // Mock fetch where warmPartition succeeds but returns false (e.g., size limit exceeded)
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': String(600 * 1024 * 1024), // 600MB > 500MB limit
+          }),
+        });
+      }
+      // GET request returns OK but partition is too large
+      return new Response(new ArrayBuffer(100), {
+        status: 200,
+        headers: new Headers({
+          'Content-Length': String(600 * 1024 * 1024),
+        }),
+      });
+    };
+
+    setFetchFunction(mockFetch);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+      partitionMode: 'standard', // 500MB limit
+    });
+
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/large.parquet', sizeBytes: 1000 }, // sizeBytes is for planning, not actual size
+    ];
+
+    await planner.plan(partitions, { table: 'users' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Error should be recorded when warmPartition returns false
+    const errorStats = planner.getPrefetchErrorStats();
+    expect(errorStats.totalErrors).toBeGreaterThan(0);
+
+    // Error message should indicate warmPartition returned false
+    const hasWarmPartitionError = errorStats.recentErrors.some(
+      (e) => e.operation === 'warmPartition' && e.error.message.includes('returned false')
+    );
+    expect(hasWarmPartitionError).toBe(true);
+  });
+
+  it('should handle error callback exceptions gracefully', async () => {
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      void input;
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'MISS',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+      return new Response(null, { status: 500 });
+    };
+
+    setFetchFunction(mockFetch);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Callback that throws
+    const throwingCallback = vi.fn(() => {
+      throw new Error('Callback error');
+    });
+
+    const planner = createCacheAwarePlanner({
+      enablePredictivePrefetch: true,
+      config: { hotnessThreshold: 0 },
+      onPrefetchError: throwingCallback,
+    });
+
+    const partitions: PartitionInfo[] = [
+      { path: 'data/users/failing.parquet', sizeBytes: 1000 },
+    ];
+
+    // Should not throw even if callback throws
+    await planner.plan(partitions, { table: 'users' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Callback was called
+    expect(throwingCallback).toHaveBeenCalled();
+
+    // Error was logged about callback failure
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Error in onPrefetchError callback'),
+      expect.any(Error)
+    );
+
+    // Original error was still recorded
+    const stats = planner.getPrefetchErrorStats();
+    expect(stats.totalErrors).toBeGreaterThan(0);
   });
 });

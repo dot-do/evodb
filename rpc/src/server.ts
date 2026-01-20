@@ -417,19 +417,14 @@ export class LakehouseParentDO implements DurableObject {
    */
   async webSocketClose(
     ws: WebSocket,
-    code: number,
-    reason: string,
-    wasClean: boolean
+    _code: number,
+    _reason: string,
+    _wasClean: boolean
   ): Promise<void> {
     const attachment = this.deserializeAttachment(ws);
     if (attachment) {
       this.buffer.unregisterChildWebSocket(attachment.childDoId);
-
       // Don't remove child state immediately - they might reconnect
-      // Just log the disconnection
-      console.log(
-        `Child ${attachment.childDoId} disconnected: code=${code}, reason=${reason}, clean=${wasClean}`
-      );
     }
 
     // If no more connections, consider flushing

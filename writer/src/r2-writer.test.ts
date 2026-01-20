@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { makeR2BlockKey, parseR2BlockKey, generateBlockId, R2BlockWriter, BatchR2Writer, R2WriterWithManifest } from './r2-writer.js';
-import type { R2Bucket, R2Object } from './types.js';
+import type { R2Bucket, R2Object, R2PutOptions, R2ListOptions } from './types.js';
 
 // Create mock R2 bucket
 function createMockR2Bucket(): R2Bucket {
   const storage = new Map<string, { data: Uint8Array; metadata?: Record<string, string> }>();
 
   return {
-    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, options?: any) => {
+    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, options?: R2PutOptions) => {
       const data = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
       storage.set(key, { data, metadata: options?.customMetadata });
       return {
@@ -46,7 +46,7 @@ function createMockR2Bucket(): R2Bucket {
         storage.delete(key);
       }
     }),
-    list: vi.fn(async (options?: any) => {
+    list: vi.fn(async (options?: R2ListOptions) => {
       const prefix = options?.prefix ?? '';
       const objects: R2Object[] = [];
       for (const [key, item] of storage) {

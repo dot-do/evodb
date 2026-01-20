@@ -145,23 +145,39 @@ export interface ModeSelectionResult {
 // Constants
 // =============================================================================
 
+import {
+  BUFFER_SIZE_1MB,
+  BUFFER_SIZE_2MB,
+  BUFFER_SIZE_4MB,
+  BUFFER_SIZE_16MB,
+  BUFFER_SIZE_256KB,
+  BUFFER_SIZE_500MB,
+  BUFFER_SIZE_5GB,
+  BUFFER_SIZE_10MB,
+  BUFFER_SIZE_100MB,
+  BUFFER_SIZE_10GB,
+  CACHE_TTL_NONE,
+  CACHE_TTL_1H,
+  CACHE_TTL_24H,
+} from './constants.js';
+
 /** 2MB in bytes - DO SQLite blob limit */
-export const DO_SQLITE_MAX_BYTES = 2 * 1024 * 1024;
+export const DO_SQLITE_MAX_BYTES = BUFFER_SIZE_2MB;
 
 /** 500MB in bytes - Standard edge cache limit */
-export const STANDARD_MAX_BYTES = 500 * 1024 * 1024;
+export const STANDARD_MAX_BYTES = BUFFER_SIZE_500MB;
 
 /** 5GB in bytes - Enterprise edge cache limit */
-export const ENTERPRISE_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+export const ENTERPRISE_MAX_BYTES = BUFFER_SIZE_5GB;
 
 /** Default block size for DO-SQLite mode (256KB) */
-export const DO_SQLITE_BLOCK_SIZE = 256 * 1024;
+export const DO_SQLITE_BLOCK_SIZE = BUFFER_SIZE_256KB;
 
 /** Default block size for standard mode (4MB) */
-export const STANDARD_BLOCK_SIZE = 4 * 1024 * 1024;
+export const STANDARD_BLOCK_SIZE = BUFFER_SIZE_4MB;
 
 /** Default block size for enterprise mode (16MB) */
-export const ENTERPRISE_BLOCK_SIZE = 16 * 1024 * 1024;
+export const ENTERPRISE_BLOCK_SIZE = BUFFER_SIZE_16MB;
 
 // =============================================================================
 // Mode Configurations
@@ -176,11 +192,11 @@ export const DO_SQLITE_CONFIG: PartitionModeConfig = {
   description: 'Optimized for Durable Object SQLite blob storage (2MB limit)',
   recommendedBlockSizeBytes: DO_SQLITE_BLOCK_SIZE,
   minEfficientDataSizeBytes: 0,
-  maxEfficientDataSizeBytes: 10 * 1024 * 1024, // 10MB before recommending standard
+  maxEfficientDataSizeBytes: BUFFER_SIZE_10MB, // 10MB before recommending standard
   targetRowsPerPartition: 10_000,
   usesR2: false,
   usesDOSqlite: true,
-  cacheTtlHintSeconds: 0, // No external cache needed
+  cacheTtlHintSeconds: CACHE_TTL_NONE, // No external cache needed
 };
 
 /**
@@ -191,12 +207,12 @@ export const STANDARD_CONFIG: PartitionModeConfig = {
   maxPartitionSizeBytes: STANDARD_MAX_BYTES,
   description: 'Standard Cloudflare edge cache (500MB limit)',
   recommendedBlockSizeBytes: STANDARD_BLOCK_SIZE,
-  minEfficientDataSizeBytes: 1 * 1024 * 1024, // 1MB
-  maxEfficientDataSizeBytes: 10 * 1024 * 1024 * 1024, // 10GB before recommending enterprise
+  minEfficientDataSizeBytes: BUFFER_SIZE_1MB,
+  maxEfficientDataSizeBytes: BUFFER_SIZE_10GB, // 10GB before recommending enterprise
   targetRowsPerPartition: 1_000_000,
   usesR2: true,
   usesDOSqlite: false,
-  cacheTtlHintSeconds: 3600, // 1 hour
+  cacheTtlHintSeconds: CACHE_TTL_1H,
 };
 
 /**
@@ -207,12 +223,12 @@ export const ENTERPRISE_CONFIG: PartitionModeConfig = {
   maxPartitionSizeBytes: ENTERPRISE_MAX_BYTES,
   description: 'Enterprise Cloudflare edge cache (5GB limit)',
   recommendedBlockSizeBytes: ENTERPRISE_BLOCK_SIZE,
-  minEfficientDataSizeBytes: 100 * 1024 * 1024, // 100MB
+  minEfficientDataSizeBytes: BUFFER_SIZE_100MB,
   maxEfficientDataSizeBytes: Number.MAX_SAFE_INTEGER,
   targetRowsPerPartition: 10_000_000,
   usesR2: true,
   usesDOSqlite: false,
-  cacheTtlHintSeconds: 86400, // 24 hours
+  cacheTtlHintSeconds: CACHE_TTL_24H,
 };
 
 /**

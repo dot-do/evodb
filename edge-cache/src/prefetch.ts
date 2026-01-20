@@ -17,8 +17,8 @@ import type {
 import {
   DEFAULT_CONFIG,
   DEFAULT_TTL,
-  MAX_FILE_SIZE,
-  getCacheHeaders,
+  
+  
   isWithinSizeLimit,
 } from './index.js';
 
@@ -227,7 +227,7 @@ export async function warmPartition(
 async function warmPartitionInternal(
   partitionPath: string,
   mode: PartitionMode,
-  ttl: number,
+  _ttl: number, // Reserved for future Cache-Control header support
   priority: number,
   config: EdgeCacheConfig
 ): Promise<boolean> {
@@ -560,7 +560,7 @@ function extractMaxAge(cacheControl: string): number | undefined {
  */
 async function discoverPartitions(
   table: string,
-  config: EdgeCacheConfig
+  _config: EdgeCacheConfig // Reserved for future catalog integration
 ): Promise<string[]> {
   // In a real implementation, this would query the catalog
   // For now, return empty array indicating manual partition specification needed

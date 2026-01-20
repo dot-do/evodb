@@ -81,7 +81,12 @@ export type {
   BenchmarkResult,
 } from './types.js';
 
-export { SNIPPETS_CONSTRAINTS } from './types.js';
+export {
+  SNIPPETS_CONSTRAINTS,
+  ALLOCATION_LIMITS,
+  validateAllocationSize,
+  validateCount,
+} from './types.js';
 
 // ==========================================
 // Cached Lance Reader
@@ -91,6 +96,7 @@ export {
   CachedLanceReader,
   FetchEdgeCacheAdapter,
   buildCachedIndex,
+  safeBigIntToNumber,
 } from './cached-lance-reader.js';
 
 export type {

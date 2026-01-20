@@ -7,6 +7,7 @@
  * @module @evodb/edge-cache
  */
 
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -177,13 +178,18 @@ export const DEFAULT_TTL = 86400;
 export const DEFAULT_CDN_BASE_URL = 'https://cdn.workers.do';
 
 /**
+ * Default maximum concurrent prefetch operations
+ */
+export const DEFAULT_MAX_CONCURRENT_PREFETCH = 5;
+
+/**
  * Default edge cache configuration
  */
 export const DEFAULT_CONFIG: EdgeCacheConfig = {
   cdnBaseUrl: DEFAULT_CDN_BASE_URL,
   defaultMode: 'standard',
   defaultTtl: DEFAULT_TTL,
-  maxConcurrentPrefetch: 5,
+  maxConcurrentPrefetch: DEFAULT_MAX_CONCURRENT_PREFETCH,
   enableBackgroundPrefetch: true,
   hotnessThreshold: 0.7,
 };
@@ -305,4 +311,7 @@ export {
   createCacheAwarePlanner,
   type QueryContext,
   type PlannerOptions,
+  type PrefetchError,
+  type PrefetchErrorStats,
+  type PrefetchErrorCallback,
 } from './cache-aware-planner.js';

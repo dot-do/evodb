@@ -1,0 +1,43 @@
+{
+  "name": "@evodb/test-utils",
+  "version": "0.1.0-rc.1",
+  "description": "Shared test utilities and mock data generators for EvoDB",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "testing",
+    "mocks",
+    "test-utils",
+    "cloudflare",
+    "workers"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "test-utils"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260118.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
+  }
+}

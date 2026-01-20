@@ -36,6 +36,9 @@
     "type": "git",
     "directory": "rpc"
   },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260120.0",
     "typescript": "^5.9.3",

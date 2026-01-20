@@ -5,14 +5,14 @@ import {
   TieredCompactor,
   getDefaultCompactionConfig,
 } from './compactor.js';
-import type { BlockMetadata, R2Bucket, R2Object } from './types.js';
+import type { BlockMetadata, R2Bucket, R2Object, R2PutOptions } from './types.js';
 
 // Create mock R2 bucket
 function createMockR2Bucket(): R2Bucket {
   const storage = new Map<string, { data: Uint8Array; metadata?: Record<string, string> }>();
 
   return {
-    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, options?: any) => {
+    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, options?: R2PutOptions) => {
       const data = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
       storage.set(key, { data, metadata: options?.customMetadata });
       return {

@@ -34,6 +34,8 @@ import {
   type R2Bucket,
   type R2Object,
   type R2ObjectBody,
+  type R2PutOptions,
+  type R2ListOptions,
   type BlockMetadata,
   type WalEntry,
   type PartitionMode,
@@ -65,7 +67,7 @@ function createMockR2Bucket(options?: {
   return {
     _storage: storage,
 
-    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, putOptions?: any) => {
+    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, putOptions?: R2PutOptions) => {
       putAttempts++;
 
       // Simulate latency
@@ -151,7 +153,7 @@ function createMockR2Bucket(options?: {
       }
     }),
 
-    list: vi.fn(async (listOptions?: any) => {
+    list: vi.fn(async (listOptions?: R2ListOptions) => {
       const prefix = listOptions?.prefix ?? '';
       const limit = listOptions?.limit ?? 1000;
       const objects: R2Object[] = [];

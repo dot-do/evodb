@@ -437,7 +437,7 @@ export abstract class LakehouseParentDO {
   /**
    * Handle WebSocket close (hibernation-compatible)
    */
-  async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+  async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
     const trackedWs = ws as TrackedWebSocket;
     const sourceDoId = trackedWs.sourceDoId;
 
@@ -445,8 +445,6 @@ export abstract class LakehouseParentDO {
       this.connectedSockets.delete(sourceDoId);
       this.writer.markSourceDisconnected(sourceDoId);
     }
-
-    console.log(`WebSocket closed: ${sourceDoId} (${code}: ${reason})`);
   }
 
   /**
@@ -472,10 +470,7 @@ export abstract class LakehouseParentDO {
 
       // Retry pending blocks
       if (this.writer.getPendingBlockCount() > 0) {
-        const { succeeded, failed } = await this.writer.retryPendingBlocks();
-        if (succeeded > 0 || failed > 0) {
-          console.log(`Retry pending blocks: ${succeeded} succeeded, ${failed} failed`);
-        }
+        await this.writer.retryPendingBlocks();
       }
 
       // Check if compaction needed
@@ -508,21 +503,15 @@ export abstract class LakehouseParentDO {
   /**
    * Callback when flush completes (override to customize)
    */
-  protected async onFlush(result: FlushResult): Promise<void> {
-    if (result.status === 'persisted') {
-      console.log(`Flushed ${result.entryCount} entries to R2 in ${result.durationMs}ms`);
-    } else if (result.status === 'buffered') {
-      console.warn(`Flush failed, buffered to DO: ${result.error}`);
-    }
+  protected async onFlush(_result: FlushResult): Promise<void> {
+    // Override in subclass to handle flush events
   }
 
   /**
    * Callback when compaction completes (override to customize)
    */
-  protected async onCompact(result: CompactResult): Promise<void> {
-    if (result.status === 'completed') {
-      console.log(`Compacted ${result.blocksMerged} blocks in ${result.durationMs}ms`);
-    }
+  protected async onCompact(_result: CompactResult): Promise<void> {
+    // Override in subclass to handle compaction events
   }
 
   /**

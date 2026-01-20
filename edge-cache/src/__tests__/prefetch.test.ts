@@ -14,7 +14,7 @@ import {
   resetFetchFunction,
   clearCacheStatusMap,
 } from '../prefetch.js';
-import type { PrefetchOptions, CacheStatus } from '../index.js';
+import type { PrefetchProgress } from '../index.js';
 
 // Mock fetch function
 function createMockFetch(responses: Map<string, { status: number; headers: Headers; body?: ArrayBuffer }>) {
@@ -325,7 +325,7 @@ describe('prefetch', () => {
 
       setFetchFunction(createMockFetch(mockResponses));
 
-      const progress: any[] = [];
+      const progress: PrefetchProgress[] = [];
       const result = await prefetchDataset('users', {
         partitions,
         onProgress: (p) => progress.push({ ...p }),

@@ -11,10 +11,13 @@ import type {
   DiffOptions,
   DiffResult,
   Schema,
-  SchemaLock,
   SchemaChange,
   ColumnDefinition,
 } from '../types.js';
+import {
+  parseAndValidateSchemaLock,
+  ValidationError,
+} from '../validation.js';
 
 // Re-export types for external use
 export type { DiffOptions, DiffResult };
@@ -137,9 +140,9 @@ export async function diffCommand(options: DiffOptions): Promise<DiffResult> {
       };
     }
 
-    // Read lock file
+    // Read and validate lock file
     const lockContent = readFileSync(lockPath, 'utf8');
-    const lock: SchemaLock = JSON.parse(lockContent);
+    const lock = parseAndValidateSchemaLock(lockContent, lockPath);
 
     // Compute differences
     const changes = computeDiff(lock.schema, schema);
@@ -150,11 +153,17 @@ export async function diffCommand(options: DiffOptions): Promise<DiffResult> {
       changes,
     };
   } catch (error) {
+    const errorMessage = error instanceof ValidationError
+      ? error.toCliMessage()
+      : error instanceof Error
+        ? error.message
+        : String(error);
+
     return {
       success: false,
       hasChanges: false,
       changes: [],
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     };
   }
 }

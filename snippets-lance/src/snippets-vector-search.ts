@@ -22,9 +22,13 @@ import type {
   BenchmarkResult,
   BenchmarkTiming,
   MemoryUsage,
-  SNIPPETS_CONSTRAINTS,
 } from './types.js';
-import type { CachedLanceReader, CachedIndexHeader } from './cached-lance-reader.js';
+import {
+  ALLOCATION_LIMITS,
+  validateAllocationSize,
+  validateCount,
+} from './types.js';
+import type { CachedLanceReader } from './cached-lance-reader.js';
 
 // ==========================================
 // High-Performance Distance Functions
@@ -170,7 +174,6 @@ export class SnippetsVectorSearch {
   private centroids: CentroidIndex | null = null;
   private pqCodebook: PQCodebook | null = null;
   private partitionMeta: PartitionMeta[] | null = null;
-  private header: CachedIndexHeader | null = null;
 
   // Pre-allocated lookup tables (reused across queries)
   private lookupTables: Float32Array[] | null = null;
@@ -184,14 +187,24 @@ export class SnippetsVectorSearch {
    * Call this once at startup, not per-request
    */
   async initialize(): Promise<void> {
-    this.header = await this.reader.loadHeader();
+    // Load header first (reader caches it internally)
+    await this.reader.loadHeader();
     this.centroids = await this.reader.loadCentroids();
     this.pqCodebook = await this.reader.loadPQCodebook();
     this.partitionMeta = await this.reader.loadPartitionMeta();
 
-    // Pre-allocate lookup tables
+    // Pre-allocate lookup tables with bounds checking
     const numSubVectors = this.pqCodebook.numSubVectors;
-    const numCodes = 1 << this.pqCodebook.numBits;
+    const numBits = this.pqCodebook.numBits;
+
+    // Validate lookup table allocation sizes to prevent OOM
+    validateCount(numSubVectors, ALLOCATION_LIMITS.MAX_SUB_VECTORS, 'numSubVectors for lookup tables');
+    validateCount(numBits, ALLOCATION_LIMITS.MAX_NUM_BITS, 'numBits for lookup tables');
+
+    const numCodes = 1 << numBits;
+    const totalLookupTableBytes = numSubVectors * numCodes * 4; // Float32Array = 4 bytes per element
+    validateAllocationSize(totalLookupTableBytes, ALLOCATION_LIMITS.MAX_PQ_CODEBOOK_SIZE_BYTES, 'lookup tables allocation');
+
     this.lookupTables = new Array(numSubVectors);
     for (let m = 0; m < numSubVectors; m++) {
       this.lookupTables[m] = new Float32Array(numCodes);
@@ -242,7 +255,10 @@ export class SnippetsVectorSearch {
    * For 4096 partitions with 384 dimensions: ~2ms
    */
   private findNearestCentroids(query: Float32Array, n: number): number[] {
-    const centroids = this.centroids!;
+    if (!this.centroids) {
+      throw new Error('Centroids not loaded. Call initialize() first.');
+    }
+    const centroids = this.centroids;
     const numPartitions = centroids.numPartitions;
     const dimension = centroids.dimension;
     const centroidData = centroids.centroids;
@@ -306,8 +322,14 @@ export class SnippetsVectorSearch {
    * Reuses pre-allocated arrays to avoid GC pressure
    */
   private buildLookupTables(query: Float32Array): void {
-    const pq = this.pqCodebook!;
-    const tables = this.lookupTables!;
+    if (!this.pqCodebook) {
+      throw new Error('PQ codebook not loaded. Call initialize() first.');
+    }
+    if (!this.lookupTables) {
+      throw new Error('Lookup tables not initialized. Call initialize() first.');
+    }
+    const pq = this.pqCodebook;
+    const tables = this.lookupTables;
     const numSubVectors = pq.numSubVectors;
     const subDim = pq.subDim;
     const numCodes = 1 << pq.numBits;
@@ -336,7 +358,10 @@ export class SnippetsVectorSearch {
    * Search a single partition using pre-computed lookup tables
    */
   private async searchPartition(partitionId: number, heap: TopKHeap): Promise<void> {
-    const meta = this.partitionMeta![partitionId];
+    if (!this.partitionMeta) {
+      throw new Error('Partition metadata not loaded. Call initialize() first.');
+    }
+    const meta = this.partitionMeta[partitionId];
     if (!meta || meta.numVectors === 0) return;
 
     // Load partition data (lazy - may hit edge cache)
@@ -505,9 +530,18 @@ export class InMemoryVectorSearch {
     this.pqCodebook = pqCodebook;
     this.partitionData = partitionData;
 
-    // Pre-allocate lookup tables
+    // Pre-allocate lookup tables with bounds checking
     const numSubVectors = pqCodebook.numSubVectors;
-    const numCodes = 1 << pqCodebook.numBits;
+    const numBits = pqCodebook.numBits;
+
+    // Validate lookup table allocation sizes to prevent OOM
+    validateCount(numSubVectors, ALLOCATION_LIMITS.MAX_SUB_VECTORS, 'numSubVectors for lookup tables');
+    validateCount(numBits, ALLOCATION_LIMITS.MAX_NUM_BITS, 'numBits for lookup tables');
+
+    const numCodes = 1 << numBits;
+    const totalLookupTableBytes = numSubVectors * numCodes * 4; // Float32Array = 4 bytes per element
+    validateAllocationSize(totalLookupTableBytes, ALLOCATION_LIMITS.MAX_PQ_CODEBOOK_SIZE_BYTES, 'lookup tables allocation');
+
     this.lookupTables = new Array(numSubVectors);
     for (let m = 0; m < numSubVectors; m++) {
       this.lookupTables[m] = new Float32Array(numCodes);

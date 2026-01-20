@@ -28,6 +28,8 @@ import {
   DEFAULT_SNIPPET_BUDGET,
 } from './types.js';
 
+import { TIMEOUT_5S } from '@evodb/core';
+
 // =============================================================================
 // Snippet Registry
 // =============================================================================
@@ -137,7 +139,7 @@ export class ChainExecutor {
     this.registry = options.registry;
     this.budget = { ...DEFAULT_SNIPPET_BUDGET, ...options.budgetOverride };
     this.maxConcurrency = options.maxConcurrency ?? 10;
-    this.stepTimeoutMs = options.stepTimeoutMs ?? 5000;
+    this.stepTimeoutMs = options.stepTimeoutMs ?? TIMEOUT_5S;
     this.trace = options.trace ?? false;
   }
 

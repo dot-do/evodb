@@ -1,0 +1,44 @@
+{
+  "name": "@evodb/e2e",
+  "version": "0.1.0-rc.1",
+  "description": "End-to-end integration tests for EvoDB lakehouse",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "evodb",
+    "e2e",
+    "integration-test",
+    "lakehouse",
+    "cloudflare",
+    "workers"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "e2e"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*",
+    "@evodb/lakehouse": "workspace:*",
+    "@evodb/reader": "workspace:*",
+    "@evodb/writer": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.6.1"
+  }
+}

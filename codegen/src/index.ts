@@ -42,3 +42,16 @@ export { pullCommand } from './commands/pull.js';
 export { pushCommand } from './commands/push.js';
 export { lockCommand } from './commands/lock.js';
 export { diffCommand } from './commands/diff.js';
+
+// ============================================================================
+// Validation
+// ============================================================================
+
+export {
+  ValidationError,
+  parseJson,
+  parseAndValidateSchema,
+  parseAndValidateSchemaLock,
+  validateSchema,
+  validateSchemaLock,
+} from './validation.js';

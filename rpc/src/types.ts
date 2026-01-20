@@ -30,57 +30,39 @@
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
+import type {
+  RpcWalEntry as CoreRpcWalEntry,
+  RpcWalOperation as CoreRpcWalOperation,
+  RpcWalOperationCodeValue as CoreRpcWalOperationCodeValue,
+} from '@evodb/core';
+import { RpcWalOperationCode as CoreRpcWalOperationCode } from '@evodb/core';
+
 // =============================================================================
-// WAL Entry Types (from columnar-json storage)
+// WAL Entry Types (unified from @evodb/core)
 // =============================================================================
 
 /**
- * Operation types for WAL entries
+ * Operation types for WAL entries.
+ * Uses unified type from @evodb/core.
  */
-export type WalOperation = 'INSERT' | 'UPDATE' | 'DELETE';
+export type WalOperation = CoreRpcWalOperation;
 
 /**
- * Numeric representation of WAL operations for efficient binary encoding
+ * Numeric representation of WAL operations for efficient binary encoding.
+ * Uses unified constant from @evodb/core.
  */
-export const WalOperationCode = {
-  INSERT: 0,
-  UPDATE: 1,
-  DELETE: 2,
-} as const;
+export const WalOperationCode = CoreRpcWalOperationCode;
 
-export type WalOperationCodeValue = (typeof WalOperationCode)[WalOperation];
+export type WalOperationCodeValue = CoreRpcWalOperationCodeValue;
 
 /**
- * A single WAL (Write-Ahead Log) entry from a Child DO
+ * A single WAL (Write-Ahead Log) entry from a Child DO.
+ * Uses unified RpcWalEntry type from @evodb/core.
  *
  * These entries are captured from SQLite triggers in the Child DO's
  * columnar JSON storage and sent to the Parent DO for aggregation.
  */
-export interface WalEntry<T = unknown> {
-  /** Monotonically increasing sequence number within the source DO */
-  sequence: number;
-
-  /** Unix timestamp in milliseconds when the change occurred */
-  timestamp: number;
-
-  /** Type of database operation */
-  operation: WalOperation;
-
-  /** Table name where the change occurred */
-  table: string;
-
-  /** Primary key or row identifier */
-  rowId: string;
-
-  /** Row data before the change (for UPDATE/DELETE) */
-  before?: T;
-
-  /** Row data after the change (for INSERT/UPDATE) */
-  after?: T;
-
-  /** Optional metadata (e.g., transaction ID, user ID) */
-  metadata?: Record<string, unknown>;
-}
+export type WalEntry<T = unknown> = CoreRpcWalEntry<T>;
 
 // =============================================================================
 // RPC Message Types (Child -> Parent)

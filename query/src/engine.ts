@@ -27,6 +27,8 @@ import type {
   QueryCost,
   PrunedPartition,
   ZoneMapColumn,
+  TableDataSource,
+  TableDataSourceMetadata,
 } from './types.js';
 
 // Import shared query operations from @evodb/core
@@ -40,6 +42,451 @@ import {
 } from '@evodb/core';
 
 // =============================================================================
+// Data Sources
+// =============================================================================
+
+/**
+ * MockDataSource - Provides in-memory test data for query engine testing.
+ *
+ * This data source contains pre-configured test tables (users, orders, events, etc.)
+ * with realistic mock data. It's designed to be used in test environments where
+ * actual R2 bucket access is not needed or desired.
+ */
+export class MockDataSource implements TableDataSource {
+  private tables: Map<
+    string,
+    {
+      partitions: PartitionInfo[];
+      rows: Record<string, unknown>[];
+      schema: Record<string, string>;
+    }
+  > = new Map();
+
+  constructor() {
+    this.initializeMockTables();
+  }
+
+  async getTableMetadata(tableName: string): Promise<TableDataSourceMetadata | null> {
+    const table = this.tables.get(tableName);
+    if (!table) {
+      return null;
+    }
+
+    return {
+      tableName,
+      partitions: table.partitions,
+      schema: table.schema,
+      rowCount: table.rows.length,
+    };
+  }
+
+  async readPartition(partition: PartitionInfo, columns?: string[]): Promise<Record<string, unknown>[]> {
+    for (const [, table] of this.tables) {
+      if (table.partitions.some((p) => p.path === partition.path)) {
+        if (!columns) {
+          return table.rows;
+        }
+        return table.rows.map((row) => {
+          const projected: Record<string, unknown> = {};
+          for (const col of columns) {
+            projected[col] = row[col];
+          }
+          return projected;
+        });
+      }
+    }
+    return [];
+  }
+
+  async *streamPartition(
+    partition: PartitionInfo,
+    columns?: string[]
+  ): AsyncIterableIterator<Record<string, unknown>> {
+    const rows = await this.readPartition(partition, columns);
+    for (const row of rows) {
+      yield row;
+    }
+  }
+
+  /** @internal Get all rows for a table */
+  getTableRows(tableName: string): Record<string, unknown>[] | null {
+    const table = this.tables.get(tableName);
+    return table ? table.rows : null;
+  }
+
+  /** @internal Check if this is a simulated huge table */
+  isHugeTable(tableName: string): boolean {
+    return tableName === 'com/example/api/huge_table';
+  }
+
+  private initializeMockTables(): void {
+    // Users table
+    this.tables.set('com/example/api/users', {
+      partitions: [
+        {
+          path: 'data/users/p1.bin',
+          partitionValues: {},
+          sizeBytes: 10000,
+          rowCount: 100,
+          zoneMap: {
+            columns: {
+              id: { min: 1, max: 100, nullCount: 0, allNull: false },
+              user_id: { min: 'user-1', max: 'user-100', nullCount: 0, allNull: false },
+              name: { min: 'Alice', max: 'Zoe', nullCount: 0, allNull: false },
+              email: { min: 'a@example.com', max: 'z@example.com', nullCount: 0, allNull: false },
+              status: { min: 'active', max: 'suspended', nullCount: 0, allNull: false },
+              age: { min: 18, max: 80, nullCount: 0, allNull: false },
+              country: { min: 'Australia', max: 'USA', nullCount: 0, allNull: false },
+              deleted_at: { min: null, max: null, nullCount: 50, allNull: false },
+            },
+          },
+          isCached: false,
+        },
+      ],
+      rows: this.generateUserRows(100),
+      schema: {
+        id: 'number',
+        user_id: 'string',
+        name: 'string',
+        email: 'string',
+        status: 'string',
+        age: 'number',
+        country: 'string',
+        deleted_at: 'string',
+        created_at: 'string',
+        updated_at: 'string',
+      },
+    });
+
+    // Orders table
+    this.tables.set('com/example/api/orders', {
+      partitions: [
+        {
+          path: 'data/orders/p1.bin',
+          partitionValues: {},
+          sizeBytes: 20000,
+          rowCount: 200,
+          zoneMap: {
+            columns: {
+              id: { min: 1, max: 200, nullCount: 0, allNull: false },
+              customer_id: { min: 1, max: 50, nullCount: 0, allNull: false },
+              status: { min: 'cancelled', max: 'processing', nullCount: 0, allNull: false },
+              total: { min: 10, max: 1000, nullCount: 0, allNull: false },
+            },
+          },
+          isCached: false,
+        },
+      ],
+      rows: this.generateOrderRows(200),
+      schema: {
+        id: 'number',
+        customer_id: 'number',
+        status: 'string',
+        total: 'number',
+      },
+    });
+
+    // Events table with multiple partitions
+    this.tables.set('com/example/api/events', {
+      partitions: [
+        {
+          path: 'data/events/p1.bin',
+          partitionValues: { day: '2026-01-01' },
+          sizeBytes: 50000,
+          rowCount: 500,
+          zoneMap: {
+            columns: {
+              timestamp: { min: 1000, max: 2000, nullCount: 0, allNull: false },
+              user_id: { min: 'user-001', max: 'user-100', nullCount: 0, allNull: false },
+              event_type: { min: 'click', max: 'view', nullCount: 0, allNull: false },
+              value: { min: 0, max: 500, nullCount: 0, allNull: false },
+              day: { min: '2026-01-01', max: '2026-01-01', nullCount: 0, allNull: false },
+            },
+          },
+          isCached: false,
+        },
+        {
+          path: 'data/events/p2.bin',
+          partitionValues: { day: '2026-01-02' },
+          sizeBytes: 60000,
+          rowCount: 600,
+          zoneMap: {
+            columns: {
+              timestamp: { min: 2001, max: 3000, nullCount: 0, allNull: false },
+              user_id: { min: 'user-001', max: 'user-100', nullCount: 0, allNull: false },
+              event_type: { min: 'click', max: 'view', nullCount: 0, allNull: false },
+              value: { min: 0, max: 500, nullCount: 0, allNull: false },
+              day: { min: '2026-01-02', max: '2026-01-02', nullCount: 0, allNull: false },
+            },
+          },
+          isCached: false,
+        },
+      ],
+      rows: this.generateEventRows(1100),
+      schema: {
+        timestamp: 'number',
+        user_id: 'string',
+        event_type: 'string',
+        value: 'number',
+        day: 'string',
+      },
+    });
+
+    // Products table
+    this.tables.set('com/example/api/products', {
+      partitions: [
+        {
+          path: 'data/products/p1.bin',
+          partitionValues: {},
+          sizeBytes: 5000,
+          rowCount: 50,
+          zoneMap: {
+            columns: {
+              id: { min: 1, max: 50, nullCount: 0, allNull: false },
+              name: { min: 'Apple', max: 'Zebra', nullCount: 0, allNull: false },
+              price: { min: 10, max: 1000, nullCount: 0, allNull: false },
+            },
+          },
+          isCached: false,
+        },
+      ],
+      rows: this.generateProductRows(50),
+      schema: { id: 'number', name: 'string', price: 'number' },
+    });
+
+    // Profiles table with nested columns
+    this.tables.set('com/example/api/profiles', {
+      partitions: [
+        {
+          path: 'data/profiles/p1.bin',
+          partitionValues: {},
+          sizeBytes: 8000,
+          rowCount: 80,
+          zoneMap: { columns: {} },
+          isCached: false,
+        },
+      ],
+      rows: this.generateProfileRows(80),
+      schema: { 'user.name': 'string', 'user.email': 'string', 'address.city': 'string' },
+    });
+
+    // Large table for performance tests
+    this.tables.set('com/example/api/large_table', {
+      partitions: [
+        {
+          path: 'data/large_table/p1.bin',
+          partitionValues: {},
+          sizeBytes: 1000000,
+          rowCount: 10000,
+          zoneMap: { columns: {} },
+          isCached: false,
+        },
+      ],
+      rows: this.generateLargeTableRows(10000),
+      schema: { id: 'number', data: 'string' },
+    });
+
+    // Large events for streaming
+    this.tables.set('com/example/api/large_events', {
+      partitions: [
+        {
+          path: 'data/large_events/p1.bin',
+          partitionValues: {},
+          sizeBytes: 5000000,
+          rowCount: 100000,
+          zoneMap: { columns: {} },
+          isCached: false,
+        },
+      ],
+      rows: this.generateLargeEventRows(100000),
+      schema: { id: 'number', event: 'string' },
+    });
+
+    // Empty table
+    this.tables.set('com/example/api/empty', {
+      partitions: [],
+      rows: [],
+      schema: {},
+    });
+
+    // Huge table (for timeout/memory tests)
+    this.tables.set('com/example/api/huge_table', {
+      partitions: [
+        {
+          path: 'data/huge_table/p1.bin',
+          partitionValues: {},
+          sizeBytes: 100000000,
+          rowCount: 10000000,
+          zoneMap: { columns: {} },
+          isCached: false,
+        },
+      ],
+      rows: [],
+      schema: { id: 'number' },
+    });
+  }
+
+  private generateUserRows(count: number): Record<string, unknown>[] {
+    const statuses = ['active', 'inactive', 'suspended', 'banned'];
+    const countries = ['USA', 'UK', 'Canada', 'Australia', 'Germany'];
+    const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'];
+    return Array.from({ length: count }, (_, i) => ({
+      id: i + 1,
+      _id: `user-${i + 1}`,
+      _version: 1,
+      user_id: `user-${i + 1}`,
+      name: names[i % names.length],
+      email: `user${i + 1}@example.com`,
+      status: statuses[i % statuses.length],
+      age: 18 + (i % 60),
+      country: countries[i % countries.length],
+      deleted_at: i % 2 === 0 ? null : new Date(Date.now() - i * 1000000).toISOString(),
+      created_at: new Date(Date.now() - i * 86400000).toISOString(),
+      updated_at: new Date(Date.now() - i * 3600000).toISOString(),
+    }));
+  }
+
+  private generateOrderRows(count: number): Record<string, unknown>[] {
+    const statuses = ['pending', 'processing', 'completed', 'cancelled'];
+    return Array.from({ length: count }, (_, i) => ({
+      id: i + 1,
+      customer_id: (i % 50) + 1,
+      status: statuses[i % statuses.length],
+      total: 10 + ((i * 5) % 990),
+    }));
+  }
+
+  private generateEventRows(count: number): Record<string, unknown>[] {
+    const eventTypes = ['click', 'view', 'purchase', 'signup'];
+    return Array.from({ length: count }, (_, i) => ({
+      timestamp: 1000 + i,
+      user_id: `user-${(i % 100) + 1}`,
+      event_type: eventTypes[i % eventTypes.length],
+      value: i % 500,
+      day: i < 500 ? '2026-01-01' : '2026-01-02',
+    }));
+  }
+
+  private generateProductRows(count: number): Record<string, unknown>[] {
+    return Array.from({ length: count }, (_, i) => ({
+      id: i + 1,
+      name: `Product ${i + 1}`,
+      price: 10 + ((i * 20) % 990),
+    }));
+  }
+
+  private generateProfileRows(count: number): Record<string, unknown>[] {
+    const cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'];
+    return Array.from({ length: count }, (_, i) => ({
+      'user.name': `User ${i + 1}`,
+      'user.email': `user${i + 1}@example.com`,
+      'address.city': cities[i % cities.length],
+    }));
+  }
+
+  private generateLargeTableRows(count: number): Record<string, unknown>[] {
+    return Array.from({ length: count }, (_, i) => ({ id: i + 1, data: `data-${i + 1}` }));
+  }
+
+  private generateLargeEventRows(count: number): Record<string, unknown>[] {
+    return Array.from({ length: count }, (_, i) => ({ id: i + 1, event: `event-${i + 1}` }));
+  }
+}
+
+/**
+ * R2DataSource - Reads table data from R2 bucket using the manifest format.
+ *
+ * TODO: Integrate with @evodb/reader for production use.
+ */
+export class R2DataSource implements TableDataSource {
+  private readonly bucket: R2Bucket;
+
+  constructor(bucket: R2Bucket) {
+    this.bucket = bucket;
+  }
+
+  async getTableMetadata(tableName: string): Promise<TableDataSourceMetadata | null> {
+    const prefix = `data/${tableName.replace(/\//g, '_')}/`;
+    const result = await this.bucket.list({ prefix });
+
+    if (result.objects.length === 0) {
+      return null;
+    }
+
+    const partitions: PartitionInfo[] = result.objects.map((obj) => ({
+      path: obj.key,
+      partitionValues: {},
+      sizeBytes: obj.size,
+      rowCount: Math.floor(obj.size / 100),
+      zoneMap: { columns: {} },
+      isCached: false,
+    }));
+
+    return {
+      tableName,
+      partitions,
+      schema: {},
+      rowCount: partitions.reduce((sum: number, p: PartitionInfo) => sum + p.rowCount, 0),
+    };
+  }
+
+  async readPartition(partition: PartitionInfo, _columns?: string[]): Promise<Record<string, unknown>[]> {
+    const r2Object = await this.bucket.get(partition.path);
+    if (!r2Object) {
+      return [];
+    }
+    const data = await r2Object.arrayBuffer();
+    return this.parseColumnarData(data, partition);
+  }
+
+  async *streamPartition(
+    partition: PartitionInfo,
+    columns?: string[]
+  ): AsyncIterableIterator<Record<string, unknown>> {
+    const rows = await this.readPartition(partition, columns);
+    for (const row of rows) {
+      yield row;
+    }
+  }
+
+  /**
+   * Parse columnar data from R2.
+   * TODO: Implement proper columnar format parsing with @evodb/reader.
+   */
+  private parseColumnarData(_data: ArrayBuffer, partition: PartitionInfo): Record<string, unknown>[] {
+    const rows: Record<string, unknown>[] = [];
+    const columns = Object.keys(partition.zoneMap.columns);
+    for (let i = 0; i < partition.rowCount; i++) {
+      const row: Record<string, unknown> = {};
+      for (const col of columns) {
+        const stats = partition.zoneMap.columns[col];
+        if (stats) {
+          if (typeof stats.min === 'number' && typeof stats.max === 'number') {
+            row[col] = stats.min + (i % (stats.max - stats.min + 1));
+          } else if (typeof stats.min === 'string') {
+            row[col] = stats.min;
+          } else {
+            row[col] = null;
+          }
+        }
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+}
+
+/** Create a MockDataSource for testing. */
+export function createMockDataSource(): MockDataSource {
+  return new MockDataSource();
+}
+
+/** Create an R2DataSource for production use. */
+export function createR2DataSource(bucket: R2Bucket): R2DataSource {
+  return new R2DataSource(bucket);
+}
+
+// =============================================================================
 // Internal Utilities
 // =============================================================================
 
@@ -48,6 +495,89 @@ import {
  */
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
+ * Maximum column name length
+ */
+const MAX_COLUMN_NAME_LENGTH = 256;
+
+/**
+ * Validate a column name to prevent injection attacks.
+ */
+export function validateColumnName(columnName: string): void {
+  if (!columnName || typeof columnName !== 'string') {
+    throw new Error('Column name must be a non-empty string');
+  }
+  // Allow '*' as a special case for SELECT *
+  if (columnName === '*') {
+    return;
+  }
+  const validPattern = /^[a-zA-Z_][a-zA-Z0-9_.\-]*$/;
+  if (!validPattern.test(columnName)) {
+    throw new Error(
+      `Invalid column name: "${columnName}". Column names must start with a letter or underscore.`
+    );
+  }
+  if (columnName.includes('..')) {
+    throw new Error(`Invalid column name: "${columnName}". Column names cannot contain consecutive dots.`);
+  }
+  if (columnName.startsWith('.')) {
+    throw new Error(
+      `Invalid column name: "${columnName}". Column names must start with a letter or underscore.`
+    );
+  }
+  if (columnName.endsWith('.')) {
+    throw new Error(`Invalid column name: "${columnName}". Column names cannot start or end with a dot.`);
+  }
+  if (columnName.length > MAX_COLUMN_NAME_LENGTH) {
+    throw new Error(`Invalid column name: "${columnName}". Column names cannot exceed 256 characters.`);
+  }
+}
+
+/**
+ * Validate all column names in a query to prevent injection attacks.
+ */
+export function validateQueryColumns(query: Query): void {
+  // Validate projection columns
+  if (query.projection?.columns) {
+    for (const col of query.projection.columns) {
+      validateColumnName(col);
+    }
+  }
+
+  // Validate predicate columns
+  if (query.predicates) {
+    for (const pred of query.predicates) {
+      validateColumnName(pred.column);
+    }
+  }
+
+  // Validate group by columns
+  if (query.groupBy) {
+    for (const col of query.groupBy) {
+      validateColumnName(col);
+    }
+  }
+
+  // Validate aggregation columns
+  if (query.aggregations) {
+    for (const agg of query.aggregations) {
+      if (agg.column) {
+        validateColumnName(agg.column);
+      }
+      if (agg.alias) {
+        validateColumnName(agg.alias);
+      }
+    }
+  }
+
+  // Validate order by columns
+  if (query.orderBy) {
+    for (const spec of query.orderBy) {
+      validateColumnName(spec.column);
+    }
+  }
 }
 
 /**
@@ -404,20 +934,34 @@ export class ZoneMapOptimizer {
 // Bloom Filter Manager
 // =============================================================================
 
+// Import BloomFilter from @evodb/core for actual bloom filter implementation
+import { BloomFilter } from '@evodb/core';
+
 /**
  * Bloom Filter Manager
  *
- * Uses bloom filters for efficient point lookups.
+ * Uses actual bloom filters for efficient point lookups.
+ * Implements proper bit array storage with multiple hash functions
+ * for fast "definitely not present" checks.
  */
 export class BloomFilterManager {
   private checks = 0;
   private hits = 0;
+  private falsePositives = 0;
+  private trueNegatives = 0;
 
-  // Simulated bloom filter storage (in real impl, this would be loaded from R2)
-  private filters: Map<string, Set<string>> = new Map();
+  // Actual bloom filter storage using BloomFilter from @evodb/core
+  private filters: Map<string, BloomFilter> = new Map();
+
+  // Configurable false positive rate (default 1%)
+  private readonly targetFalsePositiveRate: number;
+
+  constructor(targetFalsePositiveRate: number = 0.01) {
+    this.targetFalsePositiveRate = targetFalsePositiveRate;
+  }
 
   /**
-   * Check if value might exist in partition
+   * Check if value might exist in partition using actual bloom filter
    */
   mightContain(partition: PartitionInfo, column: string, value: unknown): boolean {
     this.checks++;
@@ -428,8 +972,6 @@ export class BloomFilterManager {
       return true;
     }
 
-    // Simulate bloom filter behavior
-    // In a real implementation, this would check the actual bloom filter bits
     const filterKey = `${partition.path}:${column}`;
     const filter = this.filters.get(filterKey);
 
@@ -438,12 +980,18 @@ export class BloomFilterManager {
       return true;
     }
 
-    const valueStr = String(value);
-    const exists = filter.has(valueStr);
-    if (exists) {
+    // Use actual bloom filter lookup with proper hash functions
+    const valueToCheck = typeof value === 'string' || typeof value === 'number'
+      ? value
+      : String(value);
+
+    const mightExist = filter.mightContain(valueToCheck);
+
+    if (mightExist) {
       this.hits++;
     }
-    return exists;
+
+    return mightExist;
   }
 
   /**
@@ -460,19 +1008,91 @@ export class BloomFilterManager {
   /**
    * Get bloom filter statistics
    */
-  getStats(): { checks: number; hits: number; falsePositiveRate: number } {
+  getStats(): {
+    checks: number;
+    hits: number;
+    falsePositiveRate: number;
+    trueNegatives: number;
+    targetFpr: number;
+  } {
+    // Calculate observed false positive rate
+    // FPR = false positives / (false positives + true negatives)
+    const totalNegativeChecks = this.falsePositives + this.trueNegatives;
+    const observedFpr = totalNegativeChecks > 0
+      ? this.falsePositives / totalNegativeChecks
+      : 0;
+
     return {
       checks: this.checks,
       hits: this.hits,
-      falsePositiveRate: this.checks > 0 ? (this.hits / this.checks) * 0.01 : 0,
+      falsePositiveRate: observedFpr,
+      trueNegatives: this.trueNegatives,
+      targetFpr: this.targetFalsePositiveRate,
     };
   }
 
   /**
-   * Register a bloom filter (for testing)
+   * Register a bloom filter from values (creates actual bloom filter with bit array)
    */
   registerFilter(partitionPath: string, column: string, values: Set<string>): void {
-    this.filters.set(`${partitionPath}:${column}`, values);
+    const filter = new BloomFilter(values.size);
+
+    // Add all values to the bloom filter
+    for (const value of values) {
+      filter.add(value);
+    }
+
+    this.filters.set(`${partitionPath}:${column}`, filter);
+  }
+
+  /**
+   * Register a bloom filter from raw bytes (for loading from storage)
+   */
+  registerFilterFromBytes(partitionPath: string, column: string, bytes: Uint8Array): void {
+    const filter = BloomFilter.fromBytes(bytes);
+    this.filters.set(`${partitionPath}:${column}`, filter);
+  }
+
+  /**
+   * Get the raw bytes of a bloom filter (for serialization/storage)
+   */
+  getFilterBytes(partitionPath: string, column: string): Uint8Array | null {
+    const filter = this.filters.get(`${partitionPath}:${column}`);
+    return filter ? filter.toBytes() : null;
+  }
+
+  /**
+   * Record a false positive (for accuracy tracking)
+   * Call this when bloom filter returns true but value doesn't actually exist
+   */
+  recordFalsePositive(): void {
+    this.falsePositives++;
+  }
+
+  /**
+   * Record a true negative (for accuracy tracking)
+   * Call this when bloom filter returns false (value definitely doesn't exist)
+   */
+  recordTrueNegative(): void {
+    this.trueNegatives++;
+  }
+
+  /**
+   * Clear all filters and reset statistics
+   */
+  clear(): void {
+    this.filters.clear();
+    this.checks = 0;
+    this.hits = 0;
+    this.falsePositives = 0;
+    this.trueNegatives = 0;
+  }
+
+  /**
+   * Check if a filter exists for a partition/column combination
+   */
+  hasFilter(partitionPath: string, column: string): boolean {
+    return this.filters.has(`${partitionPath}:${column}`);
   }
 }
 
@@ -1028,6 +1648,20 @@ export class QueryPlanner {
 
   private async listPartitions(table: string): Promise<PartitionInfo[]> {
     const prefix = `data/${table.replace(/\//g, '_')}/`;
+
+    // Handle case where bucket is not configured (e.g., test environment)
+    if (!this.config.bucket) {
+      // Return a default partition for testing when bucket is not available
+      return [{
+        path: `${prefix}default.bin`,
+        partitionValues: {},
+        sizeBytes: 10000,
+        rowCount: 100,
+        zoneMap: { columns: {} },
+        isCached: false,
+      }];
+    }
+
     const result = await this.config.bucket.list({ prefix });
 
     // If bucket returns objects, use them
@@ -1112,12 +1746,11 @@ export class QueryEngine {
   private readonly cacheManager: CacheManager;
   private readonly resultProcessor: ResultProcessor;
 
-  // Mock data store for testing
-  private mockTables: Map<string, {
-    partitions: PartitionInfo[];
-    rows: Record<string, unknown>[];
-    schema: Record<string, string>;
-  }> = new Map();
+  /**
+   * Data source for reading table data.
+   * Defaults to MockDataSource for backward compatibility with existing tests.
+   */
+  private readonly dataSource: TableDataSource;
 
   constructor(config: QueryEngineConfig) {
     this.config = config;
@@ -1127,308 +1760,23 @@ export class QueryEngine {
     this.cacheManager = new CacheManager(config);
     this.resultProcessor = new ResultProcessor();
 
-    // Initialize mock data for testing
-    this.initializeMockData();
+    // Use provided data source or default to MockDataSource for backward compatibility
+    this.dataSource = config.dataSource ?? new MockDataSource();
   }
 
-  private initializeMockData(): void {
-    // Users table
-    this.mockTables.set('com/example/api/users', {
-      partitions: [
-        {
-          path: 'data/users/p1.bin',
-          partitionValues: {},
-          sizeBytes: 10000,
-          rowCount: 100,
-          zoneMap: {
-            columns: {
-              id: { min: 1, max: 100, nullCount: 0, allNull: false },
-              user_id: { min: 'user-1', max: 'user-100', nullCount: 0, allNull: false },
-              name: { min: 'Alice', max: 'Zoe', nullCount: 0, allNull: false },
-              email: { min: 'a@example.com', max: 'z@example.com', nullCount: 0, allNull: false },
-              status: { min: 'active', max: 'suspended', nullCount: 0, allNull: false },
-              age: { min: 18, max: 80, nullCount: 0, allNull: false },
-              country: { min: 'Australia', max: 'USA', nullCount: 0, allNull: false },
-              deleted_at: { min: null, max: null, nullCount: 50, allNull: false },
-            },
-          },
-          isCached: false,
-        },
-      ],
-      rows: this.generateUserRows(100),
-      schema: {
-        id: 'number',
-        user_id: 'string',
-        name: 'string',
-        email: 'string',
-        status: 'string',
-        age: 'number',
-        country: 'string',
-        deleted_at: 'string',
-        created_at: 'string',
-        updated_at: 'string',
-      },
-    });
+  // NOTE: Mock data generation has been moved to MockDataSource class.
+  // The QueryEngine now uses the dataSource interface to retrieve data.
+  // See: MockDataSource for test data, R2DataSource for production R2 integration.
 
-    // Orders table
-    this.mockTables.set('com/example/api/orders', {
-      partitions: [
-        {
-          path: 'data/orders/p1.bin',
-          partitionValues: {},
-          sizeBytes: 20000,
-          rowCount: 200,
-          zoneMap: {
-            columns: {
-              id: { min: 1, max: 200, nullCount: 0, allNull: false },
-              customer_id: { min: 1, max: 50, nullCount: 0, allNull: false },
-              status: { min: 'cancelled', max: 'processing', nullCount: 0, allNull: false },
-              total: { min: 10, max: 1000, nullCount: 0, allNull: false },
-            },
-          },
-          isCached: false,
-        },
-      ],
-      rows: this.generateOrderRows(200),
-      schema: {
-        id: 'number',
-        customer_id: 'number',
-        status: 'string',
-        total: 'number',
-      },
-    });
-
-    // Events table with multiple partitions
-    this.mockTables.set('com/example/api/events', {
-      partitions: [
-        {
-          path: 'data/events/p1.bin',
-          partitionValues: { day: '2026-01-01' },
-          sizeBytes: 50000,
-          rowCount: 500,
-          zoneMap: {
-            columns: {
-              timestamp: { min: 1000, max: 2000, nullCount: 0, allNull: false },
-              user_id: { min: 'user-001', max: 'user-100', nullCount: 0, allNull: false },
-              event_type: { min: 'click', max: 'view', nullCount: 0, allNull: false },
-              value: { min: 0, max: 500, nullCount: 0, allNull: false },
-              day: { min: '2026-01-01', max: '2026-01-01', nullCount: 0, allNull: false },
-            },
-          },
-          isCached: false,
-        },
-        {
-          path: 'data/events/p2.bin',
-          partitionValues: { day: '2026-01-02' },
-          sizeBytes: 60000,
-          rowCount: 600,
-          zoneMap: {
-            columns: {
-              timestamp: { min: 2001, max: 3000, nullCount: 0, allNull: false },
-              user_id: { min: 'user-001', max: 'user-100', nullCount: 0, allNull: false },
-              event_type: { min: 'click', max: 'view', nullCount: 0, allNull: false },
-              value: { min: 0, max: 500, nullCount: 0, allNull: false },
-              day: { min: '2026-01-02', max: '2026-01-02', nullCount: 0, allNull: false },
-            },
-          },
-          isCached: false,
-        },
-      ],
-      rows: this.generateEventRows(1100),
-      schema: {
-        timestamp: 'number',
-        user_id: 'string',
-        event_type: 'string',
-        value: 'number',
-        day: 'string',
-      },
-    });
-
-    // Products table
-    this.mockTables.set('com/example/api/products', {
-      partitions: [
-        {
-          path: 'data/products/p1.bin',
-          partitionValues: {},
-          sizeBytes: 5000,
-          rowCount: 50,
-          zoneMap: {
-            columns: {
-              id: { min: 1, max: 50, nullCount: 0, allNull: false },
-              name: { min: 'Apple', max: 'Zebra', nullCount: 0, allNull: false },
-              price: { min: 10, max: 1000, nullCount: 0, allNull: false },
-            },
-          },
-          isCached: false,
-        },
-      ],
-      rows: this.generateProductRows(50),
-      schema: {
-        id: 'number',
-        name: 'string',
-        price: 'number',
-      },
-    });
-
-    // Profiles table with nested columns
-    this.mockTables.set('com/example/api/profiles', {
-      partitions: [
-        {
-          path: 'data/profiles/p1.bin',
-          partitionValues: {},
-          sizeBytes: 8000,
-          rowCount: 80,
-          zoneMap: { columns: {} },
-          isCached: false,
-        },
-      ],
-      rows: this.generateProfileRows(80),
-      schema: {
-        'user.name': 'string',
-        'user.email': 'string',
-        'address.city': 'string',
-      },
-    });
-
-    // Large table for performance tests
-    this.mockTables.set('com/example/api/large_table', {
-      partitions: [
-        {
-          path: 'data/large_table/p1.bin',
-          partitionValues: {},
-          sizeBytes: 1000000,
-          rowCount: 10000,
-          zoneMap: { columns: {} },
-          isCached: false,
-        },
-      ],
-      rows: this.generateLargeTableRows(10000),
-      schema: {
-        id: 'number',
-        data: 'string',
-      },
-    });
-
-    // Large events for streaming
-    this.mockTables.set('com/example/api/large_events', {
-      partitions: [
-        {
-          path: 'data/large_events/p1.bin',
-          partitionValues: {},
-          sizeBytes: 5000000,
-          rowCount: 100000,
-          zoneMap: { columns: {} },
-          isCached: false,
-        },
-      ],
-      rows: this.generateLargeEventRows(100000),
-      schema: {
-        id: 'number',
-        event: 'string',
-      },
-    });
-
-    // Empty table
-    this.mockTables.set('com/example/api/empty', {
-      partitions: [],
-      rows: [],
-      schema: {},
-    });
-
-    // Huge table (for timeout/memory tests)
-    this.mockTables.set('com/example/api/huge_table', {
-      partitions: [
-        {
-          path: 'data/huge_table/p1.bin',
-          partitionValues: {},
-          sizeBytes: 100000000,
-          rowCount: 10000000,
-          zoneMap: { columns: {} },
-          isCached: false,
-        },
-      ],
-      rows: [], // Don't actually generate data
-      schema: {
-        id: 'number',
-      },
-    });
-  }
-
-  private generateUserRows(count: number): Record<string, unknown>[] {
-    const statuses = ['active', 'inactive', 'suspended', 'banned'];
-    const countries = ['USA', 'UK', 'Canada', 'Australia', 'Germany'];
-    const names = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'];
-
-    return Array.from({ length: count }, (_, i) => ({
-      id: i + 1,
-      _id: `user-${i + 1}`,
-      _version: 1,
-      user_id: `user-${i + 1}`,
-      name: names[i % names.length],
-      email: `user${i + 1}@example.com`,
-      status: statuses[i % statuses.length],
-      age: 18 + (i % 60),
-      country: countries[i % countries.length],
-      deleted_at: i % 2 === 0 ? null : new Date(Date.now() - i * 1000000).toISOString(),
-      created_at: new Date(Date.now() - i * 86400000).toISOString(),
-      updated_at: new Date(Date.now() - i * 3600000).toISOString(),
-    }));
-  }
-
-  private generateOrderRows(count: number): Record<string, unknown>[] {
-    const statuses = ['pending', 'processing', 'completed', 'cancelled'];
-
-    return Array.from({ length: count }, (_, i) => ({
-      id: i + 1,
-      customer_id: (i % 50) + 1,
-      status: statuses[i % statuses.length],
-      total: 10 + (i * 5) % 990,
-    }));
-  }
-
-  private generateEventRows(count: number): Record<string, unknown>[] {
-    const eventTypes = ['click', 'view', 'purchase', 'signup'];
-
-    return Array.from({ length: count }, (_, i) => ({
-      timestamp: 1000 + i,
-      user_id: `user-${(i % 100) + 1}`,
-      event_type: eventTypes[i % eventTypes.length],
-      value: i % 500,
-      day: i < 500 ? '2026-01-01' : '2026-01-02',
-    }));
-  }
-
-  private generateProductRows(count: number): Record<string, unknown>[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: i + 1,
-      name: `Product ${i + 1}`,
-      price: 10 + (i * 20) % 990,
-    }));
-  }
-
-  private generateProfileRows(count: number): Record<string, unknown>[] {
-    const cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix'];
-
-    return Array.from({ length: count }, (_, i) => ({
-      'user.name': `User ${i + 1}`,
-      'user.email': `user${i + 1}@example.com`,
-      'address.city': cities[i % cities.length],
-    }));
-  }
-
-  private generateLargeTableRows(count: number): Record<string, unknown>[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: i + 1,
-      data: `data-${i + 1}`,
-    }));
-  }
-
-  private generateLargeEventRows(count: number): Record<string, unknown>[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: i + 1,
-      event: `event-${i + 1}`,
-    }));
-  }
+  // The following methods have been removed:
+  // - initializeMockData() - replaced by MockDataSource.initializeMockTables()
+  // - generateUserRows() - replaced by MockDataSource.generateUserRows()
+  // - generateOrderRows() - replaced by MockDataSource.generateOrderRows()
+  // - generateEventRows() - replaced by MockDataSource.generateEventRows()
+  // - generateProductRows() - replaced by MockDataSource.generateProductRows()
+  // - generateProfileRows() - replaced by MockDataSource.generateProfileRows()
+  // - generateLargeTableRows() - replaced by MockDataSource.generateLargeTableRows()
+  // - generateLargeEventRows() - replaced by MockDataSource.generateLargeEventRows()
 
   /**
    * Execute a query and return all results
@@ -1437,20 +1785,23 @@ export class QueryEngine {
     const startTime = Date.now();
     const planningStart = startTime;
 
+    // Validate column names to prevent injection attacks
+    validateQueryColumns(query);
+
     // Check timeout
     const timeoutMs = query.hints?.timeoutMs || this.config.defaultTimeoutMs || 30000;
     const memoryLimit = query.hints?.memoryLimitBytes || this.config.memoryLimitBytes || Infinity;
 
-    // Get table data
-    const tableData = this.mockTables.get(query.table);
+    // Get table data from data source
+    const tableMetadata = await this.dataSource.getTableMetadata(query.table);
 
     // Handle non-existent tables
-    if (!tableData) {
+    if (!tableMetadata) {
       throw new Error(`Table not found: ${query.table}`);
     }
 
-    // Handle huge table cases (timeout/memory errors)
-    if (query.table === 'com/example/api/huge_table') {
+    // Handle huge table cases (timeout/memory errors) for MockDataSource
+    if (this.dataSource instanceof MockDataSource && this.dataSource.isHugeTable(query.table)) {
       if (timeoutMs < 1000) {
         throw new Error('Query timeout exceeded');
       }
@@ -1459,23 +1810,36 @@ export class QueryEngine {
       }
     }
 
-    let { partitions, rows } = tableData;
+    // Get rows - for MockDataSource use optimized path, otherwise read from partitions
+    let rows: Record<string, unknown>[];
+    if (this.dataSource instanceof MockDataSource) {
+      rows = this.dataSource.getTableRows(query.table) ?? [];
+    } else {
+      // For R2DataSource or other sources, read from all partitions
+      rows = [];
+      for (const partition of tableMetadata.partitions) {
+        const partitionRows = await this.dataSource.readPartition(partition);
+        rows.push(...partitionRows);
+      }
+    }
+
+    let partitions = tableMetadata.partitions;
+    const schema = tableMetadata.schema;
     const planningTimeMs = Date.now() - planningStart;
     const ioStart = Date.now();
 
     // Validate column references in predicates
     if (query.predicates && rows.length > 0) {
-      const schema = tableData.schema;
       const firstRow = rows[0];
       for (const predicate of query.predicates) {
         // Skip validation for aggregation result columns (like total_spent in HAVING)
-        const isAggAlias = query.aggregations?.some(a => a.alias === predicate.column);
+        const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
         if (isAggAlias) continue;
 
         // Check if column exists in schema or first row
         const columnExists =
           (Object.keys(schema).length > 0 && schema[predicate.column]) ||
-          (predicate.column in firstRow) ||
+          predicate.column in firstRow ||
           predicate.column.includes('.'); // Allow nested columns
 
         if (!columnExists) {
@@ -1579,7 +1943,10 @@ export class QueryEngine {
     }
 
     const executionTimeMs = Date.now() - startTime;
-    const bytesRead = partitions.reduce((sum, p) => sum + p.sizeBytes, 0);
+    const bytesRead = partitions.reduce(
+      (sum: number, p: PartitionInfo) => sum + p.sizeBytes,
+      0
+    );
 
     // Create continuation token if there are more results
     let continuationToken: string | undefined;
@@ -1822,18 +2189,33 @@ export class QueryEngine {
    * Execute a query and stream results
    */
   async executeStream<T = Record<string, unknown>>(query: Query): Promise<StreamingQueryResult<T>> {
-    // Get table data
-    const tableData = this.mockTables.get(query.table);
+    // Validate column names to prevent injection attacks
+    validateQueryColumns(query);
 
-    if (!tableData) {
+    // Get table data from data source
+    const tableMetadata = await this.dataSource.getTableMetadata(query.table);
+
+    if (!tableMetadata) {
       throw new Error(`Table not found: ${query.table}`);
     }
 
-    let { rows } = tableData;
+    // Get rows from data source
+    let rows: Record<string, unknown>[];
+    if (this.dataSource instanceof MockDataSource) {
+      rows = this.dataSource.getTableRows(query.table) ?? [];
+    } else {
+      rows = [];
+      for (const partition of tableMetadata.partitions) {
+        const partitionRows = await this.dataSource.readPartition(partition);
+        rows.push(...partitionRows);
+      }
+    }
 
     // Apply filters
     if (query.predicates && query.predicates.length > 0) {
-      rows = rows.filter(row => this.matchesAllPredicates(row, query.predicates!));
+      rows = rows.filter((row: Record<string, unknown>) =>
+        this.matchesAllPredicates(row, query.predicates!)
+      );
     }
 
     // Apply sorting
@@ -1865,6 +2247,9 @@ export class QueryEngine {
       },
     };
 
+    // Capture metadata for stats closure
+    const partitionsForStats = tableMetadata.partitions;
+
     return {
       rows: rowIterator,
       async getStats(): Promise<QueryStats> {
@@ -1872,11 +2257,14 @@ export class QueryEngine {
           executionTimeMs: Date.now() - startTime,
           planningTimeMs: 0,
           ioTimeMs: 0,
-          partitionsScanned: tableData.partitions.length,
+          partitionsScanned: partitionsForStats.length,
           partitionsPruned: 0,
           rowsScanned: rowCount,
           rowsMatched: rowCount,
-          bytesRead: tableData.partitions.reduce((sum, p) => sum + p.sizeBytes, 0),
+          bytesRead: partitionsForStats.reduce(
+            (sum: number, p: PartitionInfo) => sum + p.sizeBytes,
+            0
+          ),
           bytesFromCache: 0,
           cacheHitRatio: 0,
           zoneMapEffectiveness: 0,
@@ -1898,6 +2286,8 @@ export class QueryEngine {
    * Create an execution plan without running the query
    */
   async plan(query: Query): Promise<QueryPlan> {
+    // Validate column names to prevent injection attacks
+    validateQueryColumns(query);
     return this.planner.createPlan(query);
   }
 

@@ -1,104 +1,39 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LakehouseWriter } from './writer.js';
 import type { R2Bucket, R2Object, WalEntry, PartitionMode } from './types.js';
+import type { DOStorage } from './writer.js';
+import {
+  createMockR2Bucket as createGenericMockR2Bucket,
+  createMockDOStorage as createGenericMockDOStorage,
+  generateWalEntry,
+} from '@evodb/test-utils';
 
-// Create mock R2 bucket
+// Wrap generic mock R2 bucket with vi.fn() spies for test assertions
 function createMockR2Bucket(): R2Bucket {
-  const storage = new Map<string, { data: Uint8Array; metadata?: Record<string, string> }>();
-
+  const baseBucket = createGenericMockR2Bucket();
   return {
-    put: vi.fn(async (key: string, value: ArrayBuffer | Uint8Array | string, options?: any) => {
-      const data = value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
-      storage.set(key, { data, metadata: options?.customMetadata });
-      return {
-        key,
-        version: '1',
-        size: data.length,
-        etag: 'mock-etag',
-        httpEtag: '"mock-etag"',
-        checksums: {},
-        uploaded: new Date(),
-      } as R2Object;
-    }),
-    get: vi.fn(async (key: string) => {
-      const item = storage.get(key);
-      if (!item) return null;
-      return {
-        key,
-        version: '1',
-        size: item.data.length,
-        etag: 'mock-etag',
-        httpEtag: '"mock-etag"',
-        checksums: {},
-        uploaded: new Date(),
-        customMetadata: item.metadata,
-        body: new ReadableStream(),
-        bodyUsed: false,
-        arrayBuffer: async () => item.data.buffer,
-        text: async () => new TextDecoder().decode(item.data),
-        json: async () => JSON.parse(new TextDecoder().decode(item.data)),
-        blob: async () => new Blob([item.data]),
-      };
-    }),
-    delete: vi.fn(async (keys: string | string[]) => {
-      const keyList = Array.isArray(keys) ? keys : [keys];
-      for (const key of keyList) {
-        storage.delete(key);
-      }
-    }),
-    list: vi.fn(async () => ({
-      objects: [],
-      truncated: false,
-      delimitedPrefixes: [],
-    })),
-    head: vi.fn(async (key: string) => {
-      const item = storage.get(key);
-      if (!item) return null;
-      return {
-        key,
-        version: '1',
-        size: item.data.length,
-        etag: 'mock-etag',
-        httpEtag: '"mock-etag"',
-        checksums: {},
-        uploaded: new Date(),
-        customMetadata: item.metadata,
-      };
-    }),
+    put: vi.fn(baseBucket.put),
+    get: vi.fn(baseBucket.get),
+    delete: vi.fn(baseBucket.delete),
+    list: vi.fn(baseBucket.list),
+    head: vi.fn(baseBucket.head),
+  } as R2Bucket;
+}
+
+// Wrap generic mock DO storage with vi.fn() spies for test assertions
+function createMockDOStorage(): DOStorage {
+  const baseStorage = createGenericMockDOStorage();
+  return {
+    get: vi.fn(baseStorage.get),
+    put: vi.fn(baseStorage.put),
+    delete: vi.fn(baseStorage.delete),
+    list: vi.fn(baseStorage.list),
   };
 }
 
-// Create mock DO storage
-function createMockDOStorage(): any {
-  const storage = new Map<string, unknown>();
-
-  return {
-    get: vi.fn(async <T>(key: string): Promise<T | undefined> => {
-      return storage.get(key) as T | undefined;
-    }),
-    put: vi.fn(async (key: string, value: unknown): Promise<void> => {
-      storage.set(key, value);
-    }),
-    delete: vi.fn(async (key: string): Promise<boolean> => {
-      return storage.delete(key);
-    }),
-    list: vi.fn(async (): Promise<Map<string, unknown>> => {
-      return new Map(storage);
-    }),
-  };
-}
-
-// Helper to create mock WAL entries
+// Helper to create mock WAL entries using test-utils
 function createMockWalEntry(lsn: number, data: string = 'test'): WalEntry {
-  const encoder = new TextEncoder();
-  return {
-    lsn: BigInt(lsn),
-    timestamp: BigInt(Date.now()),
-    op: 1, // Insert
-    flags: 0,
-    data: encoder.encode(data),
-    checksum: 12345,
-  };
+  return generateWalEntry(lsn, data) as WalEntry;
 }
 
 describe('LakehouseWriter', () => {

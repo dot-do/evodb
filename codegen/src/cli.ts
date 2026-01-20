@@ -19,6 +19,10 @@ import { pushCommand } from './commands/push.js';
 import { lockCommand } from './commands/lock.js';
 import { diffCommand } from './commands/diff.js';
 import type { Schema } from './types.js';
+import {
+  parseAndValidateSchema,
+  ValidationError,
+} from './validation.js';
 
 const program = new Command();
 
@@ -26,6 +30,20 @@ program
   .name('evodb')
   .description('EvoDB schema code generation CLI')
   .version('0.1.0-rc.1');
+
+/**
+ * Handle validation errors with CLI-friendly output
+ */
+function handleValidationError(error: unknown): never {
+  if (error instanceof ValidationError) {
+    console.error(`Error: ${error.toCliMessage()}`);
+  } else if (error instanceof Error) {
+    console.error(`Error: ${error.message}`);
+  } else {
+    console.error(`Error: ${String(error)}`);
+  }
+  process.exit(1);
+}
 
 /**
  * Load schema from configuration file
@@ -42,10 +60,13 @@ function loadSchema(cwd: string, db: string): Schema | null {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, 'utf8');
-        const config = JSON.parse(content);
-        return config.schema || config;
-      } catch {
-        // Continue to next config path
+        return parseAndValidateSchema(content, configPath);
+      } catch (error) {
+        // If it's a validation error, report it and exit
+        if (error instanceof ValidationError) {
+          handleValidationError(error);
+        }
+        // For other errors (e.g., file read errors), continue to next config path
       }
     }
   }
@@ -71,7 +92,12 @@ program
         console.error(`Error: Schema file not found: ${schemaPath}`);
         process.exit(1);
       }
-      schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+      try {
+        const content = readFileSync(schemaPath, 'utf8');
+        schema = parseAndValidateSchema(content, schemaPath);
+      } catch (error) {
+        handleValidationError(error);
+      }
     } else {
       schema = loadSchema(cwd, db);
     }
@@ -115,7 +141,12 @@ program
         console.error(`Error: Schema file not found: ${schemaPath}`);
         process.exit(1);
       }
-      schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+      try {
+        const content = readFileSync(schemaPath, 'utf8');
+        schema = parseAndValidateSchema(content, schemaPath);
+      } catch (error) {
+        handleValidationError(error);
+      }
     } else {
       schema = loadSchema(cwd, db);
     }
@@ -162,7 +193,12 @@ program
         console.error(`Error: Schema file not found: ${schemaPath}`);
         process.exit(1);
       }
-      schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+      try {
+        const content = readFileSync(schemaPath, 'utf8');
+        schema = parseAndValidateSchema(content, schemaPath);
+      } catch (error) {
+        handleValidationError(error);
+      }
     } else {
       schema = loadSchema(cwd, db);
     }
@@ -201,7 +237,12 @@ program
         console.error(`Error: Schema file not found: ${schemaPath}`);
         process.exit(1);
       }
-      schema = JSON.parse(readFileSync(schemaPath, 'utf8'));
+      try {
+        const content = readFileSync(schemaPath, 'utf8');
+        schema = parseAndValidateSchema(content, schemaPath);
+      } catch (error) {
+        handleValidationError(error);
+      }
     } else {
       schema = loadSchema(cwd, db);
     }

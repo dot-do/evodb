@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CDCBuffer, MultiTableBuffer, BackpressureController, SizeBasedBuffer } from './buffer.js';
 import type { WalEntry } from '@evodb/core';
+import type { R2Bucket } from './types.js';
 
 // Helper to create mock WAL entries
 function createMockWalEntry(lsn: number, data: string = 'test'): WalEntry {
@@ -178,7 +179,7 @@ describe('CDCBuffer', () => {
   describe('fromWriterOptions', () => {
     it('should create buffer from writer options', () => {
       const buffer = CDCBuffer.fromWriterOptions({
-        r2Bucket: {} as any,
+        r2Bucket: {} as unknown as R2Bucket,
         tableLocation: 'test',
         partitionMode: 'do-sqlite',
         bufferSize: 5000,

@@ -336,3 +336,255 @@ export const FOOTER_SIZE = 32;
 export function assertNever(value: never, message?: string): never {
   throw new Error(message ?? `Unexpected value: ${JSON.stringify(value)}`);
 }
+
+// =============================================================================
+// Unified Table Schema Types (for lakehouse/manifest layer)
+// =============================================================================
+
+/**
+ * String-based column types for table schemas (human-readable format).
+ * Used in table manifests and lakehouse operations.
+ * Maps to Core `Type` enum for low-level columnar operations.
+ */
+export type TableColumnType =
+  | 'null'
+  | 'boolean'
+  | 'int32'
+  | 'int64'
+  | 'float64'
+  | 'string'
+  | 'binary'
+  | 'timestamp'
+  | 'date'
+  | 'uuid'
+  | 'json'
+  | { type: 'array'; elementType: TableColumnType }
+  | { type: 'map'; keyType: TableColumnType; valueType: TableColumnType }
+  | { type: 'struct'; fields: TableSchemaColumn[] };
+
+/**
+ * Column definition for table schemas (high-level format).
+ * Uses string-based types and `name` field for manifest compatibility.
+ */
+export interface TableSchemaColumn {
+  /** Column name (use dot-notation for nested: "user.address.city") */
+  name: string;
+  /** Column data type */
+  type: TableColumnType;
+  /** Whether column accepts null values */
+  nullable: boolean;
+  /** Optional default value */
+  defaultValue?: unknown;
+  /** Optional documentation */
+  doc?: string;
+}
+
+/**
+ * Table schema definition (high-level format for manifests).
+ * Used in lakehouse operations, table catalogs, and metadata.
+ *
+ * Different from Core `Schema` which uses:
+ * - `id` instead of `schemaId`
+ * - `path` instead of `name` in columns
+ * - `Type` enum instead of string types
+ */
+export interface TableSchema {
+  /** Schema version identifier */
+  schemaId: number;
+  /** Schema version number */
+  version: number;
+  /** Column definitions */
+  columns: TableSchemaColumn[];
+  /** Creation timestamp (ms since epoch) */
+  createdAt: number;
+}
+
+// =============================================================================
+// Unified RPC WAL Entry Types (for DO-to-DO communication)
+// =============================================================================
+
+/**
+ * WAL operation types for RPC communication (string-based).
+ */
+export type RpcWalOperation = 'INSERT' | 'UPDATE' | 'DELETE';
+
+/**
+ * Numeric codes for WAL operations (for binary encoding).
+ */
+export const RpcWalOperationCode = {
+  INSERT: 0,
+  UPDATE: 1,
+  DELETE: 2,
+} as const;
+
+export type RpcWalOperationCodeValue = (typeof RpcWalOperationCode)[RpcWalOperation];
+
+/**
+ * WAL entry for RPC communication (high-level format).
+ * Used for DO-to-DO CDC streaming and parent aggregation.
+ *
+ * Different from Core `WalEntry` which uses:
+ * - `lsn: bigint` instead of `sequence: number`
+ * - `timestamp: bigint` instead of `timestamp: number`
+ * - `op: WalOp` enum instead of `operation: string`
+ * - `data: Uint8Array` instead of `before`/`after` JSON
+ */
+export interface RpcWalEntry<T = unknown> {
+  /** Monotonically increasing sequence number within the source DO */
+  sequence: number;
+  /** Unix timestamp in milliseconds when the change occurred */
+  timestamp: number;
+  /** Type of database operation */
+  operation: RpcWalOperation;
+  /** Table name where the change occurred */
+  table: string;
+  /** Primary key or row identifier */
+  rowId: string;
+  /** Row data before the change (for UPDATE/DELETE) */
+  before?: T;
+  /** Row data after the change (for INSERT/UPDATE) */
+  after?: T;
+  /** Optional metadata (e.g., transaction ID, user ID) */
+  metadata?: Record<string, unknown>;
+}
+
+// =============================================================================
+// Type Conversion Utilities
+// =============================================================================
+
+/**
+ * Convert Core Type enum to TableColumnType string.
+ */
+export function typeEnumToString(type: Type): TableColumnType {
+  switch (type) {
+    case Type.Null: return 'null';
+    case Type.Bool: return 'boolean';
+    case Type.Int32: return 'int32';
+    case Type.Int64: return 'int64';
+    case Type.Float64: return 'float64';
+    case Type.String: return 'string';
+    case Type.Binary: return 'binary';
+    case Type.Timestamp: return 'timestamp';
+    case Type.Date: return 'date';
+    case Type.Array: return 'json'; // Arrays need element type info
+    case Type.Object: return 'json'; // Objects are stored as JSON
+    default: return assertNever(type, `Unknown type enum: ${type}`);
+  }
+}
+
+/**
+ * Convert TableColumnType string to Core Type enum.
+ * Complex types (array, map, struct) are stored as Object/JSON.
+ */
+export function stringToTypeEnum(type: TableColumnType): Type {
+  if (typeof type === 'object') {
+    // Complex types stored as Object/JSON
+    return Type.Object;
+  }
+  switch (type) {
+    case 'null': return Type.Null;
+    case 'boolean': return Type.Bool;
+    case 'int32': return Type.Int32;
+    case 'int64': return Type.Int64;
+    case 'float64': return Type.Float64;
+    case 'string': return Type.String;
+    case 'binary': return Type.Binary;
+    case 'timestamp': return Type.Timestamp;
+    case 'date': return Type.Date;
+    case 'uuid': return Type.String; // UUIDs stored as strings
+    case 'json': return Type.Object;
+    default: return assertNever(type, `Unknown type string: ${type}`);
+  }
+}
+
+/**
+ * Convert Core Schema to TableSchema format.
+ */
+export function schemaToTableSchema(schema: Schema, createdAt?: number): TableSchema {
+  return {
+    schemaId: schema.id,
+    version: schema.version,
+    columns: schema.columns.map(col => ({
+      name: col.path,
+      type: typeEnumToString(col.type),
+      nullable: col.nullable,
+      defaultValue: col.defaultValue,
+    })),
+    createdAt: createdAt ?? Date.now(),
+  };
+}
+
+/**
+ * Convert TableSchema to Core Schema format.
+ */
+export function tableSchemaToSchema(tableSchema: TableSchema): Schema {
+  return {
+    id: tableSchema.schemaId,
+    version: tableSchema.version,
+    parentVersion: tableSchema.version > 1 ? tableSchema.version - 1 : undefined,
+    columns: tableSchema.columns.map(col => ({
+      path: col.name,
+      type: stringToTypeEnum(col.type),
+      nullable: col.nullable,
+      defaultValue: col.defaultValue,
+    })),
+  };
+}
+
+/**
+ * Convert Core WalEntry to RpcWalEntry format.
+ * Note: data must be JSON-parseable for this conversion.
+ */
+export function walEntryToRpcEntry<T = unknown>(
+  entry: WalEntry,
+  table: string,
+  rowId: string
+): RpcWalEntry<T> {
+  const operation: RpcWalOperation =
+    entry.op === WalOp.Insert ? 'INSERT' :
+    entry.op === WalOp.Update ? 'UPDATE' :
+    'DELETE';
+
+  let after: T | undefined;
+  try {
+    const text = new TextDecoder().decode(entry.data);
+    after = JSON.parse(text) as T;
+  } catch {
+    // Data is not JSON, leave undefined
+  }
+
+  return {
+    sequence: Number(entry.lsn),
+    timestamp: Number(entry.timestamp),
+    operation,
+    table,
+    rowId,
+    after,
+  };
+}
+
+/**
+ * Convert RpcWalEntry to Core WalEntry format.
+ */
+export function rpcEntryToWalEntry<T>(
+  entry: RpcWalEntry<T>,
+  checksum = 0
+): WalEntry {
+  const op: WalOp =
+    entry.operation === 'INSERT' ? WalOp.Insert :
+    entry.operation === 'UPDATE' ? WalOp.Update :
+    WalOp.Delete;
+
+  const data = new TextEncoder().encode(
+    JSON.stringify(entry.after ?? entry.before ?? {})
+  );
+
+  return {
+    lsn: BigInt(entry.sequence),
+    timestamp: BigInt(entry.timestamp),
+    op,
+    flags: 0,
+    data,
+    checksum,
+  };
+}

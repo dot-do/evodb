@@ -5,10 +5,11 @@
  * Used for change detection and migration planning.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { LockOptions, LockResult, Schema, SchemaLock } from '../types.js';
+import { parseJson, ValidationError } from '../validation.js';
 
 // Re-export types for external use
 export type { LockOptions, LockResult };
@@ -30,10 +31,15 @@ function getNextVersion(evodbDir: string, db: string): number {
 
   if (existsSync(lockPath)) {
     try {
-      const { readFileSync } = require('node:fs');
-      const existing: SchemaLock = JSON.parse(readFileSync(lockPath, 'utf8'));
-      return (existing.version || 0) + 1;
+      const content = readFileSync(lockPath, 'utf8');
+      const existing = parseJson(content, lockPath) as Partial<SchemaLock>;
+      // Validate version is a number
+      if (typeof existing?.version === 'number' && Number.isInteger(existing.version)) {
+        return existing.version + 1;
+      }
+      return 1;
     } catch {
+      // If we can't parse the existing lock file, start fresh
       return 1;
     }
   }
@@ -79,11 +85,17 @@ export async function lockCommand(options: LockOptions): Promise<LockResult> {
       schemaHash,
     };
   } catch (error) {
+    const errorMessage = error instanceof ValidationError
+      ? error.toCliMessage()
+      : error instanceof Error
+        ? error.message
+        : String(error);
+
     return {
       success: false,
       lockFile,
       schemaHash: '',
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     };
   }
 }

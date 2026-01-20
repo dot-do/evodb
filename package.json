@@ -31,7 +31,9 @@
     "snippets-chain",
     "snippets-lance",
     "benchmark",
-    "codegen"
+    "codegen",
+    "e2e",
+    "test-utils"
   ],
   "scripts": {
     "build": "pnpm -r build",

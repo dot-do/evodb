@@ -489,3 +489,216 @@ export class QueryEngine {
 export function createQueryEngine(config: ReaderConfig): QueryEngine {
   return new QueryEngine(config);
 }
+
+// =============================================================================
+// QueryExecutor Interface Implementation
+// =============================================================================
+
+// Re-export QueryExecutor interface types from @evodb/core
+export type {
+  QueryExecutor,
+  CacheableQueryExecutor,
+  ExecutorQuery,
+  ExecutorResult,
+  ExecutorStats,
+  ExecutorPlan,
+  ExecutorCost,
+  ExecutorCacheStats,
+} from '@evodb/core';
+
+import type {
+  CacheableQueryExecutor,
+  ExecutorQuery,
+  ExecutorResult,
+  ExecutorStats,
+  ExecutorPlan,
+  ExecutorCost,
+  ExecutorCacheStats,
+} from '@evodb/core';
+import { toReaderQueryRequest } from '@evodb/core';
+
+/**
+ * QueryExecutorAdapter wraps a QueryEngine to provide the unified QueryExecutor interface.
+ *
+ * This adapter allows @evodb/reader's QueryEngine to be used interchangeably with
+ * @evodb/query's QueryEngine when only basic query execution is needed.
+ *
+ * @example
+ * ```typescript
+ * import { createQueryEngine, QueryExecutorAdapter } from '@evodb/reader';
+ *
+ * const reader = createQueryEngine({ bucket: env.R2_BUCKET });
+ * const executor: QueryExecutor = new QueryExecutorAdapter(reader);
+ *
+ * // Use unified interface
+ * const result = await executor.execute({
+ *   table: 'users',
+ *   predicates: [{ column: 'status', operator: 'eq', value: 'active' }],
+ *   columns: ['id', 'name'],
+ *   limit: 100,
+ * });
+ * ```
+ */
+export class QueryExecutorAdapter implements CacheableQueryExecutor {
+  private readonly engine: QueryEngine;
+
+  constructor(engine: QueryEngine) {
+    this.engine = engine;
+  }
+
+  /**
+   * Execute a query using the unified QueryExecutor interface.
+   */
+  async execute<T = Record<string, unknown>>(
+    executorQuery: ExecutorQuery
+  ): Promise<ExecutorResult<T>> {
+    // Convert ExecutorQuery to internal QueryRequest format
+    const converted = toReaderQueryRequest(executorQuery);
+    const request: QueryRequest = {
+      table: converted.table,
+      columns: converted.columns,
+      filters: converted.filters?.map(f => ({
+        column: f.column,
+        operator: f.operator as FilterPredicate['operator'],
+        value: f.value,
+        values: f.values,
+        lowerBound: f.lowerBound,
+        upperBound: f.upperBound,
+      })),
+      groupBy: converted.groupBy,
+      aggregates: converted.aggregates?.map(a => ({
+        function: a.function as AggregateSpec['function'],
+        column: a.column,
+        alias: a.alias,
+      })),
+      orderBy: converted.orderBy?.map(o => ({
+        column: o.column,
+        direction: o.direction,
+        nullsFirst: o.nullsFirst,
+      })),
+      limit: converted.limit,
+      offset: converted.offset,
+      timeoutMs: converted.timeoutMs,
+    };
+
+    // Execute query using internal method
+    const result = await this.engine.query(request);
+
+    // Convert internal QueryResult to ExecutorResult format
+    const rows: T[] = result.rows.map(row => {
+      const obj: Record<string, unknown> = {};
+      for (let i = 0; i < result.columns.length; i++) {
+        obj[result.columns[i]] = row[i];
+      }
+      return obj as T;
+    });
+
+    const executorStats: ExecutorStats = {
+      executionTimeMs: result.stats.executionTimeMs,
+      rowsScanned: result.stats.rowsScanned,
+      rowsReturned: result.stats.rowsReturned,
+      bytesRead: result.stats.bytesFromR2 + result.stats.bytesFromCache,
+      cacheHitRatio: result.stats.cacheHitRatio,
+      blocksScanned: result.stats.blocksScanned,
+      blocksSkipped: result.stats.blocksSkipped,
+      bytesFromR2: result.stats.bytesFromR2,
+      bytesFromCache: result.stats.bytesFromCache,
+    };
+
+    return {
+      rows,
+      columns: result.columns,
+      totalRowCount: result.totalRows ?? rows.length,
+      hasMore: false,
+      stats: executorStats,
+    };
+  }
+
+  /**
+   * Explain the execution plan for a query without executing it.
+   */
+  async explain(executorQuery: ExecutorQuery): Promise<ExecutorPlan> {
+    const table = await this.engine.getTableMetadata(executorQuery.table);
+    const rowCount = table.rowCount;
+    const blockCount = table.blockPaths.length;
+    const estimatedBytes = blockCount * 100 * 1024;
+
+    let outputRows = rowCount;
+    if (executorQuery.predicates && executorQuery.predicates.length > 0) {
+      outputRows = Math.floor(rowCount * Math.pow(0.5, executorQuery.predicates.length));
+    }
+    if (executorQuery.limit) {
+      outputRows = Math.min(outputRows, executorQuery.limit);
+    }
+
+    const estimatedCost: ExecutorCost = {
+      rowsToScan: rowCount,
+      bytesToRead: estimatedBytes,
+      outputRows,
+      totalCost: rowCount * 0.001 + estimatedBytes * 0.0001,
+    };
+
+    return {
+      planId: `reader-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      query: executorQuery,
+      estimatedCost,
+      createdAt: Date.now(),
+      description: `Scan ${blockCount} blocks from table "${executorQuery.table}" (${rowCount} rows)`,
+      partitionsSelected: blockCount,
+      partitionsPruned: 0,
+      usesZoneMaps: false,
+      usesBloomFilters: false,
+    };
+  }
+
+  /**
+   * Get cache statistics in the unified ExecutorCacheStats format.
+   */
+  getCacheStats(): ExecutorCacheStats {
+    const stats = this.engine.getCacheStats();
+    return {
+      hits: stats.hits,
+      misses: stats.misses,
+      bytesFromCache: stats.bytesServedFromCache,
+      bytesFromStorage: stats.bytesReadFromR2,
+      hitRatio: stats.hits + stats.misses > 0
+        ? stats.hits / (stats.hits + stats.misses)
+        : 0,
+    };
+  }
+
+  /**
+   * Clear the query cache.
+   */
+  async clearCache(): Promise<void> {
+    this.engine.resetCacheStats();
+  }
+
+  /**
+   * Invalidate specific cache entries.
+   */
+  async invalidateCache(paths: string[]): Promise<void> {
+    if (paths.length > 0) {
+      this.engine.resetCacheStats();
+    }
+  }
+}
+
+/**
+ * Create a QueryExecutor adapter from a ReaderConfig.
+ *
+ * This is a convenience function that creates both the QueryEngine
+ * and wraps it in a QueryExecutorAdapter.
+ *
+ * @example
+ * ```typescript
+ * import { createQueryExecutor, type QueryExecutor } from '@evodb/reader';
+ *
+ * const executor: QueryExecutor = createQueryExecutor({ bucket: env.R2_BUCKET });
+ * const result = await executor.execute({ table: 'users', limit: 10 });
+ * ```
+ */
+export function createQueryExecutor(config: ReaderConfig): QueryExecutorAdapter {
+  const engine = new QueryEngine(config);
+  return new QueryExecutorAdapter(engine);
+}

@@ -150,6 +150,40 @@ export {
   createLakehouseParentDOClass,
 } from './parent-do.js';
 
+// Sharding for horizontal scaling
+export {
+  // ShardRouter - Hash-based routing to writer shards
+  ShardRouter,
+  createShardRouter,
+  RECOMMENDED_SHARD_COUNTS,
+  DEFAULT_SHARD_CONFIG,
+  type ShardRouterConfig,
+  type ShardKey,
+  type ShardInfo,
+  type ShardStats,
+} from './shard-router.js';
+
+export {
+  // ShardRegistry - Shard discovery and metadata for readers
+  ShardRegistry,
+  createShardRegistry,
+  type ShardMetadata,
+  type ShardAssignment,
+  type RegistryStats,
+  type ShardQueryResult,
+  type ShardedBlockLocation,
+} from './shard-registry.js';
+
+export {
+  // ShardedParentDO - Sharded writer coordinator
+  ShardCoordinator,
+  ShardWriterDO,
+  createShardCoordinatorClass,
+  createShardWriterDOClass,
+  type ShardedParentDOEnv,
+  type ShardedParentDOConfig,
+} from './sharded-parent-do.js';
+
 // Re-export key types from @evodb/core for convenience
 export {
   type WalEntry,

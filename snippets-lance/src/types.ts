@@ -28,6 +28,110 @@ export const SNIPPETS_CONSTRAINTS: SnippetsConstraints = {
 };
 
 // ==========================================
+// Allocation Bounds (security limits)
+// ==========================================
+
+/**
+ * Maximum reasonable sizes for allocations based on header values.
+ * These limits prevent OOM attacks from malicious/corrupted files.
+ *
+ * All limits are designed to be well under the 32MB Snippets memory limit
+ * while still supporting legitimate large indices.
+ */
+export const ALLOCATION_LIMITS = {
+  /** Maximum number of partitions (16K is very large for IVF) */
+  MAX_PARTITIONS: 16_384,
+
+  /** Maximum vector dimension (4096 covers most embedding models) */
+  MAX_DIMENSION: 4_096,
+
+  /** Maximum number of sub-vectors (256 is extremely granular) */
+  MAX_SUB_VECTORS: 256,
+
+  /** Maximum sub-dimension (typically dimension / numSubVectors) */
+  MAX_SUB_DIM: 256,
+
+  /** Maximum PQ bits (8 is standard, 16 would be unusual) */
+  MAX_NUM_BITS: 16,
+
+  /** Maximum vectors per partition (1M is very large) */
+  MAX_VECTORS_PER_PARTITION: 1_000_000,
+
+  /** Maximum centroid size in bytes (16K partitions * 4096 dim * 4 bytes = 256MB, cap at 64MB) */
+  MAX_CENTROID_SIZE_BYTES: 67_108_864,
+
+  /** Maximum PQ codebook size in bytes (256 codes * 256 subvectors * 256 subdim * 4 = 64MB, cap at 16MB) */
+  MAX_PQ_CODEBOOK_SIZE_BYTES: 16_777_216,
+
+  /** Maximum partition meta size in bytes (16K partitions * 20 bytes = 320KB, cap at 1MB) */
+  MAX_PARTITION_META_SIZE_BYTES: 1_048_576,
+
+  /** Maximum partition data size in bytes per partition (cap at 32MB) */
+  MAX_PARTITION_DATA_SIZE_BYTES: 33_554_432,
+} as const;
+
+/**
+ * Validate that a size is within reasonable bounds before allocation.
+ * Uses safe BigInt to Number conversion to prevent precision loss for large values.
+ * @throws Error if size exceeds limit or if BigInt value exceeds Number.MAX_SAFE_INTEGER
+ */
+export function validateAllocationSize(
+  size: number | bigint,
+  limit: number,
+  context: string
+): void {
+  let sizeNum: number;
+
+  if (typeof size === 'bigint') {
+    // Check for precision loss before converting
+    if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        `${context} exceeds Number.MAX_SAFE_INTEGER (${size} > ${Number.MAX_SAFE_INTEGER}). ` +
+        `Values this large are not supported.`
+      );
+    }
+    if (size < 0n) {
+      throw new Error(`Invalid ${context}: size must be non-negative, got ${size}`);
+    }
+    sizeNum = Number(size);
+  } else {
+    sizeNum = size;
+  }
+
+  if (!Number.isFinite(sizeNum) || sizeNum < 0) {
+    throw new Error(`Invalid ${context}: size must be a non-negative finite number, got ${size}`);
+  }
+
+  if (sizeNum > limit) {
+    throw new Error(
+      `${context} exceeds maximum allowed size: ${sizeNum.toLocaleString()} > ${limit.toLocaleString()} bytes. ` +
+      `This may indicate a corrupted or malicious file.`
+    );
+  }
+}
+
+/**
+ * Validate a count value is within reasonable bounds
+ * @throws Error if count exceeds limit
+ */
+export function validateCount(
+  count: number,
+  limit: number,
+  context: string
+): void {
+  if (!Number.isFinite(count) || count < 0 || !Number.isInteger(count)) {
+    throw new Error(`Invalid ${context}: must be a non-negative integer, got ${count}`);
+  }
+
+  if (count > limit) {
+    throw new Error(
+      `${context} exceeds maximum allowed: ${count.toLocaleString()} > ${limit.toLocaleString()}. ` +
+      `This may indicate a corrupted or malicious file.`
+    );
+  }
+}
+
+// ==========================================
 // Edge Cache Types
 // ==========================================
 

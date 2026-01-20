@@ -10,7 +10,6 @@ import type {
   PushResult,
   Schema,
   TableDefinition,
-  ColumnDefinition,
   SqlType,
 } from '../types.js';
 
@@ -120,7 +119,8 @@ function validateSchema(schema: Schema): { valid: boolean; errors: string[] } {
  * Push command: Validate and push schema changes
  */
 export async function pushCommand(options: PushOptions): Promise<PushResult> {
-  const { db, cwd, schema, dryRun = false } = options;
+  const { schema, dryRun = false } = options;
+  // Note: db and cwd are reserved for future use when connecting to actual database
 
   try {
     // Validate schema

@@ -39,6 +39,9 @@
     "type": "git",
     "directory": "edge-cache"
   },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
   "peerDependencies": {
     "@cloudflare/workers-types": "^4.0.0"
   },

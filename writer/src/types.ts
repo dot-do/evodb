@@ -4,6 +4,24 @@
  */
 
 import type { WalOp, WalEntry as CoreWalEntry, Schema as CoreSchema, BlockOptions as CoreBlockOptions } from '@evodb/core';
+import {
+  BUFFER_SIZE_2MB,
+  BUFFER_SIZE_4MB,
+  BUFFER_SIZE_16MB,
+  BUFFER_SIZE_32MB,
+  BUFFER_SIZE_128MB,
+  BUFFER_SIZE_256MB,
+  BUFFER_SIZE_500MB,
+  BUFFER_SIZE_512MB,
+  BUFFER_SIZE_1GB,
+  BUFFER_SIZE_2GB,
+  BUFFER_SIZE_5GB,
+  DEFAULT_BUFFER_SIZE,
+  TIMEOUT_5S,
+  MIN_COMPACT_BLOCKS,
+  DEFAULT_MAX_RETRIES,
+  TIMEOUT_100MS,
+} from '@evodb/core';
 
 // Re-export types for consumers
 export type WalEntry = CoreWalEntry;
@@ -27,24 +45,24 @@ export type PartitionMode = 'do-sqlite' | 'edge-cache' | 'enterprise';
  */
 export const PARTITION_MODES: Record<PartitionMode, PartitionModeConfig> = {
   'do-sqlite': {
-    targetBlockSize: 2 * 1024 * 1024,      // 2MB
-    maxBlockSize: 4 * 1024 * 1024,          // 4MB
-    targetCompactSize: 16 * 1024 * 1024,    // 16MB
-    maxCompactSize: 32 * 1024 * 1024,       // 32MB
+    targetBlockSize: BUFFER_SIZE_2MB,
+    maxBlockSize: BUFFER_SIZE_4MB,
+    targetCompactSize: BUFFER_SIZE_16MB,
+    maxCompactSize: BUFFER_SIZE_32MB,
     description: 'Optimized for DO SQLite blob storage',
   },
   'edge-cache': {
-    targetBlockSize: 128 * 1024 * 1024,     // 128MB
-    maxBlockSize: 256 * 1024 * 1024,        // 256MB
-    targetCompactSize: 500 * 1024 * 1024,   // 500MB
-    maxCompactSize: 512 * 1024 * 1024,      // 512MB
+    targetBlockSize: BUFFER_SIZE_128MB,
+    maxBlockSize: BUFFER_SIZE_256MB,
+    targetCompactSize: BUFFER_SIZE_500MB,
+    maxCompactSize: BUFFER_SIZE_512MB,
     description: 'Optimized for standard Cloudflare edge cache',
   },
   'enterprise': {
-    targetBlockSize: 1024 * 1024 * 1024,    // 1GB
-    maxBlockSize: 2 * 1024 * 1024 * 1024,   // 2GB
-    targetCompactSize: 5 * 1024 * 1024 * 1024, // 5GB
-    maxCompactSize: 5 * 1024 * 1024 * 1024,    // 5GB
+    targetBlockSize: BUFFER_SIZE_1GB,
+    maxBlockSize: BUFFER_SIZE_2GB,
+    targetCompactSize: BUFFER_SIZE_5GB,
+    maxCompactSize: BUFFER_SIZE_5GB,
     description: 'Optimized for enterprise edge cache (5GB limit)',
   },
 };
@@ -126,11 +144,11 @@ export interface ResolvedWriterOptions extends Omit<WriterOptions, 'partitionMod
 export const DEFAULT_WRITER_OPTIONS: Omit<WriterOptions, 'r2Bucket' | 'tableLocation'> = {
   schemaId: 0,
   partitionMode: 'do-sqlite',
-  bufferSize: 10000,
-  bufferTimeout: 5000,
-  minCompactBlocks: 4,
-  maxRetries: 3,
-  retryBackoffMs: 100,
+  bufferSize: DEFAULT_BUFFER_SIZE,
+  bufferTimeout: TIMEOUT_5S,
+  minCompactBlocks: MIN_COMPACT_BLOCKS,
+  maxRetries: DEFAULT_MAX_RETRIES,
+  retryBackoffMs: TIMEOUT_100MS,
 };
 
 /**

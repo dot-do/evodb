@@ -15,7 +15,7 @@ import type {
   PartitionMode,
 } from './index.js';
 
-import { DEFAULT_CONFIG, DEFAULT_TTL, isWithinSizeLimit } from './index.js';
+import { DEFAULT_CONFIG, isWithinSizeLimit } from './index.js';
 import { checkCacheStatus, warmPartition } from './prefetch.js';
 
 // ============================================================================
@@ -53,6 +53,39 @@ export interface PartitionPredicate {
 }
 
 /**
+ * Error information for prefetch failures
+ */
+export interface PrefetchError {
+  /** Partition path that failed */
+  partitionPath: string;
+  /** Error that occurred */
+  error: Error;
+  /** Timestamp of the error */
+  timestamp: Date;
+  /** Operation that failed (e.g., 'warmPartition', 'checkCacheStatus') */
+  operation: string;
+}
+
+/**
+ * Error statistics for prefetch operations
+ */
+export interface PrefetchErrorStats {
+  /** Total number of errors since last reset */
+  totalErrors: number;
+  /** Number of errors in the last minute */
+  errorsLastMinute: number;
+  /** Number of errors in the last hour */
+  errorsLastHour: number;
+  /** Recent errors (last 100) */
+  recentErrors: PrefetchError[];
+}
+
+/**
+ * Callback for handling prefetch errors
+ */
+export type PrefetchErrorCallback = (error: PrefetchError) => void;
+
+/**
  * Options for the cache-aware planner
  */
 export interface PlannerOptions {
@@ -66,6 +99,14 @@ export interface PlannerOptions {
   enablePredictivePrefetch?: boolean;
   /** Partition mode for new prefetch operations */
   partitionMode?: PartitionMode;
+  /** Callback for prefetch errors (called for each error) */
+  onPrefetchError?: PrefetchErrorCallback;
+  /** Enable verbose logging for prefetch operations */
+  verboseLogging?: boolean;
+  /** Maximum number of entries to track in access patterns (default: 10000) */
+  maxAccessPatternEntries?: number;
+  /** Maximum number of entries to track in cache entries (default: 10000) */
+  maxCacheEntries?: number;
 }
 
 /**
@@ -80,6 +121,19 @@ interface AccessPattern {
 }
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/** Maximum number of recent errors to keep */
+const MAX_RECENT_ERRORS = 100;
+
+/** Time window for "last minute" error count (in milliseconds) */
+const ONE_MINUTE_MS = 60 * 1000;
+
+/** Time window for "last hour" error count (in milliseconds) */
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+// ============================================================================
 // CacheAwarePlanner Class
 // ============================================================================
 
@@ -89,7 +143,12 @@ interface AccessPattern {
  */
 export class CacheAwarePlanner {
   private config: EdgeCacheConfig;
-  private options: Required<PlannerOptions>;
+  private options: Required<Omit<PlannerOptions, 'onPrefetchError' | 'verboseLogging' | 'maxAccessPatternEntries' | 'maxCacheEntries'>> & {
+    onPrefetchError?: PrefetchErrorCallback;
+    verboseLogging: boolean;
+    maxAccessPatternEntries: number;
+    maxCacheEntries: number;
+  };
 
   /** Cache entries tracking current cache state */
   private cacheEntries = new Map<string, CacheEntry>();
@@ -103,6 +162,12 @@ export class CacheAwarePlanner {
   /** Prefetch in progress */
   private prefetchInProgress = new Set<string>();
 
+  /** Recent prefetch errors for tracking/debugging */
+  private prefetchErrors: PrefetchError[] = [];
+
+  /** Total error count since last reset */
+  private totalErrorCount = 0;
+
   constructor(options: PlannerOptions = {}) {
     this.config = {
       ...DEFAULT_CONFIG,
@@ -115,6 +180,10 @@ export class CacheAwarePlanner {
       minTtlThreshold: options.minTtlThreshold ?? 3600, // 1 hour
       enablePredictivePrefetch: options.enablePredictivePrefetch ?? true,
       partitionMode: options.partitionMode ?? 'standard',
+      onPrefetchError: options.onPrefetchError,
+      verboseLogging: options.verboseLogging ?? false,
+      maxAccessPatternEntries: options.maxAccessPatternEntries ?? 10000,
+      maxCacheEntries: options.maxCacheEntries ?? 10000,
     };
   }
 
@@ -207,6 +276,7 @@ export class CacheAwarePlanner {
    */
   updateCacheState(partitionPath: string, status: CacheStatus): void {
     const existing = this.cacheEntries.get(partitionPath);
+    const isNewEntry = !existing;
 
     this.cacheEntries.set(partitionPath, {
       partitionPath,
@@ -215,6 +285,11 @@ export class CacheAwarePlanner {
       accessCount: (existing?.accessCount ?? 0) + 1,
       hotnessScore: this.calculateHotness(partitionPath),
     });
+
+    // Evict oldest entries if we've exceeded the limit (only on new entries)
+    if (isNewEntry) {
+      this.evictCacheEntriesIfNeeded();
+    }
   }
 
   /**
@@ -234,6 +309,7 @@ export class CacheAwarePlanner {
 
     // Otherwise, check actual cache status
     const status = await checkCacheStatus(partitionPath);
+    const isNewEntry = !existing;
 
     const entry: CacheEntry = {
       partitionPath,
@@ -244,6 +320,12 @@ export class CacheAwarePlanner {
     };
 
     this.cacheEntries.set(partitionPath, entry);
+
+    // Evict oldest entries if we've exceeded the limit (only on new entries)
+    if (isNewEntry) {
+      this.evictCacheEntriesIfNeeded();
+    }
+
     return entry;
   }
 
@@ -272,6 +354,38 @@ export class CacheAwarePlanner {
   }
 
   /**
+   * Get prefetch error statistics
+   *
+   * @returns Error statistics for monitoring and debugging
+   */
+  getPrefetchErrorStats(): PrefetchErrorStats {
+    const now = Date.now();
+
+    const errorsLastMinute = this.prefetchErrors.filter(
+      (e) => now - e.timestamp.getTime() < ONE_MINUTE_MS
+    ).length;
+
+    const errorsLastHour = this.prefetchErrors.filter(
+      (e) => now - e.timestamp.getTime() < ONE_HOUR_MS
+    ).length;
+
+    return {
+      totalErrors: this.totalErrorCount,
+      errorsLastMinute,
+      errorsLastHour,
+      recentErrors: [...this.prefetchErrors],
+    };
+  }
+
+  /**
+   * Clear prefetch error history
+   */
+  clearPrefetchErrors(): void {
+    this.prefetchErrors = [];
+    this.totalErrorCount = 0;
+  }
+
+  /**
    * Clear all tracked state
    */
   clear(): void {
@@ -279,11 +393,119 @@ export class CacheAwarePlanner {
     this.accessPatterns.clear();
     this.prefetchQueue.clear();
     this.prefetchInProgress.clear();
+    this.prefetchErrors = [];
+    this.totalErrorCount = 0;
+  }
+
+  /**
+   * Get the current size of access patterns map (for monitoring)
+   */
+  getAccessPatternCount(): number {
+    return this.accessPatterns.size;
+  }
+
+  /**
+   * Get the current size of cache entries map (for monitoring)
+   */
+  getCacheEntryCount(): number {
+    return this.cacheEntries.size;
   }
 
   // ============================================================================
   // Private Methods
   // ============================================================================
+
+  /**
+   * Evict oldest entries from access patterns map using LRU strategy
+   * Removes entries until we're under the configured limit
+   */
+  private evictAccessPatternsIfNeeded(): void {
+    const maxEntries = this.options.maxAccessPatternEntries;
+    if (this.accessPatterns.size <= maxEntries) {
+      return;
+    }
+
+    // Sort by lastAccessed (oldest first) and evict
+    const sortedEntries = Array.from(this.accessPatterns.entries())
+      .sort((a, b) => a[1].lastAccessed.getTime() - b[1].lastAccessed.getTime());
+
+    const entriesToEvict = sortedEntries.slice(0, this.accessPatterns.size - maxEntries);
+    for (const [key] of entriesToEvict) {
+      this.accessPatterns.delete(key);
+    }
+  }
+
+  /**
+   * Evict oldest entries from cache entries map using LRU strategy
+   * Removes entries until we're under the configured limit
+   */
+  private evictCacheEntriesIfNeeded(): void {
+    const maxEntries = this.options.maxCacheEntries;
+    if (this.cacheEntries.size <= maxEntries) {
+      return;
+    }
+
+    // Sort by lastAccessed (oldest first) and evict
+    const sortedEntries = Array.from(this.cacheEntries.entries())
+      .sort((a, b) => a[1].lastAccessed.getTime() - b[1].lastAccessed.getTime());
+
+    const entriesToEvict = sortedEntries.slice(0, this.cacheEntries.size - maxEntries);
+    for (const [key] of entriesToEvict) {
+      this.cacheEntries.delete(key);
+    }
+  }
+
+  /**
+   * Record a prefetch error with full context
+   */
+  private recordPrefetchError(
+    partitionPath: string,
+    error: Error,
+    operation: string
+  ): void {
+    const prefetchError: PrefetchError = {
+      partitionPath,
+      error,
+      timestamp: new Date(),
+      operation,
+    };
+
+    // Increment total count
+    this.totalErrorCount++;
+
+    // Add to recent errors (maintain max size)
+    this.prefetchErrors.push(prefetchError);
+    if (this.prefetchErrors.length > MAX_RECENT_ERRORS) {
+      this.prefetchErrors.shift();
+    }
+
+    // Log with context
+    if (this.options.verboseLogging) {
+      console.error(
+        `[edge-cache] Prefetch error during ${operation} for partition "${partitionPath}":`,
+        {
+          message: error.message,
+          stack: error.stack,
+          timestamp: prefetchError.timestamp.toISOString(),
+          totalErrors: this.totalErrorCount,
+        }
+      );
+    } else {
+      console.error(
+        `[edge-cache] Background prefetch failed for "${partitionPath}" (${operation}): ${error.message}`
+      );
+    }
+
+    // Call user-provided error callback
+    if (this.options.onPrefetchError) {
+      try {
+        this.options.onPrefetchError(prefetchError);
+      } catch (callbackError) {
+        // Don't let callback errors propagate
+        console.error('[edge-cache] Error in onPrefetchError callback:', callbackError);
+      }
+    }
+  }
 
   /**
    * Apply partition predicates to filter partitions
@@ -379,6 +601,8 @@ export class CacheAwarePlanner {
         totalLatencyMs: latencyMs,
         avgLatencyMs: latencyMs,
       });
+      // Evict oldest entries if we've exceeded the limit
+      this.evictAccessPatternsIfNeeded();
     }
   }
 
@@ -456,9 +680,14 @@ export class CacheAwarePlanner {
         this.prefetchQueue.add(path);
         scheduled.push(path);
 
-        // Start background prefetch (fire and forget)
+        // Start background prefetch (fire and forget, but with error tracking)
         this.executePrefetch(path, priority).catch((error) => {
-          console.error(`Background prefetch failed for ${path}:`, error);
+          // This catch is a safety net - executePrefetch handles its own errors
+          this.recordPrefetchError(
+            path,
+            error instanceof Error ? error : new Error(String(error)),
+            'schedulePrefetch'
+          );
         });
       }
     }
@@ -474,13 +703,45 @@ export class CacheAwarePlanner {
     this.prefetchInProgress.add(partitionPath);
 
     try {
+      if (this.options.verboseLogging) {
+        console.log(`[edge-cache] Starting prefetch for "${partitionPath}" with priority ${priority}`);
+      }
+
       const success = await warmPartition(partitionPath, this.options.partitionMode);
 
       if (success) {
-        // Update cache entry
-        const status = await checkCacheStatus(partitionPath);
-        this.updateCacheState(partitionPath, status);
+        if (this.options.verboseLogging) {
+          console.log(`[edge-cache] Successfully prefetched "${partitionPath}"`);
+        }
+
+        // Update cache entry - this can also fail
+        try {
+          const status = await checkCacheStatus(partitionPath);
+          this.updateCacheState(partitionPath, status);
+        } catch (statusError) {
+          // Log but don't fail - the prefetch itself succeeded
+          this.recordPrefetchError(
+            partitionPath,
+            statusError instanceof Error ? statusError : new Error(String(statusError)),
+            'checkCacheStatus'
+          );
+        }
+      } else {
+        // warmPartition returned false - this is a failure that was previously silent
+        this.recordPrefetchError(
+          partitionPath,
+          new Error('warmPartition returned false - partition could not be warmed'),
+          'warmPartition'
+        );
       }
+    } catch (error) {
+      // Exception during warmPartition
+      this.recordPrefetchError(
+        partitionPath,
+        error instanceof Error ? error : new Error(String(error)),
+        'warmPartition'
+      );
+      throw error; // Re-throw so the outer catch in schedulePrefetch doesn't double-log
     } finally {
       this.prefetchInProgress.delete(partitionPath);
     }

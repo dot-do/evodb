@@ -18,6 +18,38 @@ import type {
   PartitionMeta,
   PartitionData,
 } from './types.js';
+import {
+  ALLOCATION_LIMITS,
+  validateAllocationSize,
+  validateCount,
+} from './types.js';
+
+// ==========================================
+// Safe BigInt to Number Conversion
+// ==========================================
+
+/**
+ * Safely convert a BigInt to a Number, throwing if precision would be lost.
+ * JavaScript's Number.MAX_SAFE_INTEGER is 2^53 - 1 (9,007,199,254,740,991).
+ * For file offsets beyond this (~9 PB), precision loss would cause incorrect reads.
+ *
+ * @param value - The BigInt value to convert
+ * @param context - Description of what the value represents (for error messages)
+ * @returns The value as a Number
+ * @throws Error if the value exceeds Number.MAX_SAFE_INTEGER
+ */
+export function safeBigIntToNumber(value: bigint, context: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `${context} exceeds Number.MAX_SAFE_INTEGER (${value} > ${Number.MAX_SAFE_INTEGER}). ` +
+      `File offsets this large (>${Number.MAX_SAFE_INTEGER} bytes / ~9 PB) are not supported.`
+    );
+  }
+  if (value < 0n) {
+    throw new Error(`${context} cannot be negative (got ${value})`);
+  }
+  return Number(value);
+}
 
 // ==========================================
 // Default Edge Cache Adapter (fetch-based)
@@ -178,19 +210,37 @@ export class CachedLanceReader {
       distanceTypeNum === 0 ? 'l2' :
       distanceTypeNum === 1 ? 'cosine' : 'dot';
 
+    // Parse header fields
+    const numPartitions = view.getUint32(8, true);
+    const dimension = view.getUint32(12, true);
+    const numSubVectors = view.getUint32(16, true);
+    const subDim = view.getUint32(20, true);
+    const numBits = view.getUint32(24, true);
+    const centroidSize = view.getBigUint64(36, true);
+    const pqCodebookSize = view.getBigUint64(52, true);
+
+    // Validate header fields to prevent OOM from malicious/corrupted files
+    validateCount(numPartitions, ALLOCATION_LIMITS.MAX_PARTITIONS, 'numPartitions');
+    validateCount(dimension, ALLOCATION_LIMITS.MAX_DIMENSION, 'dimension');
+    validateCount(numSubVectors, ALLOCATION_LIMITS.MAX_SUB_VECTORS, 'numSubVectors');
+    validateCount(subDim, ALLOCATION_LIMITS.MAX_SUB_DIM, 'subDim');
+    validateCount(numBits, ALLOCATION_LIMITS.MAX_NUM_BITS, 'numBits');
+    validateAllocationSize(centroidSize, ALLOCATION_LIMITS.MAX_CENTROID_SIZE_BYTES, 'centroidSize');
+    validateAllocationSize(pqCodebookSize, ALLOCATION_LIMITS.MAX_PQ_CODEBOOK_SIZE_BYTES, 'pqCodebookSize');
+
     this.header = {
       magic,
       version: view.getUint16(4, true),
       distanceType,
-      numPartitions: view.getUint32(8, true),
-      dimension: view.getUint32(12, true),
-      numSubVectors: view.getUint32(16, true),
-      subDim: view.getUint32(20, true),
-      numBits: view.getUint32(24, true),
+      numPartitions,
+      dimension,
+      numSubVectors,
+      subDim,
+      numBits,
       centroidOffset: view.getBigUint64(28, true),
-      centroidSize: view.getBigUint64(36, true),
+      centroidSize,
       pqCodebookOffset: view.getBigUint64(44, true),
-      pqCodebookSize: view.getBigUint64(52, true),
+      pqCodebookSize,
       partitionMetaOffset: view.getUint32(60, true),
     };
 
@@ -208,8 +258,8 @@ export class CachedLanceReader {
 
     const buffer = await this.cacheAdapter.getRange(
       this.getIndexUrl(),
-      Number(header.centroidOffset),
-      Number(header.centroidSize)
+      safeBigIntToNumber(header.centroidOffset, 'Centroid offset'),
+      safeBigIntToNumber(header.centroidSize, 'Centroid size')
     );
 
     const centroids = new Float32Array(buffer);
@@ -237,8 +287,8 @@ export class CachedLanceReader {
 
     const buffer = await this.cacheAdapter.getRange(
       this.getIndexUrl(),
-      Number(header.pqCodebookOffset),
-      Number(header.pqCodebookSize)
+      safeBigIntToNumber(header.pqCodebookOffset, 'PQ codebook offset'),
+      safeBigIntToNumber(header.pqCodebookSize, 'PQ codebook size')
     );
 
     const codebook = new Float32Array(buffer);
@@ -265,8 +315,9 @@ export class CachedLanceReader {
 
     const header = await this.loadHeader();
 
-    // Calculate partition meta size
+    // Calculate partition meta size and validate
     const metaSize = header.numPartitions * 20;
+    validateAllocationSize(metaSize, ALLOCATION_LIMITS.MAX_PARTITION_META_SIZE_BYTES, 'partition meta size');
 
     const buffer = await this.cacheAdapter.getRange(
       this.getIndexUrl(),
@@ -279,11 +330,19 @@ export class CachedLanceReader {
 
     for (let i = 0; i < header.numPartitions; i++) {
       const offset = i * 20;
+      const partitionByteOffset = view.getBigUint64(offset + 4, true);
+      const byteLength = view.getUint32(offset + 12, true);
+      const numVectors = view.getUint32(offset + 16, true);
+
+      // Validate partition data sizes to prevent OOM
+      validateAllocationSize(byteLength, ALLOCATION_LIMITS.MAX_PARTITION_DATA_SIZE_BYTES, `partition ${i} byteLength`);
+      validateCount(numVectors, ALLOCATION_LIMITS.MAX_VECTORS_PER_PARTITION, `partition ${i} numVectors`);
+
       this.partitionMeta.push({
         id: view.getUint32(offset, true),
-        byteOffset: Number(view.getBigUint64(offset + 4, true)),
-        byteLength: view.getUint32(offset + 12, true),
-        numVectors: view.getUint32(offset + 16, true),
+        byteOffset: safeBigIntToNumber(partitionByteOffset, `Partition ${i} byte offset`),
+        byteLength,
+        numVectors,
       });
     }
 
@@ -323,9 +382,19 @@ export class CachedLanceReader {
    * Format: [rowId (8 bytes) + pqCodes (numSubVectors bytes)] * numVectors
    */
   private parsePartitionData(buffer: ArrayBuffer, numVectors: number): PartitionData {
-    const header = this.header!;
+    if (!this.header) {
+      throw new Error('Header not loaded. Call loadHeader() first.');
+    }
+    const header = this.header;
     const numSubVectors = header.numSubVectors;
     const rowSize = 8 + numSubVectors;
+
+    // Validate allocation sizes before creating typed arrays
+    // Note: numVectors was already validated in loadPartitionMeta()
+    const rowIdsBytes = numVectors * 8;
+    const pqCodesBytes = numVectors * numSubVectors;
+    validateAllocationSize(rowIdsBytes, ALLOCATION_LIMITS.MAX_PARTITION_DATA_SIZE_BYTES, 'rowIds allocation');
+    validateAllocationSize(pqCodesBytes, ALLOCATION_LIMITS.MAX_PARTITION_DATA_SIZE_BYTES, 'pqCodes allocation');
 
     const view = new DataView(buffer);
     const rowIds = new BigUint64Array(numVectors);
