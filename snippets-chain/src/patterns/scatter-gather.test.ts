@@ -16,6 +16,22 @@ import {
   type ScatterGatherConfig,
   type ScatterResult,
 } from './scatter-gather.js';
+import { type ParallelStep, type SequentialStep, type ExecutionContext } from '../types.js';
+
+/**
+ * Creates a minimal mock ExecutionContext for testing handlers
+ */
+function createMockContext(): ExecutionContext {
+  return {
+    executionId: 'test-exec-id',
+    chainId: 'test-chain',
+    stepId: 'test-step' as ExecutionContext['stepId'],
+    input: undefined,
+    stepOutputs: new Map(),
+    startTime: Date.now(),
+    resourceUsage: { subrequests: 0, cpuMs: 0, memoryBytes: 0 },
+  };
+}
 
 describe('scatterGather builder', () => {
   it('should create a scatter-gather chain with 3 steps', () => {
@@ -63,7 +79,7 @@ describe('scatterGather builder', () => {
     };
 
     const chain = scatterGather(config);
-    const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+    const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
     expect(partitionStep.mode).toBe('parallel');
     expect(partitionStep.maxParallelism).toBe(8);
@@ -312,7 +328,7 @@ describe('Helper Handlers', () => {
     it('should create handler that extracts partitions from input', async () => {
       const handler = createScatterHandler((input: { items: number[] }) => input.items);
 
-      const result = await handler({} as any, { items: [1, 2, 3] });
+      const result = await handler(createMockContext(), { items: [1, 2, 3] });
 
       expect(result.partitions).toEqual([1, 2, 3]);
     });
@@ -320,7 +336,7 @@ describe('Helper Handlers', () => {
     it('should work with different input types', async () => {
       const handler = createScatterHandler((input: string) => input.split(','));
 
-      const result = await handler({} as any, 'a,b,c,d');
+      const result = await handler(createMockContext(), 'a,b,c,d');
 
       expect(result.partitions).toEqual(['a', 'b', 'c', 'd']);
     });
@@ -330,7 +346,7 @@ describe('Helper Handlers', () => {
     it('should create handler that reduces partition results', async () => {
       const handler = createGatherHandler((results: number[]) => results.reduce((a, b) => a + b, 0));
 
-      const result = await handler({} as any, [1, 2, 3, 4, 5]);
+      const result = await handler(createMockContext(), [1, 2, 3, 4, 5]);
 
       expect(result).toBe(15);
     });
@@ -338,7 +354,7 @@ describe('Helper Handlers', () => {
     it('should work with different output types', async () => {
       const handler = createGatherHandler((results: string[]) => results.join('-'));
 
-      const result = await handler({} as any, ['a', 'b', 'c']);
+      const result = await handler(createMockContext(), ['a', 'b', 'c']);
 
       expect(result).toBe('a-b-c');
     });
@@ -354,7 +370,7 @@ describe('Helper Handlers', () => {
         totalSum: results.reduce((acc, r) => acc + r.sum, 0),
       }));
 
-      const result = await handler({} as any, [
+      const result = await handler(createMockContext(), [
         { count: 5, sum: 100 },
         { count: 3, sum: 50 },
         { count: 2, sum: 30 },
@@ -377,28 +393,28 @@ describe('Pre-built Scatter-Gather Variants', () => {
 
     it('should use identity scatter snippet', () => {
       const chain = simpleScatterGather('simple-sg', 'process', 'gather');
-      const scatterStep = chain.steps.find(s => s.name === 'Scatter') as any;
+      const scatterStep = chain.steps.find(s => s.name === 'Scatter') as SequentialStep;
 
       expect(scatterStep.snippet.snippetId).toBe('identity-scatter');
     });
 
     it('should use array partitioner', () => {
       const chain = simpleScatterGather('simple-sg', 'process', 'gather');
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.partitioner.partitionerId).toBe('array-partitioner');
     });
 
     it('should use default maxPartitions of 10', () => {
       const chain = simpleScatterGather('simple-sg', 'process', 'gather');
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.maxParallelism).toBe(10);
     });
 
     it('should accept custom maxPartitions', () => {
       const chain = simpleScatterGather('simple-sg', 'process', 'gather', 20);
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.maxParallelism).toBe(20);
     });
@@ -423,7 +439,7 @@ describe('Pre-built Scatter-Gather Variants', () => {
         scanPartitionSnippetId: 'scan',
         mergeResultsSnippetId: 'merge',
       });
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.partitioner.partitionerId).toBe('partition-id-partitioner');
     });
@@ -450,7 +466,7 @@ describe('Pre-built Scatter-Gather Variants', () => {
         mergeResultsSnippetId: 'merge',
         maxPartitions: 20,
       });
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.maxParallelism).toBe(20);
     });
@@ -461,7 +477,7 @@ describe('Pre-built Scatter-Gather Variants', () => {
         scanPartitionSnippetId: 'scan',
         mergeResultsSnippetId: 'merge',
       });
-      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as any;
+      const partitionStep = chain.steps.find(s => s.name === 'Process Partitions') as ParallelStep;
 
       expect(partitionStep.maxParallelism).toBe(10);
     });

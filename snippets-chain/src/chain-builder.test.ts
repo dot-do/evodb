@@ -14,7 +14,7 @@ import {
   type ParallelStepOptions,
   type ConditionalStepOptions,
 } from './chain-builder.js';
-import { stepId } from './types.js';
+import { stepId, type SequentialStep, type ParallelStep, type ConditionalStep } from './types.js';
 
 describe('ChainBuilder', () => {
   describe('construction', () => {
@@ -53,7 +53,7 @@ describe('ChainBuilder', () => {
 
       expect(definition.steps).toHaveLength(1);
       expect(definition.steps[0].mode).toBe('sequential');
-      expect((definition.steps[0] as any).snippet.snippetId).toBe('my-snippet');
+      expect((definition.steps[0] as SequentialStep).snippet.snippetId).toBe('my-snippet');
     });
 
     it('should add a sequential step with SnippetRef object', () => {
@@ -64,7 +64,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as SequentialStep;
       expect(step.snippet.snippetId).toBe('my-snippet');
       expect(step.snippet.version).toBe('1.0');
     });
@@ -145,7 +145,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ParallelStep;
       expect(step.maxParallelism).toBe(10);
     });
 
@@ -159,7 +159,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ParallelStep;
       expect(step.maxParallelism).toBe(20);
     });
 
@@ -172,7 +172,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ParallelStep;
       expect(step.partitioner.partitionerId).toBe('my-partitioner');
     });
 
@@ -185,7 +185,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ParallelStep;
       expect(step.partitioner.partitionerId).toBe('my-partitioner');
       expect(step.partitioner.staticPartitionCount).toBe(5);
     });
@@ -214,7 +214,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ConditionalStep;
       expect(step.ifTrue.snippetId).toBe('true-snippet');
     });
 
@@ -228,8 +228,8 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
-      expect(step.ifFalse.snippetId).toBe('false-snippet');
+      const step = definition.steps[0] as ConditionalStep;
+      expect(step.ifFalse?.snippetId).toBe('false-snippet');
     });
 
     it('should allow undefined ifFalse', () => {
@@ -241,7 +241,7 @@ describe('ChainBuilder', () => {
         })
         .build();
 
-      const step = definition.steps[0] as any;
+      const step = definition.steps[0] as ConditionalStep;
       expect(step.ifFalse).toBeUndefined();
     });
   });
@@ -259,7 +259,7 @@ describe('ChainBuilder', () => {
           mode: 'sequential',
           snippet: { snippetId: 'c' },
           resourceEstimate: { subrequests: 1, cpuMs: 2, memoryBytes: 8 * 1024 * 1024 },
-        } as any,
+        } as Omit<SequentialStep, 'id' | 'dependencies'>,
         ['step-a', 'step-b']
       );
 
@@ -350,7 +350,7 @@ describe('ChainBuilder', () => {
       // Manually add invalid dependency
       const step = builder.getStep('step-1');
       if (step) {
-        step.dependencies.push('non-existent' as any);
+        step.dependencies.push(stepId('non-existent'));
       }
 
       const result = builder.validate();
@@ -367,7 +367,7 @@ describe('ChainBuilder', () => {
       // Manually add self dependency
       const step = builder.getStep('step-1');
       if (step) {
-        step.dependencies.push('step-1' as any);
+        step.dependencies.push(stepId('step-1'));
       }
 
       const result = builder.validate();
@@ -385,7 +385,7 @@ describe('ChainBuilder', () => {
       // Create a cycle: step-1 -> step-2 -> step-1
       const step1 = builder.getStep('step-1');
       if (step1) {
-        step1.dependencies.push('step-2' as any);
+        step1.dependencies.push(stepId('step-2'));
       }
 
       const result = builder.validate();

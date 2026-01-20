@@ -27,6 +27,88 @@ describe('CDCBuffer', () => {
     });
   });
 
+  describe('constructor validation', () => {
+    it('should throw error when bufferSize is negative', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: -1,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+      })).toThrow('bufferSize must be positive');
+    });
+
+    it('should throw error when bufferSize is zero', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 0,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+      })).toThrow('bufferSize must be positive');
+    });
+
+    it('should throw error when bufferSize is NaN', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: NaN,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+      })).toThrow('bufferSize must be positive');
+    });
+
+    it('should throw error when bufferTimeout is negative', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: -1,
+        targetBlockSize: 10000,
+      })).toThrow('bufferTimeout must be positive');
+    });
+
+    it('should throw error when bufferTimeout is zero', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 0,
+        targetBlockSize: 10000,
+      })).toThrow('bufferTimeout must be positive');
+    });
+
+    it('should throw error when bufferTimeout is NaN', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: NaN,
+        targetBlockSize: 10000,
+      })).toThrow('bufferTimeout must be positive');
+    });
+
+    it('should throw error when targetBlockSize is negative', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: -1,
+      })).toThrow('targetBlockSize must be positive');
+    });
+
+    it('should throw error when targetBlockSize is zero', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 0,
+      })).toThrow('targetBlockSize must be positive');
+    });
+
+    it('should throw error when targetBlockSize is NaN', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: NaN,
+      })).toThrow('targetBlockSize must be positive');
+    });
+
+    it('should accept valid positive values', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 1,
+        bufferTimeout: 1,
+        targetBlockSize: 1,
+      })).not.toThrow();
+    });
+  });
+
   describe('add', () => {
     it('should add entries to buffer', () => {
       const entries = [createMockWalEntry(1), createMockWalEntry(2)];
@@ -162,6 +244,70 @@ describe('CDCBuffer', () => {
       expect(range).not.toBeNull();
       expect(range!.min).toBe(5n);
       expect(range!.max).toBe(10n);
+    });
+
+    it('should correctly track minLsn for values larger than MAX_SAFE_INTEGER', () => {
+      // LSN values can be 64-bit integers, which exceed Number.MAX_SAFE_INTEGER
+      // The buffer should correctly track min/max for these large values
+      const largeLsn = 9007199254740992n; // Number.MAX_SAFE_INTEGER + 1
+      const largerLsn = 9223372036854775807n; // Max signed 64-bit integer
+
+      const encoder = new TextEncoder();
+      const entries: WalEntry[] = [
+        {
+          lsn: largerLsn,
+          timestamp: BigInt(Date.now()),
+          op: 1,
+          flags: 0,
+          data: encoder.encode('test'),
+          checksum: 12345,
+        },
+        {
+          lsn: largeLsn,
+          timestamp: BigInt(Date.now()),
+          op: 1,
+          flags: 0,
+          data: encoder.encode('test'),
+          checksum: 12345,
+        },
+      ];
+
+      buffer.add('source-1', entries);
+
+      const range = buffer.getLsnRange();
+      expect(range).not.toBeNull();
+      // The smaller of the two large LSNs should be the min
+      expect(range!.min).toBe(largeLsn);
+      expect(range!.max).toBe(largerLsn);
+    });
+
+    it('should correctly reset minLsn after drain for subsequent large LSN values', () => {
+      // First add and drain some entries
+      buffer.add('source-1', [createMockWalEntry(100)]);
+      buffer.drain();
+
+      // After drain, add entries with LSN larger than MAX_SAFE_INTEGER
+      const largeLsn = 9007199254740992n; // Number.MAX_SAFE_INTEGER + 1
+
+      const encoder = new TextEncoder();
+      const entries: WalEntry[] = [
+        {
+          lsn: largeLsn,
+          timestamp: BigInt(Date.now()),
+          op: 1,
+          flags: 0,
+          data: encoder.encode('test'),
+          checksum: 12345,
+        },
+      ];
+
+      buffer.add('source-1', entries);
+
+      const range = buffer.getLsnRange();
+      expect(range).not.toBeNull();
+      // The minLsn should be the large LSN, not the initial MAX_SAFE_INTEGER value
+      expect(range!.min).toBe(largeLsn);
+      expect(range!.max).toBe(largeLsn);
     });
   });
 
@@ -437,5 +583,220 @@ describe('SizeBasedBuffer', () => {
     expect(drained.length).toBe(2);
     expect(buffer.isEmpty()).toBe(true);
     expect(buffer.getSize()).toBe(0);
+  });
+});
+
+describe('CDCBuffer concurrent access', () => {
+  // Helper to create mock WAL entries with specific LSN
+  function createEntry(lsn: number, data: string = 'test'): WalEntry {
+    const encoder = new TextEncoder();
+    return {
+      lsn: BigInt(lsn),
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: encoder.encode(data),
+      checksum: 12345,
+    };
+  }
+
+  it('should handle concurrent adds from multiple sources correctly', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    // Simulate concurrent adds from multiple sources
+    const sourceCount = 10;
+    const entriesPerSource = 100;
+
+    const addPromises: Promise<void>[] = [];
+
+    for (let sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++) {
+      const sourceId = `source-${sourceIndex}`;
+
+      // Each source adds multiple batches concurrently
+      for (let batch = 0; batch < 10; batch++) {
+        addPromises.push(
+          Promise.resolve().then(() => {
+            const entries = Array.from(
+              { length: entriesPerSource / 10 },
+              (_, i) => createEntry(batch * 1000 + i + 1)
+            );
+            buffer.add(sourceId, entries);
+          })
+        );
+      }
+    }
+
+    await Promise.all(addPromises);
+
+    // Verify all entries were added
+    const stats = buffer.getStats();
+    expect(stats.entryCount).toBe(sourceCount * entriesPerSource);
+    expect(stats.sourceCount).toBe(sourceCount);
+
+    // Verify each source cursor is set to the maximum LSN for that source
+    const cursors = buffer.getSourceCursors();
+    expect(cursors.size).toBe(sourceCount);
+
+    for (let sourceIndex = 0; sourceIndex < sourceCount; sourceIndex++) {
+      const sourceId = `source-${sourceIndex}`;
+      const cursor = cursors.get(sourceId);
+      // The max LSN should be from batch 9: 9 * 1000 + 10 = 9010
+      expect(cursor).toBe(9010n);
+    }
+  });
+
+  it('should maintain cursor monotonicity even with out-of-order concurrent adds', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    const sourceId = 'source-1';
+
+    // Simulate concurrent adds with out-of-order LSNs
+    // This tests that cursor is only updated if new LSN > current cursor
+    const addPromises = [
+      Promise.resolve().then(() => buffer.add(sourceId, [createEntry(100)])),
+      Promise.resolve().then(() => buffer.add(sourceId, [createEntry(50)])),  // Lower LSN
+      Promise.resolve().then(() => buffer.add(sourceId, [createEntry(200)])),
+      Promise.resolve().then(() => buffer.add(sourceId, [createEntry(75)])),  // Lower LSN
+      Promise.resolve().then(() => buffer.add(sourceId, [createEntry(150)])), // Lower than 200
+    ];
+
+    await Promise.all(addPromises);
+
+    // Cursor should be the maximum LSN (200), not the last one processed
+    const cursors = buffer.getSourceCursors();
+    expect(cursors.get(sourceId)).toBe(200n);
+
+    // All entries should be in the buffer
+    expect(buffer.size()).toBe(5);
+  });
+
+  it('should handle interleaved adds across same source from different callers', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    const sourceId = 'shared-source';
+    const results: bigint[] = [];
+
+    // Multiple callers adding to the same source simultaneously
+    // This simulates the race condition where multiple DO requests
+    // arrive at the same time for the same source
+    const caller1 = async () => {
+      for (let i = 0; i < 50; i++) {
+        buffer.add(sourceId, [createEntry(i * 2 + 1)]); // Odd LSNs: 1, 3, 5, ...
+        // Small delay to allow interleaving
+        await new Promise(r => setTimeout(r, 0));
+      }
+    };
+
+    const caller2 = async () => {
+      for (let i = 0; i < 50; i++) {
+        buffer.add(sourceId, [createEntry(i * 2 + 2)]); // Even LSNs: 2, 4, 6, ...
+        await new Promise(r => setTimeout(r, 0));
+      }
+    };
+
+    await Promise.all([caller1(), caller2()]);
+
+    // Should have all 100 entries
+    expect(buffer.size()).toBe(100);
+
+    // Cursor should be max(99, 100) = 100
+    const cursor = buffer.getSourceCursors().get(sourceId);
+    expect(cursor).toBe(100n);
+  });
+
+  it('should correctly track source cursors during high-contention scenario', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 100000,
+      bufferTimeout: 10000,
+      targetBlockSize: 10000000,
+    });
+
+    // High contention: many sources, many concurrent operations
+    const sourceCount = 50;
+    const iterationsPerSource = 20;
+
+    const operations: Promise<void>[] = [];
+    const expectedMaxLsn = new Map<string, bigint>();
+
+    for (let s = 0; s < sourceCount; s++) {
+      const sourceId = `source-${s}`;
+      let maxLsn = 0n;
+
+      for (let i = 0; i < iterationsPerSource; i++) {
+        const lsn = BigInt(s * 10000 + i * 100 + Math.floor(Math.random() * 100));
+        if (lsn > maxLsn) maxLsn = lsn;
+
+        operations.push(
+          Promise.resolve().then(() => {
+            buffer.add(sourceId, [createEntry(Number(lsn))]);
+          })
+        );
+      }
+
+      expectedMaxLsn.set(sourceId, maxLsn);
+    }
+
+    await Promise.all(operations);
+
+    // Verify cursor for each source matches expected max
+    const cursors = buffer.getSourceCursors();
+    expect(cursors.size).toBe(sourceCount);
+
+    for (const [sourceId, expectedMax] of expectedMaxLsn) {
+      const actualCursor = cursors.get(sourceId);
+      expect(actualCursor).toBe(expectedMax);
+    }
+  });
+
+  it('should use max LSN from batch, not last LSN, for cursor update', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    const sourceId = 'source-1';
+
+    // Add a batch where the max LSN is not the last entry
+    // The cursor should be set to max(100, 50, 75) = 100
+    buffer.add(sourceId, [
+      createEntry(100),
+      createEntry(50),
+      createEntry(75),
+    ]);
+
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(100n);
+
+    // Now add another batch with max LSN < current cursor
+    // Cursor should remain at 100
+    buffer.add(sourceId, [
+      createEntry(80),
+      createEntry(90),
+      createEntry(60),
+    ]);
+
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(100n);
+
+    // Add batch with max LSN > current cursor
+    // Cursor should advance to 150
+    buffer.add(sourceId, [
+      createEntry(120),
+      createEntry(150),
+      createEntry(130),
+    ]);
+
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(150n);
   });
 });

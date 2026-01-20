@@ -8,8 +8,29 @@
 // ==========================================
 
 /**
- * Abstract storage interface for reading Lance files
+ * Abstract storage interface for reading Lance files.
  * Allows pluggable backends (R2, S3, filesystem, etc.)
+ *
+ * NOTE: This is a read-only interface specific to lance-reader.
+ * For a unified read/write interface, use the `Storage` interface from @evodb/core.
+ *
+ * Relationship to @evodb/core Storage interface (Issue evodb-pyo):
+ * - lance-reader uses ArrayBuffer (for zero-copy from R2)
+ * - @evodb/core Storage uses Uint8Array (for consistency)
+ * - Use `createLanceStorageAdapter()` to adapt a core Storage to this interface
+ *
+ * @example
+ * ```typescript
+ * // Using lance-reader directly (no dependencies)
+ * import { R2StorageAdapter } from '@evodb/lance-reader/r2';
+ * const storage = new R2StorageAdapter(env.MY_BUCKET);
+ *
+ * // Using with @evodb/core unified Storage
+ * import { createMemoryStorage } from '@evodb/core';
+ * import { createLanceStorageAdapter } from '@evodb/lance-reader';
+ * const coreStorage = createMemoryStorage();
+ * const lanceStorage = createLanceStorageAdapter(coreStorage);
+ * ```
  */
 export interface StorageAdapter {
   /** Read entire object */

@@ -112,6 +112,8 @@ export {
   MemoryStorageAdapter,
   FetchStorageAdapter,
   CachingStorageAdapter,
+  // Adapter for @evodb/core unified Storage interface (Issue evodb-pyo)
+  createLanceStorageAdapter,
 } from './r2-adapter.js';
 
 export type {

@@ -517,7 +517,7 @@ export function scanPartitionOptimized(
   heap: TopKHeap,
   params: IvfPqSearchParams
 ): number {
-  const { excludeRowIds, maxDistance } = params;
+  const { preFilter, includeRowIds, excludeRowIds, maxDistance } = params;
   const { rowIds, pqCodes, numRows, partitionId } = partition;
   const numSubVectors = lookupTables.numSubVectors;
   const tables = lookupTables.tables;
@@ -541,7 +541,10 @@ export function scanPartitionOptimized(
       const idx = i + j;
       const rowId = rowIds[idx];
 
+      // Apply filters
       if (excludeRowIds && excludeRowIds.has(rowId)) continue;
+      if (includeRowIds && !includeRowIds.has(rowId)) continue;
+      if (preFilter && !preFilter(rowId)) continue;
 
       scanned++;
 
@@ -563,7 +566,10 @@ export function scanPartitionOptimized(
   for (let i = mainCount; i < numRows; i++) {
     const rowId = rowIds[i];
 
+    // Apply filters
     if (excludeRowIds && excludeRowIds.has(rowId)) continue;
+    if (includeRowIds && !includeRowIds.has(rowId)) continue;
+    if (preFilter && !preFilter(rowId)) continue;
 
     scanned++;
 
@@ -648,10 +654,12 @@ export class IvfPqSearchEngine {
     const stats = createSearchStats();
     const startTime = performance.now();
 
+    const dimension = this.ivf.config.dimension;
+
     // Validate query dimension
-    if (query.length !== this.ivf.config.dimension) {
+    if (query.length !== dimension) {
       throw new Error(
-        `Query dimension ${query.length} does not match index dimension ${this.ivf.config.dimension}`
+        `Query dimension ${query.length} does not match index dimension ${dimension}`
       );
     }
 
@@ -666,26 +674,36 @@ export class IvfPqSearchEngine {
     );
     stats.centroidDistanceTimeMs = performance.now() - centroidStart;
 
-    // Step 2: Build PQ lookup tables
+    // Step 2 & 3: For each partition, compute query residual, build lookup tables, and scan
     const lookupStart = performance.now();
-    buildPqLookupTablesOptimized(
-      query,
-      this.pq,
-      this.distanceType,
-      this.lookupTables
-    );
-    stats.lookupTableBuildTimeMs = performance.now() - lookupStart;
-
-    // Step 3: Scan partitions
     const scanStart = performance.now();
     const heap = new TopKHeap(params.k);
     stats.partitionsProbed = nearestPartitions.length;
 
+    // Pre-allocate query residual buffer
+    const queryResidual = new Float32Array(dimension);
+    const centroids = this.ivf.centroids.data;
+
     for (const partitionId of nearestPartitions) {
+      // Compute query residual: query - centroid
+      const centroidOffset = partitionId * dimension;
+      for (let d = 0; d < dimension; d++) {
+        queryResidual[d] = query[d] - centroids[centroidOffset + d];
+      }
+
+      // Build lookup tables from query residual (not raw query)
+      buildPqLookupTablesOptimized(
+        queryResidual,
+        this.pq,
+        this.distanceType,
+        this.lookupTables
+      );
+
       const partition = await partitionLoader(partitionId);
       const scanned = scanPartitionOptimized(partition, this.lookupTables, heap, params);
       stats.rowsScanned += scanned;
     }
+    stats.lookupTableBuildTimeMs = performance.now() - lookupStart;
     stats.partitionScanTimeMs = performance.now() - scanStart;
 
     // Step 4: Get sorted results
@@ -753,19 +771,28 @@ export class IvfPqSearchEngine {
     // Step 4: Search for each query
     const lookupStart = performance.now();
     const allResults: IvfPqSearchResult[][] = [];
+    const dimension = this.ivf.config.dimension;
+    const centroids = this.ivf.centroids.data;
+    const queryResidual = new Float32Array(dimension);
 
     for (let i = 0; i < queries.length; i++) {
       const query = queries[i];
       const partitions = queryPartitions[i];
-
-      // Build lookup tables for this query
-      buildPqLookupTablesOptimized(query, this.pq, this.distanceType, this.lookupTables);
 
       // Search partitions
       const heap = new TopKHeap(params.k);
       stats.partitionsProbed += partitions.length;
 
       for (const partitionId of partitions) {
+        // Compute query residual: query - centroid
+        const centroidOffset = partitionId * dimension;
+        for (let d = 0; d < dimension; d++) {
+          queryResidual[d] = query[d] - centroids[centroidOffset + d];
+        }
+
+        // Build lookup tables from query residual (not raw query)
+        buildPqLookupTablesOptimized(queryResidual, this.pq, this.distanceType, this.lookupTables);
+
         const partition = partitionData.get(partitionId)!;
         const scanned = scanPartitionOptimized(partition, this.lookupTables, heap, params);
         stats.rowsScanned += scanned;

@@ -389,6 +389,11 @@ export class ResultProcessor {
           bloomFilterChecks: 0,
           bloomFilterHits: 0,
           peakMemoryBytes: 0,
+          // Block-level pruning metrics (not tracked in simple stream)
+          totalBlocks: 0,
+          blocksScanned: 0,
+          blocksPruned: 0,
+          blockPruneRatio: 0,
         };
       },
       async cancel(): Promise<void> {
@@ -1615,6 +1620,13 @@ export class QueryEngine {
       })).toString('base64');
     }
 
+    // Calculate block-level pruning metrics
+    // In Iceberg, blocks are equivalent to partitions (each partition is a file block)
+    const totalBlocks = tableMetadata.partitions.length;
+    const blocksScanned = partitionsScanned;
+    const blocksPruned = partitionsPruned;
+    const blockPruneRatio = totalBlocks > 0 ? blocksPruned / totalBlocks : 0;
+
     const stats: QueryStats = {
       executionTimeMs,
       planningTimeMs,
@@ -1630,6 +1642,11 @@ export class QueryEngine {
       bloomFilterChecks,
       bloomFilterHits,
       peakMemoryBytes: bytesRead * 0.1,
+      // Block-level pruning metrics
+      totalBlocks,
+      blocksScanned,
+      blocksPruned,
+      blockPruneRatio,
     };
 
     return {
@@ -1907,6 +1924,7 @@ export class QueryEngine {
 
     // Capture metadata for stats closure
     const partitionsForStats = tableMetadata.partitions;
+    const totalBlocksForStats = tableMetadata.partitions.length;
 
     return {
       rows: rowIterator,
@@ -1929,6 +1947,11 @@ export class QueryEngine {
           bloomFilterChecks: 0,
           bloomFilterHits: 0,
           peakMemoryBytes: 0,
+          // Block-level pruning metrics (streaming doesn't do pruning yet)
+          totalBlocks: totalBlocksForStats,
+          blocksScanned: partitionsForStats.length,
+          blocksPruned: 0,
+          blockPruneRatio: 0,
         };
       },
       async cancel(): Promise<void> {

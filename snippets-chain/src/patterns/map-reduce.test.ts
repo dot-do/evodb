@@ -19,7 +19,9 @@ import {
   calculateMapReduceCost,
   type MapReduceConfig,
   type PartialAggregation,
+  type AggregationType,
 } from './map-reduce.js';
+import { type ParallelStep, type PartitionSpec } from '../types.js';
 
 describe('mapReduce builder', () => {
   it('should create a map-reduce chain without split', () => {
@@ -85,7 +87,7 @@ describe('mapReduce builder', () => {
     };
 
     const chain = mapReduce(config);
-    const mapStep = chain.steps.find(s => s.name === 'Map') as any;
+    const mapStep = chain.steps.find(s => s.name === 'Map') as ParallelStep;
 
     expect(mapStep.mode).toBe('parallel');
     expect(mapStep.maxParallelism).toBe(10);
@@ -240,8 +242,9 @@ describe('hashPartitioner', () => {
     const partitions = partitioner(input, 10);
 
     // Items with same key should be in same partition
-    const partitionA = partitions.find(p => (p.input as any[]).some(i => i.key === 'a'));
-    const itemsWithKeyA = (partitionA?.input as any[]).filter(i => i.key === 'a');
+    type Item = { key: string; value: number };
+    const partitionA = partitions.find(p => (p.input as Item[]).some(i => i.key === 'a'));
+    const itemsWithKeyA = (partitionA?.input as Item[]).filter(i => i.key === 'a');
     expect(itemsWithKeyA).toHaveLength(2);
   });
 
@@ -281,7 +284,7 @@ describe('hashPartitioner', () => {
 
     // 'a' and 'c' should be in same partition (same length)
     const partition1 = partitions.find(p => p.index === 1);
-    expect((partition1?.input as any[]).length).toBe(2);
+    expect((partition1?.input as { key: string }[]).length).toBe(2);
   });
 });
 
@@ -398,7 +401,8 @@ describe('Aggregation Reducers', () => {
     });
 
     it('should throw for unknown aggregation type', () => {
-      const partials = [{ type: 'unknown' as any, value: 10 }];
+      // Intentionally testing invalid type at runtime - cast required
+      const partials = [{ type: 'unknown' as AggregationType, value: 10 }];
       expect(() => aggregationReducer(partials)).toThrow('Unknown aggregation type');
     });
   });
@@ -423,7 +427,7 @@ describe('Pre-built Map-Reduce Variants', () => {
         maxMappers: 20,
       });
 
-      const mapStep = chain.steps.find(s => s.mode === 'parallel') as any;
+      const mapStep = chain.steps.find(s => s.mode === 'parallel') as ParallelStep;
       expect(mapStep.maxParallelism).toBe(20);
     });
 
@@ -457,7 +461,7 @@ describe('Pre-built Map-Reduce Variants', () => {
         maxMappers: 15,
       });
 
-      const mapStep = chain.steps.find(s => s.mode === 'parallel') as any;
+      const mapStep = chain.steps.find(s => s.mode === 'parallel') as ParallelStep;
       expect(mapStep.maxParallelism).toBe(15);
     });
   });
@@ -490,7 +494,7 @@ describe('Pre-built Map-Reduce Variants', () => {
         reduceSnippetId: 'reducer',
       });
 
-      const mapStep = chain.steps.find(s => s.mode === 'parallel') as any;
+      const mapStep = chain.steps.find(s => s.mode === 'parallel') as ParallelStep;
       expect(mapStep.partitioner.partitionerId).toBe('hash-partitioner');
     });
   });

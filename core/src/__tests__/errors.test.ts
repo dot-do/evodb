@@ -11,6 +11,7 @@ import {
   TimeoutError,
   ValidationError,
   StorageError,
+  CorruptedBlockError,
 } from '../errors.js';
 
 describe('EvoDBError base class', () => {
@@ -198,5 +199,63 @@ describe('Error codes', () => {
       new StorageError('').code,
     ]);
     expect(codes.size).toBe(4);
+  });
+});
+
+describe('CorruptedBlockError', () => {
+  it('should extend StorageError', () => {
+    const error = new CorruptedBlockError('Block corrupted');
+    expect(error).toBeInstanceOf(StorageError);
+    expect(error).toBeInstanceOf(EvoDBError);
+    expect(error).toBeInstanceOf(Error);
+  });
+
+  it('should have name set to CorruptedBlockError', () => {
+    const error = new CorruptedBlockError('Block corrupted');
+    expect(error.name).toBe('CorruptedBlockError');
+  });
+
+  it('should have default code CORRUPTED_BLOCK', () => {
+    const error = new CorruptedBlockError('Block corrupted');
+    expect(error.code).toBe('CORRUPTED_BLOCK');
+  });
+
+  it('should allow custom error code', () => {
+    const error = new CorruptedBlockError('Invalid magic', 'INVALID_MAGIC');
+    expect(error.code).toBe('INVALID_MAGIC');
+  });
+
+  it('should have the correct message', () => {
+    const error = new CorruptedBlockError('Checksum mismatch detected');
+    expect(error.message).toBe('Checksum mismatch detected');
+  });
+
+  it('should support optional details property', () => {
+    const error = new CorruptedBlockError('Checksum mismatch', 'CHECKSUM_MISMATCH', {
+      expected: 0x12345678,
+      actual: 0x87654321,
+      offset: 30,
+    });
+    expect(error.details).toBeDefined();
+    expect(error.details?.expected).toBe(0x12345678);
+    expect(error.details?.actual).toBe(0x87654321);
+    expect(error.details?.offset).toBe(30);
+  });
+
+  it('should have undefined details when not provided', () => {
+    const error = new CorruptedBlockError('Block corrupted');
+    expect(error.details).toBeUndefined();
+  });
+
+  it('should be catchable as StorageError', () => {
+    let caughtAsStorage = false;
+    try {
+      throw new CorruptedBlockError('Block corrupted');
+    } catch (error) {
+      if (error instanceof StorageError) {
+        caughtAsStorage = true;
+      }
+    }
+    expect(caughtAsStorage).toBe(true);
   });
 });

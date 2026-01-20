@@ -106,6 +106,16 @@ export {
 // Main writer
 export { LakehouseWriter, type DOStorage, type LakehouseWriterDeps } from './writer.js';
 
+// Atomic flush (crash-safe writes)
+export {
+  AtomicFlushWriter,
+  type AtomicFlushWriterOptions,
+  type AtomicFlushResult,
+  type FlushRecoveryResult,
+  type PendingFlush,
+  type FlushStatus,
+} from './atomic-flush.js';
+
 // Strategy pattern exports
 export {
   // Interfaces

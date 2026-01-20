@@ -185,14 +185,14 @@ EvoDB is built on Cloudflare's global infrastructure:
 ### Data Flow
 
 ```
-┌─────────────┐    CDC     ┌─────────────┐    Blocks    ┌─────────────┐
+┌─────────────┐    CDC     ┌─────────────┐    Blocks   ┌─────────────┐
 │  Edge DOs   │ ─────────► │  Writer DO  │ ──────────► │     R2      │
 │  (SQLite)   │  CapnWeb   │  (Buffer)   │   Columnar  │  Lakehouse  │
 └─────────────┘            └─────────────┘             └─────────────┘
        │                                                      │
        │ < 20ms                                               │
        │                                                      ▼
-┌──────┴──────┐                                       ┌─────────────┐
+┌──────┴──────┐                                      ┌─────────────┐
 │    Users    │◄──────────── Query ──────────────────│   Workers   │
 └─────────────┘              Cache API               │   (Query)   │
                                                      └─────────────┘

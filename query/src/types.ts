@@ -933,6 +933,10 @@ export interface QueryResult<T = Record<string, unknown>> {
  * console.log(`Partitions: ${stats.partitionsScanned} scanned, ${stats.partitionsPruned} pruned`);
  * console.log(`Zone map effectiveness: ${(stats.zoneMapEffectiveness * 100).toFixed(1)}%`);
  * console.log(`Cache hit ratio: ${(stats.cacheHitRatio * 100).toFixed(1)}%`);
+ *
+ * // Block-level pruning metrics
+ * console.log(`Blocks: ${stats.blocksScanned} scanned, ${stats.blocksPruned} pruned`);
+ * console.log(`Block prune ratio: ${(stats.blockPruneRatio * 100).toFixed(1)}%`);
  * ```
  */
 export interface QueryStats {
@@ -977,6 +981,18 @@ export interface QueryStats {
 
   /** Peak memory usage in bytes */
   peakMemoryBytes: number;
+
+  /** Total number of blocks (partitions) in the table */
+  totalBlocks: number;
+
+  /** Number of blocks scanned after zone map pruning */
+  blocksScanned: number;
+
+  /** Number of blocks pruned due to zone map filtering */
+  blocksPruned: number;
+
+  /** Ratio of blocks pruned to total blocks (0.0 to 1.0) */
+  blockPruneRatio: number;
 }
 
 /**

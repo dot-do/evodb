@@ -9,6 +9,70 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./encoding": {
+      "types": "./dist/encoding/index.d.ts",
+      "import": "./dist/encoding/index.js"
+    },
+    "./shredding": {
+      "types": "./dist/shredding/index.d.ts",
+      "import": "./dist/shredding/index.js"
+    },
+    "./block": {
+      "types": "./dist/block/index.d.ts",
+      "import": "./dist/block/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./wal": {
+      "types": "./dist/wal/index.d.ts",
+      "import": "./dist/wal/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "import": "./dist/schema/index.js"
+    },
+    "./query": {
+      "types": "./dist/query/index.d.ts",
+      "import": "./dist/query/index.js"
+    },
+    "./snippet": {
+      "types": "./dist/snippet/index.d.ts",
+      "import": "./dist/snippet/index.js"
+    },
+    "./partition": {
+      "types": "./dist/partition/index.d.ts",
+      "import": "./dist/partition/index.js"
+    },
+    "./merge": {
+      "types": "./dist/merge/index.d.ts",
+      "import": "./dist/merge/index.js"
+    },
+    "./constants": {
+      "types": "./dist/constants/index.d.ts",
+      "import": "./dist/constants/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "import": "./dist/errors/index.js"
+    },
+    "./guards": {
+      "types": "./dist/guards/index.d.ts",
+      "import": "./dist/guards/index.js"
+    },
+    "./evodb": {
+      "types": "./dist/evodb/index.d.ts",
+      "import": "./dist/evodb/index.js"
+    },
+    "./logging": {
+      "types": "./dist/logging/index.d.ts",
+      "import": "./dist/logging/index.js"
     }
   },
   "files": [
@@ -39,7 +103,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.41",
     "@cloudflare/workers-types": "^4.20260118.0",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/coverage-istanbul": "^2.1.0",
     "fast-check": "^4.5.3",
     "typescript": "^5.3.0",
     "vitest": "^2.1.0",

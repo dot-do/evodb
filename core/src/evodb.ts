@@ -47,6 +47,7 @@ import {
   type AggregateSpec,
 } from './query-ops.js';
 import { ValidationError } from './errors.js';
+import { type Logger, createNoopLogger } from './logging.js';
 
 // =============================================================================
 // Types
@@ -87,6 +88,12 @@ export interface EvoDBConfig {
    * Whether to reject fields not in schema
    */
   rejectUnknownFields?: boolean;
+
+  /**
+   * Logger instance for structured logging
+   * If not provided, logging is disabled (noop logger)
+   */
+  logger?: Logger;
 }
 
 /**
@@ -582,10 +589,11 @@ export class SchemaManager {
  * Main entry point for all database operations.
  */
 export class EvoDB {
-  private readonly config: Required<EvoDBConfig>;
+  private readonly config: Required<Omit<EvoDBConfig, 'logger'>> & { logger: Logger };
   private readonly schemaManager: SchemaManager;
   private readonly tables: Map<string, Column[]> = new Map();
   private readonly tableRows: Map<string, Record<string, unknown>[]> = new Map();
+  private readonly logger: Logger;
 
   /**
    * Schema management operations
@@ -593,6 +601,7 @@ export class EvoDB {
   public readonly schema: SchemaManager;
 
   constructor(config: EvoDBConfig) {
+    this.logger = config.logger ?? createNoopLogger();
     this.config = {
       mode: config.mode,
       storage: config.storage as EvoDBStorageBucket,
@@ -600,10 +609,17 @@ export class EvoDB {
       inferTypes: config.inferTypes ?? true,
       validateOnWrite: config.validateOnWrite ?? (config.mode === 'production'),
       rejectUnknownFields: config.rejectUnknownFields ?? false,
+      logger: this.logger,
     };
 
     this.schemaManager = new SchemaManager(this);
     this.schema = this.schemaManager;
+
+    this.logger.debug('EvoDB initialized', {
+      mode: this.config.mode,
+      schemaEvolution: this.config.schemaEvolution,
+      hasStorage: !!config.storage,
+    });
   }
 
   /**
@@ -620,7 +636,10 @@ export class EvoDB {
     table: string,
     data: T | T[]
   ): Promise<T[]> {
+    const startTime = Date.now();
     const documents = Array.isArray(data) ? data : [data];
+
+    this.logger.debug('insert started', { table, documentCount: documents.length });
 
     // Validate against locked schema in production mode
     if (this.config.mode === 'production' && this.schema.isLocked(table)) {
@@ -654,6 +673,13 @@ export class EvoDB {
     if (this.config.storage) {
       await this.persistTable(table);
     }
+
+    const durationMs = Date.now() - startTime;
+    this.logger.info('insert completed', {
+      table,
+      documentCount: documents.length,
+      durationMs,
+    });
 
     return docsWithIds;
   }
@@ -689,7 +715,14 @@ export class EvoDB {
     changes: Partial<T>,
     options: UpdateOptions = {}
   ): Promise<UpdateResult<T>> {
+    const startTime = Date.now();
     const existingRows = this.tableRows.get(table) ?? [];
+
+    this.logger.debug('update started', {
+      table,
+      filterKeys: Object.keys(filter),
+      changeKeys: Object.keys(changes),
+    });
 
     // Find matching documents
     const matchingIndices: number[] = [];
@@ -700,6 +733,7 @@ export class EvoDB {
     }
 
     if (matchingIndices.length === 0) {
+      this.logger.debug('update no matches', { table });
       return { matchedCount: 0, modifiedCount: 0 };
     }
 
@@ -737,6 +771,14 @@ export class EvoDB {
       result.documents = updatedDocuments;
     }
 
+    const durationMs = Date.now() - startTime;
+    this.logger.info('update completed', {
+      table,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
+      durationMs,
+    });
+
     return result;
   }
 
@@ -771,7 +813,14 @@ export class EvoDB {
     filter: FilterObject,
     options: DeleteOptions = {}
   ): Promise<DeleteResult<T>> {
+    const startTime = Date.now();
     const existingRows = this.tableRows.get(table) ?? [];
+
+    this.logger.debug('delete started', {
+      table,
+      filterKeys: Object.keys(filter),
+      existingRowCount: existingRows.length,
+    });
 
     // Find matching documents
     const deletedDocuments: T[] = [];
@@ -786,6 +835,7 @@ export class EvoDB {
     }
 
     if (deletedDocuments.length === 0) {
+      this.logger.debug('delete no matches', { table });
       return { deletedCount: 0 };
     }
 
@@ -813,6 +863,14 @@ export class EvoDB {
     if (options.returnDocuments) {
       result.documents = deletedDocuments;
     }
+
+    const durationMs = Date.now() - startTime;
+    this.logger.info('delete completed', {
+      table,
+      deletedCount: result.deletedCount,
+      remainingCount: remainingRows.length,
+      durationMs,
+    });
 
     return result;
   }
@@ -861,6 +919,19 @@ export class EvoDB {
     limit: number | null,
     offset: number
   ): Promise<QueryResult<T>> {
+    const startTime = Date.now();
+    const initialRowCount = this.tableRows.get(table)?.length ?? 0;
+
+    this.logger.debug('query started', {
+      table,
+      predicateCount: predicates.length,
+      hasProjection: projection !== null,
+      sortCount: sortSpecs.length,
+      aggregateCount: aggregateSpecs.length,
+      limit,
+      offset,
+    });
+
     // Get raw documents for this table
     let rows = this.tableRows.get(table) ?? [];
 
@@ -881,6 +952,16 @@ export class EvoDB {
         }
         resultRows.push(rowObj);
       }
+
+      const durationMs = Date.now() - startTime;
+      this.logger.info('query completed (aggregation)', {
+        table,
+        rowsScanned: initialRowCount,
+        rowsAfterFilter: rows.length,
+        resultCount: resultRows.length,
+        durationMs,
+      });
+
       return {
         rows: resultRows as T[],
         totalCount: resultRows.length,
@@ -912,6 +993,15 @@ export class EvoDB {
     if (limit !== null || offset > 0) {
       rows = limitRows(rows, limit ?? rows.length, offset);
     }
+
+    const durationMs = Date.now() - startTime;
+    this.logger.info('query completed', {
+      table,
+      rowsScanned: initialRowCount,
+      totalCount,
+      returnedCount: rows.length,
+      durationMs,
+    });
 
     return {
       rows: rows as T[],
@@ -965,10 +1055,29 @@ export class EvoDB {
   private async persistTable(table: string): Promise<void> {
     if (!this.config.storage) return;
 
+    const startTime = Date.now();
     const rows = this.tableRows.get(table) ?? [];
     const key = `data/${table}/data.json`;
-    await this.config.storage.put(key, JSON.stringify(rows), {
+    const data = JSON.stringify(rows);
+
+    this.logger.debug('flush started', {
+      table,
+      key,
+      rowCount: rows.length,
+      bytesApprox: data.length,
+    });
+
+    await this.config.storage.put(key, data, {
       customMetadata: { type: 'data', table, rowCount: String(rows.length) },
+    });
+
+    const durationMs = Date.now() - startTime;
+    this.logger.info('flush completed', {
+      table,
+      key,
+      rowCount: rows.length,
+      bytes: data.length,
+      durationMs,
     });
   }
 

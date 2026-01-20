@@ -25,15 +25,70 @@ export interface BufferOptions {
 /**
  * CDC Buffer for accumulating WAL entries before block write
  */
+/** Maximum value for signed 64-bit integer, used as initial minLsn sentinel */
+const MAX_BIGINT_64 = 9223372036854775807n;
+
+/**
+ * Validate that a buffer option value is a positive number
+ * @throws Error if value is not positive or is NaN
+ */
+function validatePositive(value: number, name: string): void {
+  if (!(value > 0)) {
+    throw new Error(`${name} must be positive`);
+  }
+}
+
+/**
+ * Validate all buffer options
+ * @throws Error if any option is invalid
+ */
+function validateBufferOptions(options: BufferOptions): void {
+  validatePositive(options.bufferSize, 'bufferSize');
+  validatePositive(options.bufferTimeout, 'bufferTimeout');
+  validatePositive(options.targetBlockSize, 'targetBlockSize');
+}
+
+/**
+ * CDC Buffer for accumulating WAL entries before block write.
+ *
+ * Thread Safety: This class is designed to be used in a single-threaded
+ * environment (like Cloudflare Workers Durable Objects). The add() method
+ * is synchronous and maintains cursor consistency through atomic operations.
+ *
+ * IMPORTANT: Do not introduce await points between reading and updating
+ * sourceCursors. If async operations are needed, use the updateSourceCursor()
+ * method which provides an atomic compare-and-set operation.
+ */
 export class CDCBuffer {
   private entries: WalEntry[] = [];
   private estimatedSize = 0;
-  private minLsn: bigint = BigInt(Number.MAX_SAFE_INTEGER);
+  private minLsn: bigint = MAX_BIGINT_64;
   private maxLsn: bigint = 0n;
   private firstEntryTime: number | null = null;
   private sourceCursors: Map<string, bigint> = new Map();
 
-  constructor(private readonly options: BufferOptions) {}
+  constructor(private readonly options: BufferOptions) {
+    validateBufferOptions(options);
+  }
+
+  /**
+   * Atomically update source cursor if new LSN is greater than current.
+   * This method provides a safe way to update cursors without race conditions.
+   *
+   * @param sourceDoId - The source DO identifier
+   * @param newLsn - The new LSN to potentially set as cursor
+   * @returns true if cursor was updated, false if current cursor was already >= newLsn
+   */
+  private updateSourceCursor(sourceDoId: string, newLsn: bigint): boolean {
+    const currentCursor = this.sourceCursors.get(sourceDoId);
+    // Use strict comparison: only update if newLsn is strictly greater
+    // This handles undefined (new source) and existing cursor cases
+    if (currentCursor === undefined || newLsn > currentCursor) {
+      this.sourceCursors.set(sourceDoId, newLsn);
+      return true;
+    }
+    return false;
+  }
 
   /**
    * Create a buffer from resolved writer options
@@ -47,7 +102,14 @@ export class CDCBuffer {
   }
 
   /**
-   * Add WAL entries from a source
+   * Add WAL entries from a source.
+   *
+   * This method is synchronous and safe for concurrent calls in a single-threaded
+   * environment. The cursor update uses an atomic compare-and-set pattern to ensure
+   * monotonicity even if entries arrive out of order.
+   *
+   * @param sourceDoId - The source DO identifier
+   * @param entries - WAL entries to add (must be non-empty for any effect)
    */
   add(sourceDoId: string, entries: WalEntry[]): void {
     if (entries.length === 0) return;
@@ -57,6 +119,9 @@ export class CDCBuffer {
       this.firstEntryTime = Date.now();
     }
 
+    // Track the maximum LSN seen in this batch for cursor update
+    let batchMaxLsn = entries[0].lsn;
+
     // Add entries and track LSN range
     for (const entry of entries) {
       this.entries.push(entry);
@@ -64,14 +129,13 @@ export class CDCBuffer {
 
       if (entry.lsn < this.minLsn) this.minLsn = entry.lsn;
       if (entry.lsn > this.maxLsn) this.maxLsn = entry.lsn;
+
+      // Track max LSN in this batch
+      if (entry.lsn > batchMaxLsn) batchMaxLsn = entry.lsn;
     }
 
-    // Update source cursor
-    const lastEntry = entries[entries.length - 1];
-    const currentCursor = this.sourceCursors.get(sourceDoId) ?? 0n;
-    if (lastEntry.lsn > currentCursor) {
-      this.sourceCursors.set(sourceDoId, lastEntry.lsn);
-    }
+    // Update source cursor atomically - only advances if batch max > current cursor
+    this.updateSourceCursor(sourceDoId, batchMaxLsn);
   }
 
   /**
@@ -148,7 +212,7 @@ export class CDCBuffer {
     // Clear buffer
     this.entries = [];
     this.estimatedSize = 0;
-    this.minLsn = BigInt(Number.MAX_SAFE_INTEGER);
+    this.minLsn = MAX_BIGINT_64;
     this.maxLsn = 0n;
     this.firstEntryTime = null;
     // Keep source cursors for acknowledgment tracking
@@ -220,7 +284,9 @@ export class CDCBuffer {
 export class MultiTableBuffer {
   private buffers: Map<string, CDCBuffer> = new Map();
 
-  constructor(private readonly options: BufferOptions) {}
+  constructor(private readonly options: BufferOptions) {
+    validateBufferOptions(options);
+  }
 
   /**
    * Get or create buffer for a table

@@ -137,20 +137,96 @@ export declare function deltaEncode(values: number[]): number[];
  */
 export declare function deltaDecode(deltas: ArrayLike<number>): Int32Array;
 /**
- * Simple bloom filter implementation for fast skip
+ * Bloom filter configuration for customizing false positive rate
+ */
+export interface BloomFilterConfig {
+    /** Expected number of elements */
+    expectedElements: number;
+    /**
+     * Target false positive rate (0-1).
+     * Default is ~1% (0.01) when using BLOOM_BITS_PER_ELEMENT=10 and BLOOM_HASH_COUNT=7.
+     * Lower rates require more memory.
+     *
+     * Common presets:
+     * - 0.01 (1%): 10 bits/element, 7 hashes (default)
+     * - 0.001 (0.1%): 15 bits/element, 10 hashes
+     * - 0.0001 (0.01%): 20 bits/element, 14 hashes
+     */
+    falsePositiveRate?: number;
+}
+/**
+ * Calculate optimal bloom filter parameters for a target false positive rate.
+ *
+ * Formula:
+ * - m (bits) = -n * ln(p) / (ln(2)^2)
+ * - k (hashes) = (m/n) * ln(2)
+ *
+ * Where n = expected elements, p = false positive rate
+ */
+export declare function calculateBloomParams(expectedElements: number, falsePositiveRate?: number): {
+    numBits: number;
+    numHashes: number;
+};
+/**
+ * Space-efficient bloom filter implementation using bit arrays.
+ *
+ * Uses Uint8Array for compact storage instead of Map<string, Set<string>>.
+ * Achieves ~136x smaller memory footprint compared to Map-based approaches.
+ *
+ * Features:
+ * - Configurable false positive rate (default ~1%)
+ * - Optimal hash count based on target FPR
+ * - Serializable to/from bytes for storage/caching
+ * - No false negatives guaranteed
  */
 export declare class BloomFilter {
     private bits;
     private size;
-    constructor(expectedElements: number);
+    private hashCount;
+    /**
+     * Create a new bloom filter.
+     *
+     * @param expectedElements - Expected number of elements to add
+     * @param configOrFpr - Optional: false positive rate (0-1) or full config object.
+     *                      Default is ~1% FPR using BLOOM_BITS_PER_ELEMENT.
+     *
+     * @example
+     * // Default 1% false positive rate
+     * const bloom = new BloomFilter(1000);
+     *
+     * @example
+     * // Custom 0.1% false positive rate
+     * const bloom = new BloomFilter(1000, 0.001);
+     *
+     * @example
+     * // Using config object
+     * const bloom = new BloomFilter(1000, { falsePositiveRate: 0.001 });
+     */
+    constructor(expectedElements: number, configOrFpr?: number | {
+        falsePositiveRate?: number;
+    });
     /** Create from existing bytes */
     static fromBytes(bytes: Uint8Array): BloomFilter;
+    /**
+     * Create a bloom filter with specific false positive rate.
+     * Convenience factory method.
+     *
+     * @param expectedElements - Expected number of elements
+     * @param falsePositiveRate - Target false positive rate (0-1)
+     */
+    static withFalsePositiveRate(expectedElements: number, falsePositiveRate: number): BloomFilter;
     /** Add a value to the filter */
     add(value: string | number): void;
     /** Check if value might be in the filter */
     mightContain(value: string | number): boolean;
     /** Get the underlying bytes */
     toBytes(): Uint8Array;
+    /** Get the number of hash functions used */
+    getHashCount(): number;
+    /** Get the size in bytes */
+    getSizeBytes(): number;
+    /** Get the size in bits */
+    getSizeBits(): number;
     /** Simple hash function (FNV-1a variant) */
     private getHashes;
 }

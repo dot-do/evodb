@@ -274,7 +274,7 @@ export {
   createR2AdapterFromObjectStorage,
   normalizeStorageBackend,
 
-  // Low-level object storage adapters
+  // Low-level object storage adapters (legacy)
   type ObjectStorageAdapter,
   type ObjectMetadata,
   R2ObjectStorageAdapter,
@@ -300,3 +300,21 @@ export {
   type R2PutOptions,
   type R2ListOptions,
 } from './r2.js';
+
+// =============================================================================
+// UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
+// Re-exported from @evodb/core for convenience
+// =============================================================================
+
+export {
+  // The canonical unified Storage interface
+  type Storage,
+  type StorageMetadata,
+  MemoryStorage,
+  R2Storage,
+  createStorage,
+  createMemoryStorage,
+  // Adapter functions - convert between interfaces
+  storageToObjectAdapter,
+  objectAdapterToStorage,
+} from '@evodb/core';

@@ -26,6 +26,9 @@ import {
   type ConditionEvaluator,
   type SnippetBudget,
   DEFAULT_SNIPPET_BUDGET,
+  isSequentialStep,
+  isParallelStep,
+  isConditionalStep,
 } from './types.js';
 
 import { TIMEOUT_5S } from '@evodb/core';
@@ -314,16 +317,19 @@ export class ChainExecutor {
     this.log(`Executing step "${step.id}" (${step.mode})`);
     const startTime = Date.now();
 
-    switch (step.mode) {
-      case 'sequential':
-        return this.executeSequentialStep(step as SequentialStep, input, state, startTime);
-      case 'parallel':
-        return this.executeParallelStep(step as ParallelStep, input, state, startTime, signal);
-      case 'conditional':
-        return this.executeConditionalStep(step as ConditionalStep, input, state, startTime);
-      default:
-        throw new Error(`Unknown step mode: ${(step as Step).mode}`);
+    if (isSequentialStep(step)) {
+      return this.executeSequentialStep(step, input, state, startTime);
     }
+    if (isParallelStep(step)) {
+      return this.executeParallelStep(step, input, state, startTime, signal);
+    }
+    if (isConditionalStep(step)) {
+      return this.executeConditionalStep(step, input, state, startTime);
+    }
+
+    // Exhaustive check - should never reach here
+    const _exhaustiveCheck: never = step;
+    throw new Error(`Unknown step mode: ${(_exhaustiveCheck as Step).mode}`);
   }
 
   /**
@@ -631,9 +637,8 @@ export class SimulationExecutor {
         const step = stepMap.get(stepId)!;
         let parallelism = 1;
 
-        if (step.mode === 'parallel') {
-          const parallelStep = step as ParallelStep;
-          parallelism = options.partitionCounts?.[stepId] ?? parallelStep.maxParallelism;
+        if (isParallelStep(step)) {
+          parallelism = options.partitionCounts?.[stepId] ?? step.maxParallelism;
         }
 
         levelParallelism += parallelism;

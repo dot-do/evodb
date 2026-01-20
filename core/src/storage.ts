@@ -3,11 +3,87 @@
 import { type StorageAdapter, type BlockId, type WalId, unsafeBlockId, unsafeWalId } from './types.js';
 
 // =============================================================================
-// Unified Storage Adapter Interface (R2-compatible)
+// UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
+// Consolidates 4 overlapping storage abstractions into one canonical interface
+// =============================================================================
+
+/**
+ * Unified Storage interface - the single source of truth for storage operations.
+ *
+ * This interface consolidates the following overlapping abstractions:
+ * 1. StorageAdapter (core/types.ts) - DO block storage (writeBlock/readBlock)
+ * 2. ObjectStorageAdapter (core/storage.ts) - R2-compatible (put/get)
+ * 3. R2StorageAdapter (lakehouse/types.ts) - High-level JSON/binary
+ * 4. StorageAdapter (lance-reader/types.ts) - Read-only lance files
+ *
+ * Design principles:
+ * - Simple, minimal interface (4 core methods)
+ * - Matches common object storage semantics (R2, S3, GCS)
+ * - Uses Uint8Array for binary data (not ArrayBuffer) for consistency
+ * - Optional methods for advanced use cases (exists, head, readRange)
+ *
+ * @example
+ * ```typescript
+ * // Implement for R2
+ * class R2Storage implements Storage {
+ *   async read(path: string) { return bucket.get(path)?.bytes(); }
+ *   async write(path: string, data: Uint8Array) { await bucket.put(path, data); }
+ *   async list(prefix: string) { return bucket.list({ prefix }).objects.map(o => o.key); }
+ *   async delete(path: string) { await bucket.delete(path); }
+ * }
+ *
+ * // Use in tests with MemoryStorage
+ * const storage = new MemoryStorage();
+ * await storage.write('test.bin', new Uint8Array([1, 2, 3]));
+ * ```
+ */
+export interface Storage {
+  /** Read data from a path, returns null if not found */
+  read(path: string): Promise<Uint8Array | null>;
+
+  /** Write data to a path */
+  write(path: string, data: Uint8Array): Promise<void>;
+
+  /** List objects with a prefix, returns array of paths */
+  list(prefix: string): Promise<{ paths: string[] }>;
+
+  /** Delete an object at path */
+  delete(path: string): Promise<void>;
+
+  // ==========================================================================
+  // Optional methods for advanced use cases
+  // ==========================================================================
+
+  /** Check if an object exists (optional - can be derived from read) */
+  exists?(path: string): Promise<boolean>;
+
+  /** Get object metadata without reading body (optional) */
+  head?(path: string): Promise<StorageMetadata | null>;
+
+  /** Read a byte range from an object (optional - for efficient partial reads) */
+  readRange?(path: string, offset: number, length: number): Promise<Uint8Array>;
+}
+
+/**
+ * Storage metadata returned by head() operation
+ */
+export interface StorageMetadata {
+  /** Size in bytes */
+  size: number;
+  /** ETag for cache validation */
+  etag: string;
+  /** Last modification time */
+  lastModified?: Date;
+}
+
+// =============================================================================
+// LEGACY: ObjectStorageAdapter (kept for backward compatibility)
+// Use the new Storage interface for new code
 // =============================================================================
 
 /**
  * File/object metadata returned by storage operations
+ * @deprecated Use StorageMetadata instead
  */
 export interface ObjectMetadata {
   size: number;
@@ -16,11 +92,20 @@ export interface ObjectMetadata {
 }
 
 /**
- * Unified storage adapter interface for R2, S3, filesystem, etc.
+ * Object storage adapter interface for R2, S3, filesystem, etc.
  * Designed for testability - use MemoryObjectStorageAdapter for unit tests.
  *
- * This interface is compatible with Cloudflare R2 operations and provides
- * a clean abstraction layer for storage backends.
+ * @deprecated Use the unified Storage interface instead. This interface is
+ * maintained for backward compatibility with existing code.
+ *
+ * Migration guide:
+ * - put() -> write()
+ * - get() -> read()
+ * - list() -> list() (returns { paths: string[] } now)
+ * - delete() -> delete()
+ * - head() -> head() (returns StorageMetadata now)
+ * - exists() -> exists()
+ * - getRange() -> readRange()
  */
 export interface ObjectStorageAdapter {
   /** Write data to a path */
@@ -248,7 +333,290 @@ export class MemoryObjectStorageAdapter implements ObjectStorageAdapter {
 }
 
 // =============================================================================
-// Factory Functions
+// UNIFIED STORAGE IMPLEMENTATIONS
+// =============================================================================
+
+/**
+ * In-memory implementation of the unified Storage interface.
+ * Use for unit testing storage-dependent code.
+ *
+ * @example
+ * ```typescript
+ * const storage = new MemoryStorage();
+ * await storage.write('test.bin', new Uint8Array([1, 2, 3]));
+ * const data = await storage.read('test.bin');
+ * ```
+ */
+export class MemoryStorage implements Storage {
+  private data = new Map<string, { bytes: Uint8Array; metadata: StorageMetadata }>();
+
+  async read(path: string): Promise<Uint8Array | null> {
+    const entry = this.data.get(path);
+    return entry ? entry.bytes.slice() : null;
+  }
+
+  async write(path: string, data: Uint8Array): Promise<void> {
+    this.data.set(path, {
+      bytes: data.slice(), // Copy to prevent mutation
+      metadata: {
+        size: data.length,
+        etag: `"${this.computeEtag(data)}"`,
+        lastModified: new Date(),
+      },
+    });
+  }
+
+  async list(prefix: string): Promise<{ paths: string[] }> {
+    const paths = [...this.data.keys()]
+      .filter(k => k.startsWith(prefix))
+      .sort();
+    return { paths };
+  }
+
+  async delete(path: string): Promise<void> {
+    this.data.delete(path);
+  }
+
+  async exists(path: string): Promise<boolean> {
+    return this.data.has(path);
+  }
+
+  async head(path: string): Promise<StorageMetadata | null> {
+    const entry = this.data.get(path);
+    return entry ? { ...entry.metadata } : null;
+  }
+
+  async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+    const entry = this.data.get(path);
+    if (!entry) {
+      throw new Error(`Object not found: ${path}`);
+    }
+    let start = offset;
+    if (start < 0) {
+      start = entry.bytes.length + offset;
+    }
+    return entry.bytes.slice(start, start + length);
+  }
+
+  /** Clear all stored data (useful for test cleanup) */
+  clear(): void {
+    this.data.clear();
+  }
+
+  /** Get number of stored objects */
+  get size(): number {
+    return this.data.size;
+  }
+
+  /** Get all keys (for debugging) */
+  keys(): string[] {
+    return [...this.data.keys()];
+  }
+
+  private computeEtag(data: Uint8Array): string {
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      hash = ((hash << 5) - hash + data[i]) | 0;
+    }
+    return hash.toString(16);
+  }
+}
+
+/**
+ * R2 implementation of the unified Storage interface.
+ * Wraps an R2Bucket binding to provide the Storage interface.
+ *
+ * @example
+ * ```typescript
+ * // In a Cloudflare Worker
+ * const storage = new R2Storage(env.MY_BUCKET);
+ * await storage.write('data/file.bin', new Uint8Array([1, 2, 3]));
+ * ```
+ */
+export class R2Storage implements Storage {
+  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {}
+
+  private getFullKey(key: string): string {
+    if (this.keyPrefix) {
+      return `${this.keyPrefix}/${key}`.replace(/\/+/g, '/');
+    }
+    return key;
+  }
+
+  async read(path: string): Promise<Uint8Array | null> {
+    const fullKey = this.getFullKey(path);
+    const obj = await this.bucket.get(fullKey);
+    if (!obj) return null;
+    const buffer = await obj.arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+
+  async write(path: string, data: Uint8Array): Promise<void> {
+    const fullKey = this.getFullKey(path);
+    const buffer = (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength);
+    await this.bucket.put(fullKey, buffer);
+  }
+
+  async list(prefix: string): Promise<{ paths: string[] }> {
+    const fullPrefix = this.getFullKey(prefix);
+    const paths: string[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: 1000 });
+      for (const obj of result.objects) {
+        let key = obj.key;
+        if (this.keyPrefix && key.startsWith(this.keyPrefix)) {
+          key = key.slice(this.keyPrefix.length).replace(/^\/+/, '');
+        }
+        paths.push(key);
+      }
+      cursor = result.truncated ? result.cursor : undefined;
+    } while (cursor);
+
+    return { paths };
+  }
+
+  async delete(path: string): Promise<void> {
+    const fullKey = this.getFullKey(path);
+    await this.bucket.delete(fullKey);
+  }
+
+  async exists(path: string): Promise<boolean> {
+    const meta = await this.head(path);
+    return meta !== null;
+  }
+
+  async head(path: string): Promise<StorageMetadata | null> {
+    const fullKey = this.getFullKey(path);
+    const obj = await this.bucket.head(fullKey);
+    if (!obj) return null;
+    return {
+      size: obj.size,
+      etag: obj.etag,
+      lastModified: obj.uploaded,
+    };
+  }
+}
+
+// =============================================================================
+// ADAPTER FUNCTIONS - Convert between interfaces
+// =============================================================================
+
+/**
+ * Wrap a unified Storage implementation to provide the legacy ObjectStorageAdapter interface.
+ * Use this when you need to pass a Storage to code that expects ObjectStorageAdapter.
+ */
+export function storageToObjectAdapter(storage: Storage): ObjectStorageAdapter {
+  return {
+    async put(path: string, data: Uint8Array | ArrayBuffer): Promise<void> {
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+      await storage.write(path, bytes);
+    },
+    async get(path: string): Promise<Uint8Array | null> {
+      return storage.read(path);
+    },
+    async delete(path: string): Promise<void> {
+      await storage.delete(path);
+    },
+    async list(prefix: string): Promise<string[]> {
+      const result = await storage.list(prefix);
+      return result.paths;
+    },
+    async head(path: string): Promise<ObjectMetadata | null> {
+      if (storage.head) {
+        return storage.head(path);
+      }
+      const data = await storage.read(path);
+      if (!data) return null;
+      return { size: data.length, etag: '' };
+    },
+    async exists(path: string): Promise<boolean> {
+      if (storage.exists) {
+        return storage.exists(path);
+      }
+      const data = await storage.read(path);
+      return data !== null;
+    },
+    async getRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+      if (storage.readRange) {
+        return storage.readRange(path, offset, length);
+      }
+      const data = await storage.read(path);
+      if (!data) {
+        throw new Error(`Object not found: ${path}`);
+      }
+      let start = offset;
+      if (start < 0) {
+        start = data.length + offset;
+      }
+      return data.slice(start, start + length);
+    },
+  };
+}
+
+/**
+ * Wrap a legacy ObjectStorageAdapter to provide the unified Storage interface.
+ * Use this when migrating existing code to the new interface.
+ */
+export function objectAdapterToStorage(adapter: ObjectStorageAdapter): Storage {
+  return {
+    async read(path: string): Promise<Uint8Array | null> {
+      return adapter.get(path);
+    },
+    async write(path: string, data: Uint8Array): Promise<void> {
+      await adapter.put(path, data);
+    },
+    async list(prefix: string): Promise<{ paths: string[] }> {
+      const paths = await adapter.list(prefix);
+      return { paths };
+    },
+    async delete(path: string): Promise<void> {
+      await adapter.delete(path);
+    },
+    async exists(path: string): Promise<boolean> {
+      if (adapter.exists) {
+        return adapter.exists(path);
+      }
+      const meta = await adapter.head(path);
+      return meta !== null;
+    },
+    async head(path: string): Promise<StorageMetadata | null> {
+      return adapter.head(path);
+    },
+    async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
+      if (adapter.getRange) {
+        return adapter.getRange(path, offset, length);
+      }
+      const data = await adapter.get(path);
+      if (!data) {
+        throw new Error(`Object not found: ${path}`);
+      }
+      let start = offset;
+      if (start < 0) {
+        start = data.length + offset;
+      }
+      return data.slice(start, start + length);
+    },
+  };
+}
+
+/**
+ * Create a unified Storage from an R2 bucket binding
+ */
+export function createStorage(bucket: R2BucketLike, keyPrefix?: string): Storage {
+  return new R2Storage(bucket, keyPrefix);
+}
+
+/**
+ * Create an in-memory Storage for testing
+ */
+export function createMemoryStorage(): MemoryStorage {
+  return new MemoryStorage();
+}
+
+// =============================================================================
+// Factory Functions (Legacy - kept for backward compatibility)
 // =============================================================================
 
 /**

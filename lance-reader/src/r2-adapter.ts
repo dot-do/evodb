@@ -541,3 +541,93 @@ export class CachingStorageAdapter implements StorageAdapter {
     };
   }
 }
+
+// ==========================================
+// Core Storage Adapter (Issue evodb-pyo)
+// ==========================================
+
+/**
+ * Interface matching @evodb/core's unified Storage interface.
+ * This is duplicated here to avoid adding @evodb/core as a dependency,
+ * keeping lance-reader standalone.
+ */
+interface CoreStorageLike {
+  read(path: string): Promise<Uint8Array | null>;
+  readRange?(path: string, offset: number, length: number): Promise<Uint8Array>;
+  exists?(path: string): Promise<boolean>;
+}
+
+/**
+ * Interface matching @evodb/core's unified Storage interface with list support.
+ * Extended version that includes list() method.
+ */
+interface CoreStorageWithList extends CoreStorageLike {
+  list(prefix: string): Promise<{ paths: string[] }>;
+}
+
+/**
+ * Create a lance-reader StorageAdapter from an @evodb/core Storage instance.
+ *
+ * This allows using the unified Storage interface from @evodb/core with lance-reader
+ * without adding @evodb/core as a direct dependency.
+ *
+ * @example
+ * ```typescript
+ * // In application code that uses both @evodb/core and @evodb/lance-reader
+ * import { createMemoryStorage } from '@evodb/core';
+ * import { createLanceStorageAdapter, LanceReader } from '@evodb/lance-reader';
+ *
+ * const coreStorage = createMemoryStorage();
+ * // ... populate storage with lance dataset files ...
+ *
+ * const lanceAdapter = createLanceStorageAdapter(coreStorage);
+ * const reader = new LanceReader({
+ *   storage: lanceAdapter,
+ *   basePath: 'datasets/embeddings',
+ * });
+ * ```
+ *
+ * @param storage - An object implementing @evodb/core Storage interface
+ * @returns A StorageAdapter compatible with lance-reader
+ */
+export function createLanceStorageAdapter(storage: CoreStorageWithList): StorageAdapter {
+  return {
+    async get(key: string): Promise<ArrayBuffer | null> {
+      const data = await storage.read(key);
+      if (!data) return null;
+      // Convert Uint8Array to ArrayBuffer
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    },
+
+    async getRange(key: string, offset: number, length: number): Promise<ArrayBuffer> {
+      if (storage.readRange) {
+        const data = await storage.readRange(key, offset, length);
+        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      }
+      // Fallback: read entire file and slice
+      const fullData = await storage.read(key);
+      if (!fullData) {
+        throw new Error(`Object not found: ${key}`);
+      }
+      let start = offset;
+      if (start < 0) {
+        start = fullData.length + offset;
+      }
+      const slice = fullData.slice(start, start + length);
+      return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
+    },
+
+    async list(prefix: string): Promise<string[]> {
+      const result = await storage.list(prefix);
+      return result.paths;
+    },
+
+    async exists(key: string): Promise<boolean> {
+      if (storage.exists) {
+        return storage.exists(key);
+      }
+      const data = await storage.read(key);
+      return data !== null;
+    },
+  };
+}

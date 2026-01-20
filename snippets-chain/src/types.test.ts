@@ -6,6 +6,9 @@ import { describe, it, expect } from 'vitest';
 import {
   stepId,
   DEFAULT_SNIPPET_BUDGET,
+  isSequentialStep,
+  isParallelStep,
+  isConditionalStep,
   type StepId,
   type SnippetBudget,
   type ResourceEstimate,
@@ -412,6 +415,144 @@ describe('Step Execution Modes', () => {
 
     modes.forEach(mode => {
       expect(['sequential', 'parallel', 'conditional']).toContain(mode);
+    });
+  });
+});
+
+describe('Step Type Guards', () => {
+  // Helper to create test steps
+  const createSequentialStep = (): SequentialStep => ({
+    id: stepId('seq-1'),
+    name: 'Sequential Step',
+    mode: 'sequential',
+    snippet: { snippetId: 'my-snippet' },
+    resourceEstimate: { subrequests: 1, cpuMs: 2, memoryBytes: 8 * 1024 * 1024 },
+    dependencies: [],
+  });
+
+  const createParallelStep = (): ParallelStep => ({
+    id: stepId('par-1'),
+    name: 'Parallel Step',
+    mode: 'parallel',
+    snippet: { snippetId: 'process' },
+    partitioner: { partitionerId: 'chunk-partitioner' },
+    maxParallelism: 10,
+    resourceEstimate: { subrequests: 1, cpuMs: 2, memoryBytes: 8 * 1024 * 1024 },
+    dependencies: [],
+  });
+
+  const createConditionalStep = (): ConditionalStep => ({
+    id: stepId('cond-1'),
+    name: 'Conditional Step',
+    mode: 'conditional',
+    condition: { conditionId: 'is-valid' },
+    ifTrue: { snippetId: 'handle-valid' },
+    ifFalse: { snippetId: 'handle-invalid' },
+    resourceEstimate: { subrequests: 1, cpuMs: 2, memoryBytes: 8 * 1024 * 1024 },
+    dependencies: [],
+  });
+
+  describe('isSequentialStep', () => {
+    it('should return true for sequential steps', () => {
+      const step: Step = createSequentialStep();
+      expect(isSequentialStep(step)).toBe(true);
+    });
+
+    it('should return false for parallel steps', () => {
+      const step: Step = createParallelStep();
+      expect(isSequentialStep(step)).toBe(false);
+    });
+
+    it('should return false for conditional steps', () => {
+      const step: Step = createConditionalStep();
+      expect(isSequentialStep(step)).toBe(false);
+    });
+
+    it('should narrow type to SequentialStep', () => {
+      const step: Step = createSequentialStep();
+      if (isSequentialStep(step)) {
+        // TypeScript should allow access to snippet property
+        expect(step.snippet.snippetId).toBe('my-snippet');
+      } else {
+        throw new Error('Should have been a sequential step');
+      }
+    });
+  });
+
+  describe('isParallelStep', () => {
+    it('should return true for parallel steps', () => {
+      const step: Step = createParallelStep();
+      expect(isParallelStep(step)).toBe(true);
+    });
+
+    it('should return false for sequential steps', () => {
+      const step: Step = createSequentialStep();
+      expect(isParallelStep(step)).toBe(false);
+    });
+
+    it('should return false for conditional steps', () => {
+      const step: Step = createConditionalStep();
+      expect(isParallelStep(step)).toBe(false);
+    });
+
+    it('should narrow type to ParallelStep', () => {
+      const step: Step = createParallelStep();
+      if (isParallelStep(step)) {
+        // TypeScript should allow access to partitioner and maxParallelism
+        expect(step.partitioner.partitionerId).toBe('chunk-partitioner');
+        expect(step.maxParallelism).toBe(10);
+      } else {
+        throw new Error('Should have been a parallel step');
+      }
+    });
+  });
+
+  describe('isConditionalStep', () => {
+    it('should return true for conditional steps', () => {
+      const step: Step = createConditionalStep();
+      expect(isConditionalStep(step)).toBe(true);
+    });
+
+    it('should return false for sequential steps', () => {
+      const step: Step = createSequentialStep();
+      expect(isConditionalStep(step)).toBe(false);
+    });
+
+    it('should return false for parallel steps', () => {
+      const step: Step = createParallelStep();
+      expect(isConditionalStep(step)).toBe(false);
+    });
+
+    it('should narrow type to ConditionalStep', () => {
+      const step: Step = createConditionalStep();
+      if (isConditionalStep(step)) {
+        // TypeScript should allow access to condition, ifTrue, ifFalse
+        expect(step.condition.conditionId).toBe('is-valid');
+        expect(step.ifTrue.snippetId).toBe('handle-valid');
+        expect(step.ifFalse?.snippetId).toBe('handle-invalid');
+      } else {
+        throw new Error('Should have been a conditional step');
+      }
+    });
+  });
+
+  describe('Type guard exhaustiveness', () => {
+    it('should categorize any step into exactly one type', () => {
+      const steps: Step[] = [
+        createSequentialStep(),
+        createParallelStep(),
+        createConditionalStep(),
+      ];
+
+      for (const step of steps) {
+        const isSeq = isSequentialStep(step);
+        const isPar = isParallelStep(step);
+        const isCond = isConditionalStep(step);
+
+        // Exactly one should be true
+        const trueCount = [isSeq, isPar, isCond].filter(Boolean).length;
+        expect(trueCount).toBe(1);
+      }
     });
   });
 });

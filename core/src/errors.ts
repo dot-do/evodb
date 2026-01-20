@@ -170,3 +170,70 @@ export class StorageError extends EvoDBError {
     this.name = 'StorageError';
   }
 }
+
+/**
+ * Details about block corruption for debugging and logging
+ */
+export interface CorruptedBlockDetails {
+  /** Expected value (for mismatches) */
+  expected?: number;
+  /** Actual value found */
+  actual?: number;
+  /** Byte offset where corruption was detected */
+  offset?: number;
+  /** Actual size of the data */
+  actualSize?: number;
+  /** Minimum expected size */
+  minExpectedSize?: number;
+  /** Version found in corrupted block */
+  version?: number;
+  /** List of supported versions */
+  supportedVersions?: number[];
+}
+
+/**
+ * Error thrown when block data is corrupted
+ *
+ * This error is thrown when reading block data that has been corrupted,
+ * such as when R2 returns corrupted data due to storage issues, network
+ * transmission errors, or other data integrity problems.
+ *
+ * Error codes:
+ * - CORRUPTED_BLOCK: Generic corruption error
+ * - INVALID_MAGIC: Magic number does not match expected value
+ * - TRUNCATED_DATA: Data is shorter than expected
+ * - CHECKSUM_MISMATCH: CRC32 checksum validation failed
+ * - UNSUPPORTED_VERSION: Block version is not supported
+ * - INVALID_STRUCTURE: Block structure is invalid (bad column count, sizes, etc.)
+ *
+ * @example
+ * ```typescript
+ * throw new CorruptedBlockError('Invalid magic number: expected 0x434A4C42, got 0x00000000', 'INVALID_MAGIC', {
+ *   expected: 0x434A4C42,
+ *   actual: 0x00000000,
+ * });
+ * ```
+ */
+export class CorruptedBlockError extends StorageError {
+  /**
+   * Additional details about the corruption for debugging
+   */
+  public readonly details?: CorruptedBlockDetails;
+
+  /**
+   * Create a new CorruptedBlockError
+   *
+   * @param message - Human-readable error message describing the corruption
+   * @param code - Error code (default: 'CORRUPTED_BLOCK')
+   * @param details - Additional details about the corruption
+   */
+  constructor(
+    message: string,
+    code: string = 'CORRUPTED_BLOCK',
+    details?: CorruptedBlockDetails
+  ) {
+    super(message, code);
+    this.name = 'CorruptedBlockError';
+    this.details = details;
+  }
+}

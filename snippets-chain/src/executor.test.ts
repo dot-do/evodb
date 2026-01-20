@@ -20,7 +20,9 @@ import {
   type Partitioner,
   type ConditionEvaluator,
   type PartitionSpec,
+  type SequentialStep,
   DEFAULT_SNIPPET_BUDGET,
+  stepId,
 } from './types.js';
 
 describe('SnippetRegistry', () => {
@@ -523,8 +525,8 @@ describe('ChainExecutor', () => {
       expect(result.actualCost.sequentialStages).toBe(2);
       // Verify step outputs exist for all stages
       expect(result.stepOutputs.size).toBe(2);
-      expect(result.stepOutputs.get('step-1' as any)).toBeDefined();
-      expect(result.stepOutputs.get('step-2' as any)).toBeDefined();
+      expect(result.stepOutputs.get(stepId('step-1'))).toBeDefined();
+      expect(result.stepOutputs.get(stepId('step-2'))).toBeDefined();
     });
 
     it('should store step outputs in result', async () => {
@@ -539,8 +541,8 @@ describe('ChainExecutor', () => {
 
       const result = await executor.execute(chainDef, {});
 
-      expect(result.stepOutputs.get('step-a' as any)?.data).toBe('output-a');
-      expect(result.stepOutputs.get('step-b' as any)?.data).toBe('output-b');
+      expect(result.stepOutputs.get(stepId('step-a'))?.data).toBe('output-a');
+      expect(result.stepOutputs.get(stepId('step-b'))?.data).toBe('output-b');
     });
   });
 
@@ -573,7 +575,7 @@ describe('ChainExecutor', () => {
           mode: 'sequential',
           snippet: { snippetId: 'merge' },
           resourceEstimate: { subrequests: 0, cpuMs: 1, memoryBytes: 1024 },
-        } as any,
+        } as Omit<SequentialStep, 'id' | 'dependencies'>,
         ['a', 'b']
       );
 

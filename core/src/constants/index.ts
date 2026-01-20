@@ -1,0 +1,84 @@
+/**
+ * @evodb/core/constants - Common constants
+ *
+ * This submodule exports centralized constants to replace magic numbers
+ * across the codebase.
+ *
+ * @module constants
+ */
+
+export {
+  // Byte sizes
+  KB,
+  MB,
+  GB,
+  BUFFER_SIZE_256KB,
+  BUFFER_SIZE_1MB,
+  BUFFER_SIZE_2MB,
+  BUFFER_SIZE_4MB,
+  BUFFER_SIZE_16MB,
+  BUFFER_SIZE_32MB,
+  BUFFER_SIZE_50MB,
+  BUFFER_SIZE_64MB,
+  BUFFER_SIZE_128MB,
+  BUFFER_SIZE_256MB,
+  BUFFER_SIZE_500MB,
+  BUFFER_SIZE_512MB,
+  BUFFER_SIZE_10MB,
+  BUFFER_SIZE_100MB,
+  BUFFER_SIZE_1GB,
+  BUFFER_SIZE_2GB,
+  BUFFER_SIZE_5GB,
+  BUFFER_SIZE_10GB,
+  // Timeout constants
+  TIMEOUT_100MS,
+  TIMEOUT_1S,
+  TIMEOUT_3S,
+  TIMEOUT_5S,
+  TIMEOUT_10S,
+  TIMEOUT_30S,
+  TIMEOUT_60S,
+  TIMEOUT_5MIN,
+  // Count/limit constants
+  CRC_TABLE_SIZE,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_BUFFER_SIZE,
+  MAX_DICTIONARY_SIZE,
+  // Retry constants
+  DEFAULT_MAX_RETRIES,
+  MAX_RECONNECT_ATTEMPTS,
+  BACKOFF_MULTIPLIER,
+  // Protocol constants
+  MAX_MESSAGE_SIZE,
+  MAX_FRAME_SIZE,
+  RPC_HEADER_SIZE,
+  FRAME_HEADER_SIZE,
+  BATCH_HEADER_SIZE,
+  // Merge/compaction constants
+  MIN_COMPACT_BLOCKS,
+  MAX_MERGE_BLOCKS,
+  // Cache constants
+  CACHE_TTL_NONE,
+  CACHE_TTL_1H,
+  CACHE_TTL_24H,
+  // Snippet constraints
+  SNIPPET_CPU_LIMIT_MS,
+  SNIPPET_MEMORY_LIMIT_MB,
+  SNIPPET_SUBREQUEST_LIMIT,
+  // Timestamp constants
+  MS_PER_SECOND,
+  MS_PER_MINUTE,
+  MS_PER_HOUR,
+  MS_PER_DAY,
+  MS_PER_WEEK,
+  // Query constants
+  MAX_COLUMN_NAME_LENGTH,
+  DEFAULT_QUERY_TIMEOUT_MS,
+  // Prefetch constants
+  DEFAULT_MAX_CONCURRENT_PREFETCH,
+  // Helpers
+  mbToBytes,
+  bytesToMb,
+  secToMs,
+  msToSec,
+} from '../constants.js';

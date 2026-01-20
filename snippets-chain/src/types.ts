@@ -168,6 +168,37 @@ export type Step<TInput = unknown, TOutput = unknown> =
   | ConditionalStep<TInput, TOutput>;
 
 // =============================================================================
+// Step Type Guards
+// =============================================================================
+
+/**
+ * Type guard for SequentialStep
+ */
+export function isSequentialStep<TInput = unknown, TOutput = unknown>(
+  step: Step<TInput, TOutput>
+): step is SequentialStep<TInput, TOutput> {
+  return step.mode === 'sequential';
+}
+
+/**
+ * Type guard for ParallelStep
+ */
+export function isParallelStep<TInput = unknown, TOutput = unknown>(
+  step: Step<TInput, TOutput>
+): step is ParallelStep<TInput, TOutput> {
+  return step.mode === 'parallel';
+}
+
+/**
+ * Type guard for ConditionalStep
+ */
+export function isConditionalStep<TInput = unknown, TOutput = unknown>(
+  step: Step<TInput, TOutput>
+): step is ConditionalStep<TInput, TOutput> {
+  return step.mode === 'conditional';
+}
+
+// =============================================================================
 // Snippet References
 // =============================================================================
 
