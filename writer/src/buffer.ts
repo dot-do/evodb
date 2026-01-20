@@ -25,8 +25,8 @@ export interface BufferOptions {
 /**
  * CDC Buffer for accumulating WAL entries before block write
  */
-/** Maximum value for signed 64-bit integer, used as initial minLsn sentinel */
-const MAX_BIGINT_64 = 9223372036854775807n;
+/** Maximum value for unsigned 64-bit integer, used as initial minLsn sentinel */
+const MAX_BIGINT_64 = 18446744073709551615n;
 
 /**
  * Validate that a buffer option value is a positive number
