@@ -1,0 +1,45 @@
+{
+  "name": "@evodb/core",
+  "version": "0.1.0-rc.1",
+  "description": "Columnar JSON with schema evolution - ClickHouse-style shredding for Cloudflare Workers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "columnar",
+    "json",
+    "schema-evolution",
+    "shredding",
+    "cloudflare",
+    "workers",
+    "durable-objects"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "core"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.5.41",
+    "@cloudflare/workers-types": "^4.20260118.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.0.0"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@evodb/lakehouse",
+  "version": "0.1.0-rc.1",
+  "description": "Iceberg-inspired manifest and R2 storage for EvoDB lakehouse",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "lakehouse",
+    "iceberg",
+    "manifest",
+    "r2",
+    "cloudflare",
+    "workers",
+    "time-travel",
+    "snapshots"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "lakehouse"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}

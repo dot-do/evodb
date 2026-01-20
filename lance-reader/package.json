@@ -1,0 +1,53 @@
+{
+  "name": "@evodb/lance-reader",
+  "version": "0.1.0-rc.1",
+  "description": "Pure TypeScript Lance format reader for vector search in Cloudflare Workers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./ivf-pq": {
+      "types": "./dist/ivf-pq.d.ts",
+      "import": "./dist/ivf-pq.js"
+    },
+    "./hnsw": {
+      "types": "./dist/hnsw.d.ts",
+      "import": "./dist/hnsw.js"
+    },
+    "./r2": {
+      "types": "./dist/r2-adapter.d.ts",
+      "import": "./dist/r2-adapter.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "lance",
+    "lancedb",
+    "vector-search",
+    "ivf-pq",
+    "hnsw",
+    "cloudflare",
+    "workers",
+    "r2",
+    "evodb"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "lance-reader"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "sideEffects": false
+}

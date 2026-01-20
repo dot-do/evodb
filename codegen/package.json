@@ -1,0 +1,52 @@
+{
+  "name": "@evodb/codegen",
+  "version": "0.1.0-rc.1",
+  "description": "CLI tool for EvoDB schema codegen - pull, push, lock, and diff database schemas",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "evodb": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "keywords": [
+    "evodb",
+    "codegen",
+    "schema",
+    "typescript",
+    "cli",
+    "cloudflare",
+    "workers",
+    "durable-objects"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "codegen"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

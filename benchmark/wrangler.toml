@@ -1,0 +1,12 @@
+name = "evodb-benchmark"
+main = "src/worker.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "b6641681fe423910342b9ffa1364c76d"
+
+routes = [
+  { pattern = "evodb-benchmark.workers.do/*", zone_name = "workers.do" }
+]
+
+[vars]
+ENVIRONMENT = "development"

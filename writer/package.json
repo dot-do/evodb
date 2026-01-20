@@ -1,0 +1,46 @@
+{
+  "name": "@evodb/writer",
+  "version": "0.1.0-rc.1",
+  "description": "Parent DO for CDC aggregation and R2 writing in EvoDB",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "writer",
+    "cdc",
+    "r2",
+    "durable-objects",
+    "cloudflare",
+    "workers",
+    "buffer",
+    "compaction"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "writer"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*",
+    "@evodb/rpc": "workspace:*",
+    "@evodb/lakehouse": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}

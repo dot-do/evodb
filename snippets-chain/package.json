@@ -1,0 +1,42 @@
+{
+  "name": "@evodb/snippets-chain",
+  "version": "0.1.0-rc.1",
+  "description": "Chained Snippets architecture for EvoDB - scatter-gather, map-reduce, pipeline patterns",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "snippets",
+    "chain",
+    "scatter-gather",
+    "map-reduce",
+    "pipeline",
+    "vector-search",
+    "cloudflare",
+    "workers",
+    "durable-objects"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "snippets-chain"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  }
+}

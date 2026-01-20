@@ -1,0 +1,44 @@
+{
+  "name": "@evodb/rpc",
+  "version": "0.1.0-rc.1",
+  "description": "CapnWeb RPC for DO-to-DO CDC communication with WebSocket hibernation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "rpc",
+    "capnweb",
+    "websocket",
+    "hibernation",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "cdc"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "rpc"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260118.0",
+    "typescript": "^5.9.3",
+    "vitest": "^1.0.0"
+  }
+}

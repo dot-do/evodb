@@ -1,0 +1,67 @@
+{
+  "name": "@evodb/benchmark",
+  "version": "0.1.0-rc.1",
+  "description": "EvoDB benchmarking utilities with JSONBench Bluesky data loader",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./datasets": {
+      "types": "./dist/datasets/index.d.ts",
+      "import": "./dist/datasets/index.js"
+    },
+    "./generators": {
+      "types": "./dist/generators/index.d.ts",
+      "import": "./dist/generators/index.js"
+    },
+    "./scenarios": {
+      "types": "./dist/scenarios/index.d.ts",
+      "import": "./dist/scenarios/index.js"
+    },
+    "./workers": {
+      "types": "./dist/workers/index.d.ts",
+      "import": "./dist/workers/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "vitest bench",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "benchmark",
+    "jsonbench",
+    "bluesky",
+    "columnar",
+    "shredding",
+    "cloudflare",
+    "workers"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "benchmark"
+  },
+  "dependencies": {
+    "@evodb/core": "file:../core"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.0.0"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "^4.0.0"
+  }
+}

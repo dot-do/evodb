@@ -1,0 +1,50 @@
+{
+  "name": "evodb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Distributed Lakehouse for Cloudflare Workers",
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "lakehouse",
+    "analytics",
+    "edge",
+    "r2",
+    "columnar"
+  ],
+  "author": ".do",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dot-do/evodb.git"
+  },
+  "workspaces": [
+    "core",
+    "rpc",
+    "lakehouse",
+    "writer",
+    "reader",
+    "query",
+    "edge-cache",
+    "lance-reader",
+    "snippets-chain",
+    "snippets-lance",
+    "benchmark",
+    "codegen"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r exec rm -rf dist coverage node_modules",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
