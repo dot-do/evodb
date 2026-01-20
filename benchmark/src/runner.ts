@@ -12,30 +12,24 @@ import type {
   ComparisonReport,
   AnyScenarioConfig,
   DataSize,
-  DATA_SIZE_ROWS,
 } from './types.js';
-import { generateDataset, generateForSize } from './generators/data-generator.js';
+import { generateForSize } from './generators/data-generator.js';
 import { getSchema, USER_ACTIVITY_SCHEMA } from './generators/schemas.js';
 import {
   createConcurrentQueriesScenario,
   benchmarkConcurrentQueries,
 } from './scenarios/concurrent-queries.js';
 import {
-  createPartitionParallelScanScenario,
   benchmarkParallelScan,
 } from './scenarios/partition-parallel-scan.js';
 import {
-  createCacheEffectivenessScenario,
   benchmarkCacheEffectiveness,
 } from './scenarios/cache-effectiveness.js';
 import {
   createScatterGatherScenario,
-  benchmarkScatterGather,
 } from './scenarios/scatter-gather.js';
 import {
-  getAllBaselines,
   compareToBaseline,
-  generateComparisonTable,
   CLICKBENCH_BASELINE,
 } from './baselines/clickhouse-baselines.js';
 import { formatBytes, formatDuration, formatNumber } from './utils/metrics.js';
@@ -287,7 +281,7 @@ export class BenchmarkRunner {
    */
   private async runCacheEffectivenessScenario(
     dataset: ReturnType<typeof generateForSize>,
-    schemaName: string
+    _schemaName: string
   ): Promise<void> {
     console.log(`\n${'─'.repeat(40)}`);
     console.log(`Cache Effectiveness Scenario`);

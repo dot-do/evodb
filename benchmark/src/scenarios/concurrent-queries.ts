@@ -9,9 +9,6 @@ import type {
   BenchmarkResult,
   ConcurrentQueriesConfig,
   PartitionMetadata,
-  QueryTask,
-  LatencyMetrics,
-  ThroughputMetrics,
   ResourceMetrics,
 } from '../types.js';
 import { WorkerSimulator, createWorkerSimulator } from '../workers/worker-simulator.js';
@@ -124,9 +121,7 @@ export class ConcurrentQueriesScenario {
       );
 
       // Execute batch
-      const batchStart = performance.now();
       const results = await this.simulator.executeTasks(tasks, partitions, data);
-      const batchDuration = performance.now() - batchStart;
 
       // Collect metrics
       for (const result of results) {

@@ -8,7 +8,7 @@
  */
 
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat, readFile, rm } from 'node:fs/promises';
+import { mkdir, stat, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { pipeline } from 'node:stream/promises';

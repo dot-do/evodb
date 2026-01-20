@@ -61,14 +61,29 @@ export interface PendingFlush {
 }
 
 /**
- * Result of an atomic flush operation
+ * Result of a successful atomic flush operation
  */
-export interface AtomicFlushResult {
-  success: boolean;
-  flushId?: string;
-  metadata?: BlockMetadata;
-  error?: string;
+export interface AtomicFlushSuccess {
+  success: true;
+  flushId: string;
+  metadata: BlockMetadata;
+  error?: undefined;
 }
+
+/**
+ * Result of a failed atomic flush operation
+ */
+export interface AtomicFlushFailure {
+  success: false;
+  flushId?: string;
+  metadata?: undefined;
+  error: string;
+}
+
+/**
+ * Result of an atomic flush operation (discriminated union)
+ */
+export type AtomicFlushResult = AtomicFlushSuccess | AtomicFlushFailure;
 
 /**
  * Result of flush recovery
@@ -457,8 +472,9 @@ export class AtomicFlushWriter {
       return prepareResult;
     }
 
-    // Commit
-    const committed = await this.commitFlush(prepareResult.flushId!);
+    // TypeScript now narrows prepareResult to AtomicFlushSuccess
+    // so flushId and metadata are guaranteed to exist
+    const committed = await this.commitFlush(prepareResult.flushId);
 
     if (!committed) {
       return {
@@ -469,9 +485,7 @@ export class AtomicFlushWriter {
     }
 
     // Track committed block for manifest integration
-    if (prepareResult.metadata) {
-      this.committedBlocks.push(prepareResult.metadata);
-    }
+    this.committedBlocks.push(prepareResult.metadata);
 
     return prepareResult;
   }

@@ -231,7 +231,7 @@ export class DataGenerator {
   /**
    * Generate a single value for a column
    */
-  private generateValue(col: ColumnDef, rowIndex: number, globalIndex: number): unknown {
+  private generateValue(col: ColumnDef, _rowIndex: number, globalIndex: number): unknown {
     // Check for null
     if (col.nullable && this.random.random() < (this.config.nullPercentage ?? 0.02)) {
       return null;

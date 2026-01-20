@@ -7,8 +7,6 @@
 
 import type {
   BlueskyEventJson,
-  BlueskyEventKind,
-  CommitOperation,
   DataSize,
 } from './types.js';
 import { DATA_SIZES } from './types.js';

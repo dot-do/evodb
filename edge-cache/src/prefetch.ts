@@ -62,7 +62,17 @@ export type FetchFunction = typeof fetch;
 // ============================================================================
 
 /**
- * In-memory cache status tracking
+ * Default maximum entries for the cache status map
+ */
+const DEFAULT_MAX_CACHE_STATUS_ENTRIES = 10000;
+
+/**
+ * Maximum entries for the cache status map (configurable via setCacheStatusMapMaxSize)
+ */
+let maxCacheStatusEntries = DEFAULT_MAX_CACHE_STATUS_ENTRIES;
+
+/**
+ * In-memory cache status tracking with LRU eviction
  * Maps partition path to cache status
  */
 const cacheStatusMap = new Map<string, CacheStatus>();
@@ -91,6 +101,61 @@ export function resetFetchFunction(): void {
  */
 export function clearCacheStatusMap(): void {
   cacheStatusMap.clear();
+}
+
+/**
+ * Set the maximum number of entries in the cache status map
+ * @param maxSize - Maximum number of entries (default: 10000)
+ */
+export function setCacheStatusMapMaxSize(maxSize: number): void {
+  maxCacheStatusEntries = maxSize;
+  // Evict if current size exceeds new max
+  evictCacheStatusEntriesIfNeeded();
+}
+
+/**
+ * Get the current maximum cache status map size
+ */
+export function getCacheStatusMapMaxSize(): number {
+  return maxCacheStatusEntries;
+}
+
+/**
+ * Get the current cache status map size
+ */
+export function getCacheStatusMapSize(): number {
+  return cacheStatusMap.size;
+}
+
+/**
+ * Evict oldest entries from cache status map using LRU strategy
+ * (Map maintains insertion order, so first entries are oldest)
+ */
+function evictCacheStatusEntriesIfNeeded(): void {
+  // Use >= because this is called BEFORE adding the new entry
+  while (cacheStatusMap.size >= maxCacheStatusEntries) {
+    const oldestKey = cacheStatusMap.keys().next().value;
+    if (oldestKey !== undefined) {
+      cacheStatusMap.delete(oldestKey);
+    } else {
+      break;
+    }
+  }
+}
+
+/**
+ * Set a cache status entry with LRU behavior
+ * Moves existing entries to end, evicts oldest if at capacity
+ */
+function setCacheStatusEntry(partitionPath: string, status: CacheStatus): void {
+  // If key already exists, delete it first to update its position (LRU)
+  if (cacheStatusMap.has(partitionPath)) {
+    cacheStatusMap.delete(partitionPath);
+  } else {
+    // Evict oldest entries if cache is at capacity
+    evictCacheStatusEntriesIfNeeded();
+  }
+  cacheStatusMap.set(partitionPath, status);
 }
 
 // ============================================================================
@@ -336,14 +401,14 @@ export async function checkCacheStatus(partitionPath: string): Promise<CacheStat
       }
     }
 
-    // Update local tracking
-    cacheStatusMap.set(partitionPath, status);
+    // Update local tracking with LRU behavior
+    setCacheStatusEntry(partitionPath, status);
 
     return status;
   } catch (error) {
     // Return uncached status on error
     const uncachedStatus: CacheStatus = { cached: false };
-    cacheStatusMap.set(partitionPath, uncachedStatus);
+    setCacheStatusEntry(partitionPath, uncachedStatus);
     return uncachedStatus;
   }
 }
@@ -370,8 +435,8 @@ export async function invalidatePartition(partitionPath: string): Promise<boolea
     });
 
     if (response.ok || response.status === 200) {
-      // Update local tracking
-      cacheStatusMap.set(partitionPath, { cached: false });
+      // Update local tracking with LRU behavior
+      setCacheStatusEntry(partitionPath, { cached: false });
       return true;
     }
 
@@ -418,7 +483,9 @@ export async function invalidateTable(table: string): Promise<number> {
     let count = 0;
     for (const [path, status] of cacheStatusMap.entries()) {
       if (path.includes(`/${table}/`) || path.startsWith(`${table}/`)) {
-        cacheStatusMap.set(path, { cached: false });
+        // Note: We use direct set here since we're updating existing entries
+        // (not adding new ones), so no LRU eviction is needed
+        setCacheStatusEntry(path, { cached: false });
         if (status.cached) {
           count++;
         }
@@ -544,7 +611,7 @@ function updateCacheStatus(
     status.ttlRemaining = maxAge;
   }
 
-  cacheStatusMap.set(partitionPath, status);
+  setCacheStatusEntry(partitionPath, status);
 }
 
 /**

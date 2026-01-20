@@ -3,14 +3,7 @@
   "compilerOptions": {
     "types": ["@cloudflare/workers-types", "node"],
     "outDir": "./dist",
-    "rootDir": "./src",
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "strict": false,
-    "strictNullChecks": false,
-    "strictPropertyInitialization": false,
-    "noImplicitAny": false,
-    "skipLibCheck": true
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "src/worker.ts", "src/scenarios/scatter-gather.ts", "src/datasets/onet/loader.ts"]

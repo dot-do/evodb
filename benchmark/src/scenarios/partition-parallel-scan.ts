@@ -11,8 +11,8 @@ import type {
   PartitionMetadata,
   QueryResult,
 } from '../types.js';
-import { WorkerSimulator, createWorkerSimulator } from '../workers/worker-simulator.js';
-import { TaskScheduler, createTaskScheduler } from '../workers/task-scheduler.js';
+import { createWorkerSimulator } from '../workers/worker-simulator.js';
+import { createTaskScheduler } from '../workers/task-scheduler.js';
 import {
   computeLatencyMetrics,
   computeThroughputMetrics,

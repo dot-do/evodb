@@ -11,12 +11,9 @@
  */
 
 import {
-  SNIPPETS_CONSTRAINTS,
   CPU_BUDGET,
-  assertWithinConstraints,
   validateConstraints,
   runBenchmark,
-  formatBytes,
   formatMs,
   type BenchmarkMetrics,
   type ConstraintValidationResult,

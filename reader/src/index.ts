@@ -17,6 +17,10 @@ export type {
   AggregateFunction,
   AggregateSpec,
   QueryRequest,
+  // Reader-specific result types (internal format)
+  ReaderQueryResult,
+  ReaderQueryStats,
+  // Backward compatibility aliases (deprecated)
   QueryResult,
   QueryStats,
   BlockScanRequest,
@@ -35,8 +39,8 @@ export type {
 import type {
   CacheStats,
   QueryRequest,
-  QueryResult,
-  QueryStats,
+  ReaderQueryResult,
+  ReaderQueryStats,
   BlockScanRequest,
   BlockScanResult,
   TableMetadata,
@@ -223,7 +227,7 @@ export class QueryEngine {
   /**
    * Execute a query against the data
    */
-  async query(request: QueryRequest): Promise<QueryResult> {
+  async query(request: QueryRequest): Promise<ReaderQueryResult> {
     const startTime = Date.now();
 
     // Handle timeout
@@ -387,7 +391,7 @@ export class QueryEngine {
     const executionTimeMs = Date.now() - startTime;
     const cacheStats = this.cache.getStats();
 
-    const stats: QueryStats = {
+    const stats: ReaderQueryStats = {
       executionTimeMs,
       blocksScanned,
       blocksSkipped: 0,

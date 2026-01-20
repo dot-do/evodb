@@ -512,3 +512,270 @@ describe('Default Values', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+// =============================================================================
+// Complex Type Validation Tests
+// =============================================================================
+
+describe('Complex Type Validation', () => {
+  const config: ValidationConfig = { mode: 'locked' };
+
+  it('should validate binary type with Uint8Array', () => {
+    const schema: SchemaColumn[] = [{ name: 'data', type: 'binary', nullable: false }];
+
+    expect(validateDocument({ data: new Uint8Array([1, 2, 3]) }, schema, config).valid).toBe(true);
+    expect(validateDocument({ data: 'not-binary' }, schema, config).valid).toBe(false);
+  });
+
+  it('should validate binary type with ArrayBuffer', () => {
+    const schema: SchemaColumn[] = [{ name: 'data', type: 'binary', nullable: false }];
+    const buffer = new ArrayBuffer(8);
+    expect(validateDocument({ data: buffer }, schema, config).valid).toBe(true);
+  });
+
+  it('should validate date type with string format', () => {
+    const schema: SchemaColumn[] = [{ name: 'date', type: 'date', nullable: false }];
+
+    expect(validateDocument({ date: '2024-01-15' }, schema, config).valid).toBe(true);
+    expect(validateDocument({ date: '2024-1-15' }, schema, config).valid).toBe(false); // Invalid format
+    expect(validateDocument({ date: '01/15/2024' }, schema, config).valid).toBe(false);
+  });
+
+  it('should validate date type with Date object', () => {
+    const schema: SchemaColumn[] = [{ name: 'date', type: 'date', nullable: false }];
+    expect(validateDocument({ date: new Date() }, schema, config).valid).toBe(true);
+  });
+
+  it('should validate uuid type', () => {
+    const schema: SchemaColumn[] = [{ name: 'id', type: 'uuid', nullable: false }];
+
+    expect(validateDocument({ id: '550e8400-e29b-41d4-a716-446655440000' }, schema, config).valid).toBe(true);
+    expect(validateDocument({ id: '550E8400-E29B-41D4-A716-446655440000' }, schema, config).valid).toBe(true); // Uppercase
+    expect(validateDocument({ id: 'not-a-uuid' }, schema, config).valid).toBe(false);
+    expect(validateDocument({ id: '550e8400e29b41d4a716446655440000' }, schema, config).valid).toBe(false); // No dashes
+  });
+
+  it('should validate array type', () => {
+    const schema: SchemaColumn[] = [{
+      name: 'tags',
+      type: { type: 'array', elementType: 'string' },
+      nullable: false,
+    }];
+
+    expect(validateDocument({ tags: ['a', 'b', 'c'] }, schema, config).valid).toBe(true);
+    expect(validateDocument({ tags: [] }, schema, config).valid).toBe(true);
+    expect(validateDocument({ tags: 'not-array' }, schema, config).valid).toBe(false);
+  });
+
+  it('should validate array with null elements', () => {
+    const schema: SchemaColumn[] = [{
+      name: 'tags',
+      type: { type: 'array', elementType: 'string' },
+      nullable: false,
+    }];
+
+    // Arrays with null elements should be valid (elements can be null)
+    expect(validateDocument({ tags: ['a', null, 'c'] }, schema, config).valid).toBe(true);
+  });
+
+  it('should validate map type', () => {
+    const schema: SchemaColumn[] = [{
+      name: 'metadata',
+      type: { type: 'map', keyType: 'string', valueType: 'int64' },
+      nullable: false,
+    }];
+
+    expect(validateDocument({ metadata: { a: 1, b: 2 } }, schema, config).valid).toBe(true);
+    expect(validateDocument({ metadata: {} }, schema, config).valid).toBe(true);
+    expect(validateDocument({ metadata: 'not-object' }, schema, config).valid).toBe(false);
+    expect(validateDocument({ metadata: [] }, schema, config).valid).toBe(false);
+    expect(validateDocument({ metadata: null }, schema, config).valid).toBe(false);
+  });
+
+  it('should validate map with null values', () => {
+    const schema: SchemaColumn[] = [{
+      name: 'metadata',
+      type: { type: 'map', keyType: 'string', valueType: 'int64' },
+      nullable: false,
+    }];
+
+    // Map with null values should be valid
+    expect(validateDocument({ metadata: { a: 1, b: null } }, schema, config).valid).toBe(true);
+  });
+
+  it('should validate struct type', () => {
+    const schema: SchemaColumn[] = [{
+      name: 'address',
+      type: {
+        type: 'struct',
+        fields: [
+          { name: 'street', type: 'string', nullable: false },
+          { name: 'city', type: 'string', nullable: false },
+        ],
+      },
+      nullable: false,
+    }];
+
+    expect(validateDocument({ address: { street: '123 Main', city: 'NYC' } }, schema, config).valid).toBe(true);
+    expect(validateDocument({ address: 'not-object' }, schema, config).valid).toBe(false);
+    expect(validateDocument({ address: [] }, schema, config).valid).toBe(false);
+    expect(validateDocument({ address: null }, schema, config).valid).toBe(false);
+  });
+
+  it('should validate null type', () => {
+    const schema: SchemaColumn[] = [{ name: 'value', type: 'null', nullable: true }];
+
+    // Note: null type expects actual null value
+    expect(validateDocument({ value: null }, schema, config).valid).toBe(true);
+  });
+
+  it('should handle unknown complex type', () => {
+    // Test with an unexpected type structure
+    const schema: SchemaColumn[] = [{
+      name: 'field',
+      type: { type: 'unknown' } as unknown as ColumnType,
+      nullable: false,
+    }];
+
+    // Unknown types should fail validation
+    expect(validateDocument({ field: 'value' }, schema, config).valid).toBe(false);
+  });
+});
+
+// =============================================================================
+// Type Inference Tests
+// =============================================================================
+
+describe('Type Inference in Evolve Mode', () => {
+  const config: ValidationConfig = { mode: 'evolve' };
+  const emptySchema: SchemaColumn[] = [];
+
+  it('should infer null type', () => {
+    const doc = { field: null };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('null');
+  });
+
+  it('should infer boolean type', () => {
+    const doc = { field: true };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('boolean');
+  });
+
+  it('should infer int64 for integers', () => {
+    const doc = { field: 42 };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('int64');
+  });
+
+  it('should infer float64 for decimals', () => {
+    const doc = { field: 3.14 };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('float64');
+  });
+
+  it('should infer timestamp for ISO date strings', () => {
+    const doc = { field: '2024-01-15T12:00:00Z' };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('timestamp');
+  });
+
+  it('should infer date for date-only strings', () => {
+    const doc = { field: '2024-01-15' };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('date');
+  });
+
+  it('should infer uuid for UUID strings', () => {
+    const doc = { field: '550e8400-e29b-41d4-a716-446655440000' };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('uuid');
+  });
+
+  it('should infer timestamp for Date objects', () => {
+    const doc = { field: new Date() };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('timestamp');
+  });
+
+  it('should infer array type for arrays', () => {
+    const doc = { field: ['a', 'b', 'c'] };
+    const result = validateDocument(doc, emptySchema, config);
+    const type = result.schemaUpdates?.[0]?.type;
+    expect(type).toEqual({ type: 'array', elementType: 'string' });
+  });
+
+  it('should infer array with json element type for empty arrays', () => {
+    const doc = { field: [] };
+    const result = validateDocument(doc, emptySchema, config);
+    const type = result.schemaUpdates?.[0]?.type;
+    expect(type).toEqual({ type: 'array', elementType: 'json' });
+  });
+
+  it('should infer undefined as null type', () => {
+    const doc = { field: undefined };
+    const result = validateDocument(doc, emptySchema, config);
+    expect(result.schemaUpdates?.[0]?.type).toBe('null');
+  });
+});
+
+// =============================================================================
+// Custom Version Field Tests
+// =============================================================================
+
+describe('Custom Version Field', () => {
+  const schema: SchemaColumn[] = [
+    { name: 'id', type: 'int64', nullable: false },
+    { name: '__version', type: 'int32', nullable: true },
+  ];
+
+  it('should use custom version field name', () => {
+    const config: ValidationConfig = {
+      mode: 'versioned',
+      currentSchemaVersion: 1,
+      versionField: '__version',
+    };
+
+    const doc = { id: 1, __version: 1 };
+    const result = validateDocument(doc, schema, config);
+
+    expect(result.valid).toBe(true);
+    expect(result.documentVersion).toBe(1);
+  });
+
+  it('should warn when custom version field is missing', () => {
+    const config: ValidationConfig = {
+      mode: 'versioned',
+      currentSchemaVersion: 1,
+      versionField: '__version',
+    };
+
+    const doc = { id: 1 };
+    const result = validateDocument(doc, schema, config);
+
+    expect(result.valid).toBe(true);
+    expect(result.warnings.some(w => w.code === 'VERSION_ADDED')).toBe(true);
+  });
+});
+
+// =============================================================================
+// Versioned Mode Default Version Tests
+// =============================================================================
+
+describe('Versioned Mode Default Version', () => {
+  const schema: SchemaColumn[] = [
+    { name: 'id', type: 'int64', nullable: false },
+  ];
+
+  it('should default to version 1 when currentSchemaVersion not specified', () => {
+    const config: ValidationConfig = {
+      mode: 'versioned',
+      // No currentSchemaVersion specified
+    };
+
+    const doc = { id: 1 };
+    const result = validateDocument(doc, schema, config);
+
+    expect(result.currentSchemaVersion).toBe(1);
+  });
+});

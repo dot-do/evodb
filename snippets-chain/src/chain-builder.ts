@@ -186,7 +186,10 @@ export class ChainBuilder {
     const id = typeof idOrOptions === 'string'
       ? stepId(idOrOptions)
       : this.generateStepId('seq');
-    const opts = typeof idOrOptions === 'string' ? options! : idOrOptions;
+    // When idOrOptions is a string, options must be provided
+    const opts = typeof idOrOptions === 'string'
+      ? (options ?? (() => { throw new Error('options required when id is a string'); })())
+      : idOrOptions;
 
     const step: SequentialStep = {
       id,
@@ -219,7 +222,10 @@ export class ChainBuilder {
     const id = typeof idOrOptions === 'string'
       ? stepId(idOrOptions)
       : this.generateStepId('par');
-    const opts = typeof idOrOptions === 'string' ? options! : idOrOptions;
+    // When idOrOptions is a string, options must be provided
+    const opts = typeof idOrOptions === 'string'
+      ? (options ?? (() => { throw new Error('options required when id is a string'); })())
+      : idOrOptions;
 
     const step: ParallelStep = {
       id,
@@ -254,7 +260,10 @@ export class ChainBuilder {
     const id = typeof idOrOptions === 'string'
       ? stepId(idOrOptions)
       : this.generateStepId('cond');
-    const opts = typeof idOrOptions === 'string' ? options! : idOrOptions;
+    // When idOrOptions is a string, options must be provided
+    const opts = typeof idOrOptions === 'string'
+      ? (options ?? (() => { throw new Error('options required when id is a string'); })())
+      : idOrOptions;
 
     const step: ConditionalStep = {
       id,
@@ -559,6 +568,7 @@ export class ChainBuilder {
 
   /**
    * Build the final chain definition
+   * @throws Error if validation fails
    */
   build(): ChainDefinition {
     const validation = this.validate();
@@ -567,14 +577,21 @@ export class ChainBuilder {
       throw new Error(`Invalid chain: ${errorMessages}`);
     }
 
+    // After validation passes, these are guaranteed to exist
+    // (validation checks for NO_ENTRY_STEP, NO_EXIT_STEP, and version is defaulted in constructor)
+    if (!this.entryStepId || !this.exitStepId || !this.options.version) {
+      // This should never happen if validate() passed, but provides type safety
+      throw new Error('Internal error: required chain fields not set');
+    }
+
     return {
       id: this.options.id,
       name: this.options.name,
       description: this.options.description,
-      version: this.options.version!,
+      version: this.options.version,
       steps: Array.from(this.steps.values()),
-      entryStepId: this.entryStepId!,
-      exitStepId: this.exitStepId!,
+      entryStepId: this.entryStepId,
+      exitStepId: this.exitStepId,
       budgetOverride: this.options.budgetOverride,
     };
   }

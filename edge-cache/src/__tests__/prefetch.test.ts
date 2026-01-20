@@ -13,6 +13,9 @@ import {
   setFetchFunction,
   resetFetchFunction,
   clearCacheStatusMap,
+  setCacheStatusMapMaxSize,
+  getCacheStatusMapMaxSize,
+  getCacheStatusMapSize,
 } from '../prefetch.js';
 import type { PrefetchProgress } from '../index.js';
 
@@ -448,6 +451,133 @@ describe('prefetch', () => {
 
       expect(cached1.size).toBe(1);
       expect(cached2.size).toBe(0);
+    });
+  });
+
+  describe('LRU cache eviction', () => {
+    beforeEach(() => {
+      clearCacheStatusMap();
+      // Reset to a small size for testing
+      setCacheStatusMapMaxSize(3);
+    });
+
+    afterEach(() => {
+      // Reset to default
+      setCacheStatusMapMaxSize(10000);
+    });
+
+    it('should enforce max cache size', async () => {
+      const mockResponses = new Map<string, { status: number; headers: Headers }>();
+
+      // Create mock responses for multiple partitions
+      for (let i = 0; i < 5; i++) {
+        mockResponses.set(`HEAD:https://cdn.workers.do/data/part${i}.parquet`, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'HIT',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+
+      setFetchFunction(createMockFetch(mockResponses));
+
+      // Add 5 entries to cache with max size of 3
+      for (let i = 0; i < 5; i++) {
+        await checkCacheStatus(`data/part${i}.parquet`);
+      }
+
+      // Cache size should not exceed maxCacheSize (3)
+      expect(getCacheStatusMapSize()).toBe(3);
+    });
+
+    it('should evict oldest entries when cache is full', async () => {
+      const mockResponses = new Map<string, { status: number; headers: Headers }>();
+
+      // Create mock responses for multiple partitions
+      for (let i = 0; i < 5; i++) {
+        mockResponses.set(`HEAD:https://cdn.workers.do/data/part${i}.parquet`, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'HIT',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+
+      setFetchFunction(createMockFetch(mockResponses));
+
+      // Add entries: part0, part1, part2
+      await checkCacheStatus('data/part0.parquet');
+      await checkCacheStatus('data/part1.parquet');
+      await checkCacheStatus('data/part2.parquet');
+
+      expect(getCacheStatusMapSize()).toBe(3);
+
+      // Add part3 - should evict part0 (oldest)
+      await checkCacheStatus('data/part3.parquet');
+
+      expect(getCacheStatusMapSize()).toBe(3);
+
+      // Verify part1, part2, part3 are still cached by checking again
+      // part0 should have been evicted
+      // We can verify by checking the status again - if evicted, it would be a fresh lookup
+      const status1 = await checkCacheStatus('data/part1.parquet');
+      const status2 = await checkCacheStatus('data/part2.parquet');
+      const status3 = await checkCacheStatus('data/part3.parquet');
+
+      expect(status1.cached).toBe(true);
+      expect(status2.cached).toBe(true);
+      expect(status3.cached).toBe(true);
+    });
+
+    it('should keep recently accessed entries', async () => {
+      const mockResponses = new Map<string, { status: number; headers: Headers }>();
+
+      for (let i = 0; i < 5; i++) {
+        mockResponses.set(`HEAD:https://cdn.workers.do/data/part${i}.parquet`, {
+          status: 200,
+          headers: new Headers({
+            'CF-Cache-Status': 'HIT',
+            'Content-Length': '1000',
+          }),
+        });
+      }
+
+      setFetchFunction(createMockFetch(mockResponses));
+
+      // Add entries: part0, part1, part2
+      await checkCacheStatus('data/part0.parquet');
+      await checkCacheStatus('data/part1.parquet');
+      await checkCacheStatus('data/part2.parquet');
+
+      // Access part0 again (making it most recently used)
+      await checkCacheStatus('data/part0.parquet');
+
+      // Add part3 - should evict part1 (now the least recently used)
+      await checkCacheStatus('data/part3.parquet');
+
+      expect(getCacheStatusMapSize()).toBe(3);
+
+      // part0 should still be cached (was recently accessed)
+      const status0 = await checkCacheStatus('data/part0.parquet');
+      expect(status0.cached).toBe(true);
+
+      // part2 and part3 should be cached
+      const status2 = await checkCacheStatus('data/part2.parquet');
+      const status3 = await checkCacheStatus('data/part3.parquet');
+      expect(status2.cached).toBe(true);
+      expect(status3.cached).toBe(true);
+    });
+
+    it('should allow configuring max cache size', () => {
+      expect(getCacheStatusMapMaxSize()).toBe(3); // Set in beforeEach
+
+      setCacheStatusMapMaxSize(100);
+      expect(getCacheStatusMapMaxSize()).toBe(100);
+
+      setCacheStatusMapMaxSize(10000);
+      expect(getCacheStatusMapMaxSize()).toBe(10000);
     });
   });
 });

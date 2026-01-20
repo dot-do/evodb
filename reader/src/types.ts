@@ -123,9 +123,12 @@ export interface QueryRequest {
 }
 
 /**
- * Query result
+ * Query result (reader-specific format).
+ *
+ * Note: For cross-package compatibility, use `ExecutorResult` from `@evodb/core`
+ * which provides a unified interface. This type is internal to `@evodb/reader`.
  */
-export interface QueryResult {
+export interface ReaderQueryResult {
   /** Column names in order */
   columns: string[];
   /** Rows as arrays of values */
@@ -133,13 +136,21 @@ export interface QueryResult {
   /** Total rows matched (before limit) */
   totalRows?: number;
   /** Execution statistics */
-  stats: QueryStats;
+  stats: ReaderQueryStats;
 }
 
 /**
- * Query execution statistics
+ * @deprecated Use `ReaderQueryResult` instead. Kept for backward compatibility.
  */
-export interface QueryStats {
+export type QueryResult = ReaderQueryResult;
+
+/**
+ * Query execution statistics (reader-specific format).
+ *
+ * Note: For cross-package compatibility, use `ExecutorStats` from `@evodb/core`
+ * which provides a unified interface. This type is internal to `@evodb/reader`.
+ */
+export interface ReaderQueryStats {
   /** Total execution time in milliseconds */
   executionTimeMs: number;
   /** Blocks scanned */
@@ -157,6 +168,11 @@ export interface QueryStats {
   /** Cache hit ratio */
   cacheHitRatio: number;
 }
+
+/**
+ * @deprecated Use `ReaderQueryStats` instead. Kept for backward compatibility.
+ */
+export type QueryStats = ReaderQueryStats;
 
 // ============================================================================
 // Scan Types

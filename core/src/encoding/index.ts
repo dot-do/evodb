@@ -30,4 +30,5 @@ export {
   getStringPoolStats,
   resetStringPool,
   type StringPoolStats,
+  type StringPoolOptions,
 } from '../string-intern-pool.js';

@@ -46,6 +46,8 @@ import {
   generatePartitionedInfo,
 } from '@evodb/test-utils';
 
+import { createMockDataSource } from './fixtures/mock-data.js';
+
 // =============================================================================
 // Test Fixtures and Helpers
 // =============================================================================
@@ -89,6 +91,7 @@ function createPartitionedMock(
 function createTestConfig(overrides?: Partial<QueryEngineConfig>): QueryEngineConfig {
   return {
     bucket: createMockBucket(),
+    dataSource: createMockDataSource(),
     maxParallelism: 4,
     defaultTimeoutMs: 30000,
     enableStats: true,

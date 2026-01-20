@@ -280,3 +280,121 @@ export function assertString(value: unknown, message?: string): asserts value is
     throw new TypeError(message ?? `Expected string, got ${typeof value}`);
   }
 }
+
+// =============================================================================
+// Advanced Type Guards
+// =============================================================================
+
+/**
+ * Type guard: check if value is a tuple of two numbers
+ *
+ * Useful for range values like [min, max] or [lo, hi].
+ * Excludes NaN values by default for safety.
+ *
+ * @param value - Value to check
+ * @returns True if value is a [number, number] tuple
+ *
+ * @example
+ * ```typescript
+ * const range: unknown = [10, 20];
+ * if (isNumberTuple(range)) {
+ *   const [lo, hi] = range;
+ *   console.log(`Range: ${lo} to ${hi}`);
+ * }
+ * ```
+ */
+export function isNumberTuple(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    isNumber(value[0]) &&
+    isNumber(value[1])
+  );
+}
+
+/**
+ * Type guard: check if value is an array where all elements pass a guard
+ *
+ * @param value - Value to check
+ * @param guard - Type guard function to apply to each element
+ * @returns True if value is an array and all elements pass the guard
+ *
+ * @example
+ * ```typescript
+ * const data: unknown = [1, 2, 3];
+ * if (isArrayOf(data, isNumber)) {
+ *   // data is now typed as number[]
+ *   const sum = data.reduce((a, b) => a + b, 0);
+ * }
+ * ```
+ */
+export function isArrayOf<T>(
+  value: unknown,
+  guard: (item: unknown) => item is T
+): value is T[] {
+  return Array.isArray(value) && value.every(guard);
+}
+
+/**
+ * Type guard: check if a record has a specific property
+ *
+ * This is useful for safely accessing properties on unknown objects
+ * after validating they exist.
+ *
+ * @param value - Value to check (must be a record)
+ * @param key - Property key to check for
+ * @returns True if value is a record with the specified property
+ *
+ * @example
+ * ```typescript
+ * const data: unknown = { name: 'Alice', age: 30 };
+ * if (hasProperty(data, 'name')) {
+ *   console.log(data.name); // TypeScript knows 'name' exists
+ * }
+ * ```
+ */
+export function hasProperty<K extends string>(
+  value: unknown,
+  key: K
+): value is Record<string, unknown> & Record<K, unknown> {
+  return isRecord(value) && key in value;
+}
+
+/**
+ * Type guard: check if a record has all specified properties
+ *
+ * @param value - Value to check (must be a record)
+ * @param keys - Array of property keys to check for
+ * @returns True if value is a record with all specified properties
+ *
+ * @example
+ * ```typescript
+ * const data: unknown = { lsn: '123', timestamp: '456', op: 1 };
+ * if (hasProperties(data, ['lsn', 'timestamp', 'op'])) {
+ *   // TypeScript knows all properties exist
+ *   console.log(data.lsn, data.timestamp, data.op);
+ * }
+ * ```
+ */
+export function hasProperties<K extends string>(
+  value: unknown,
+  keys: K[]
+): value is Record<string, unknown> & Record<K, unknown> {
+  return isRecord(value) && keys.every(key => key in value);
+}
+
+/**
+ * Assertion helper: assert value is a [number, number] tuple or throw
+ *
+ * @param value - Value to assert
+ * @param message - Optional error message
+ * @throws TypeError if value is not a [number, number] tuple
+ */
+export function assertNumberTuple(
+  value: unknown,
+  message?: string
+): asserts value is [number, number] {
+  if (!isNumberTuple(value)) {
+    throw new TypeError(message ?? 'Expected [number, number] tuple');
+  }
+}

@@ -60,23 +60,32 @@ function createTestConfig(overrides?: Partial<QueryEngineConfig>): QueryEngineCo
 
 describe('QueryEngine - Data Source Injection', () => {
   describe('Default Data Source Behavior', () => {
-    it('should use MockDataSource by default when no dataSource is provided', async () => {
+    it('should use R2DataSource by default when bucket is provided but no dataSource', async () => {
       const config = createTestConfig();
+      // Remove dataSource to test R2DataSource default behavior
+      delete (config as { dataSource?: TableDataSource }).dataSource;
       const engine = createQueryEngine(config);
 
       const query: Query = {
         table: 'com/example/api/users',
       };
 
-      const result = await engine.execute(query);
-
-      // Should return data from default MockDataSource
-      expect(result.rows).toBeDefined();
-      expect(result.rows.length).toBeGreaterThan(0);
+      // R2DataSource with mock bucket returns null metadata (table not found)
+      // because bucket.list returns no objects, so the table is considered non-existent
+      await expect(engine.execute(query)).rejects.toThrow(/not found/i);
     });
 
-    it('should throw for non-existent table when using default MockDataSource', async () => {
-      const config = createTestConfig();
+    it('should throw error when neither bucket nor dataSource is provided', () => {
+      const config: QueryEngineConfig = {
+        maxParallelism: 4,
+        defaultTimeoutMs: 30000,
+      } as QueryEngineConfig;
+
+      expect(() => createQueryEngine(config)).toThrow(/requires either config.dataSource or config.bucket/);
+    });
+
+    it('should throw for non-existent table when using MockDataSource', async () => {
+      const config = createTestConfig({ dataSource: createMockDataSource() });
       const engine = createQueryEngine(config);
 
       const query: Query = {

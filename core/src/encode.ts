@@ -290,19 +290,38 @@ function decodeDict(data: Uint8Array, _nulls: boolean[], rowCount: number): unkn
   const decoder = new TextDecoder();
   let offset = 0;
 
+  // Bounds check for dictSize read - corrupt data should throw
+  if (data.byteLength < 4) {
+    throw new Error('Corrupt dictionary data: insufficient bytes for dictionary header');
+  }
+
   const dictSize = view.getUint32(offset, true); offset += 4;
   const dict: string[] = [];
 
   for (let i = 0; i < dictSize; i++) {
+    // Bounds check for entry length read
+    if (offset + 2 > data.byteLength) break;
     const len = view.getUint16(offset, true); offset += 2;
+    // Bounds check for entry content read
+    if (offset + len > data.byteLength) break;
     dict.push(decoder.decode(data.subarray(offset, offset + len)));
     offset += len;
   }
 
   const values: unknown[] = [];
   for (let i = 0; i < rowCount; i++) {
+    // Bounds check for index read
+    if (offset + 2 > data.byteLength) {
+      values.push(null);
+      continue;
+    }
     const idx = view.getUint16(offset, true); offset += 2;
-    values.push(idx === 0xFFFF ? null : dict[idx]);
+    // Bounds check for dictionary access - treat out-of-bounds as null
+    if (idx === 0xFFFF || idx >= dict.length) {
+      values.push(null);
+    } else {
+      values.push(dict[idx]);
+    }
   }
 
   return values;
@@ -501,14 +520,28 @@ export function fastDecodeDeltaInt32(
   data: Uint8Array,
   rowCount: number
 ): Int32Array {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const result = new Int32Array(rowCount);
 
   if (rowCount === 0) return result;
 
+  // Bounds check: need at least 4 bytes for first Int32
+  if (data.byteLength < 4) {
+    // Return zero-filled array for insufficient data
+    return result;
+  }
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   result[0] = view.getInt32(0, true);
+
   for (let i = 1; i < rowCount; i++) {
-    result[i] = result[i - 1] + view.getInt32(i * 4, true);
+    const offset = i * 4;
+    // Bounds check for each subsequent Int32
+    if (offset + 4 > data.byteLength) {
+      // Fill remaining with last known value (delta of 0)
+      result[i] = result[i - 1];
+    } else {
+      result[i] = result[i - 1] + view.getInt32(offset, true);
+    }
   }
 
   return result;

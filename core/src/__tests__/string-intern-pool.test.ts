@@ -398,4 +398,151 @@ describe('LRUStringPool', () => {
       expect(() => new LRUStringPool(-1)).toThrow();
     });
   });
+
+  // =============================================================================
+  // 9. MEMORY LEAK PREVENTION TESTS (TDD - Issue evodb-4dt)
+  // =============================================================================
+
+  describe('Memory Leak Prevention', () => {
+    it('should reject strings exceeding maxStringLength', () => {
+      // Memory leak: unbounded string length allows massive memory consumption
+      // Even with maxSize=100, 100 strings of 1MB each = 100MB memory
+      const poolWithLimit = new LRUStringPool(100, { maxStringLength: 1000 });
+
+      const shortString = 'x'.repeat(500);
+      const longString = 'y'.repeat(2000);
+
+      // Short string should be interned
+      const interned = poolWithLimit.intern(shortString);
+      expect(interned).toBe(shortString);
+      expect(poolWithLimit.has(shortString)).toBe(true);
+
+      // Long string should NOT be interned (returns original, not cached)
+      const notInterned = poolWithLimit.intern(longString);
+      expect(notInterned).toBe(longString); // Returns original string
+      expect(poolWithLimit.has(longString)).toBe(false); // But not cached
+    });
+
+    it('should track memory usage and enforce maxMemoryBytes', () => {
+      // Memory leak: count-based limits ignore string sizes
+      // 10 strings of 100KB each = 1MB even with maxSize=10
+      const poolWithMemLimit = new LRUStringPool(1000, { maxMemoryBytes: 1000 });
+
+      // Add strings that are ~100 bytes each (including overhead)
+      for (let i = 0; i < 20; i++) {
+        poolWithMemLimit.intern(`string-${i}-${'x'.repeat(50)}`);
+      }
+
+      // Memory should be limited, so fewer than 20 strings should be cached
+      const stats = poolWithMemLimit.getStats();
+      expect(stats.memoryBytes).toBeDefined();
+      expect(stats.memoryBytes).toBeLessThanOrEqual(1200); // Allow some overhead
+    });
+
+    it('should support TTL-based expiration to prevent stale entry accumulation', () => {
+      // Memory leak: if working set is small, old entries never get evicted
+      // Example: pool of 10K, but only 100 unique strings used actively
+      // The other 9900 entries sit forever consuming memory
+      const poolWithTTL = new LRUStringPool(100, { ttlMs: 50 });
+
+      // Add some entries
+      poolWithTTL.intern('entry-1');
+      poolWithTTL.intern('entry-2');
+      poolWithTTL.intern('entry-3');
+
+      expect(poolWithTTL.has('entry-1')).toBe(true);
+
+      // Wait for TTL to expire
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          // After TTL, entries should be eligible for cleanup
+          // Note: actual cleanup happens on next operation or explicit prune
+          poolWithTTL.pruneExpired();
+
+          expect(poolWithTTL.has('entry-1')).toBe(false);
+          expect(poolWithTTL.has('entry-2')).toBe(false);
+          expect(poolWithTTL.has('entry-3')).toBe(false);
+          resolve();
+        }, 100);
+      });
+    });
+
+    it('should refresh TTL on access', () => {
+      const poolWithTTL = new LRUStringPool(100, { ttlMs: 100 });
+
+      poolWithTTL.intern('keep-alive');
+
+      return new Promise<void>((resolve) => {
+        // Re-access before TTL expires
+        setTimeout(() => {
+          poolWithTTL.intern('keep-alive'); // Refresh TTL
+        }, 50);
+
+        // Check after original TTL would have expired
+        setTimeout(() => {
+          // Entry should still exist because we refreshed it
+          expect(poolWithTTL.has('keep-alive')).toBe(true);
+          resolve();
+        }, 130);
+      });
+    });
+
+    it('should report memoryBytes in stats', () => {
+      const poolWithStats = new LRUStringPool(100);
+
+      poolWithStats.intern('hello');
+      poolWithStats.intern('world');
+      poolWithStats.intern('testing-memory-stats');
+
+      const stats = poolWithStats.getStats();
+
+      // Stats should include memory estimate
+      expect(stats.memoryBytes).toBeDefined();
+      expect(stats.memoryBytes).toBeGreaterThan(0);
+      // Rough estimate: 5 + 5 + 20 chars = 30 chars * 2 bytes = 60 bytes min
+      expect(stats.memoryBytes).toBeGreaterThanOrEqual(30);
+    });
+
+    it('should evict by memory pressure before count limit', () => {
+      // Test that memory limit triggers eviction even when count is low
+      const poolWithMemLimit = new LRUStringPool(1000, { maxMemoryBytes: 200 });
+
+      // Add 5 strings of ~50 bytes each = ~250 bytes total
+      // Memory limit of 200 should cause evictions
+      for (let i = 0; i < 5; i++) {
+        poolWithMemLimit.intern(`mem-test-${i}-${'z'.repeat(30)}`);
+      }
+
+      // Should have evicted some entries to stay under memory limit
+      expect(poolWithMemLimit.size).toBeLessThan(5);
+    });
+
+    it('should expose maxStringLength in stats', () => {
+      const poolWithLimit = new LRUStringPool(100, { maxStringLength: 500 });
+      const stats = poolWithLimit.getStats();
+
+      expect(stats.maxStringLength).toBe(500);
+    });
+
+    it('should handle concurrent TTL expiration correctly', () => {
+      const poolWithTTL = new LRUStringPool(100, { ttlMs: 50 });
+
+      // Add entries at different times
+      poolWithTTL.intern('first');
+
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          poolWithTTL.intern('second');
+        }, 30);
+
+        setTimeout(() => {
+          poolWithTTL.pruneExpired();
+          // 'first' should be expired (>50ms old), 'second' should not be (<50ms old)
+          expect(poolWithTTL.has('first')).toBe(false);
+          expect(poolWithTTL.has('second')).toBe(true);
+          resolve();
+        }, 70);
+      });
+    });
+  });
 });

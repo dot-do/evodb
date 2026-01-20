@@ -26,7 +26,7 @@ import type {
   PartitionMode,
   WriterStats,
 } from './types.js';
-import { unbatchWalEntries, type WalEntry } from '@evodb/core';
+import { unbatchWalEntries, isArray, isRecord, isString, isNumber, type WalEntry } from '@evodb/core';
 import type {
   CDCBatchMessage,
   ConnectMessage,
@@ -702,22 +702,39 @@ export abstract class ShardWriterDO {
 
     const message = await request.json() as ShardedCDCMessage;
 
-    // Reconstruct bigint entries
-    const entries: WalEntry[] = (message.entries as unknown as Array<{
-      lsn: string;
-      timestamp: string;
-      op: number;
-      flags: number;
-      data: Uint8Array;
-      checksum: number;
-    }>).map(e => ({
-      lsn: BigInt(e.lsn),
-      timestamp: BigInt(e.timestamp),
-      op: e.op,
-      flags: e.flags,
-      data: e.data instanceof Uint8Array ? e.data : new Uint8Array(Object.values(e.data)),
-      checksum: e.checksum,
-    }));
+    // Validate and reconstruct bigint entries from JSON-serialized format
+    // JSON doesn't support bigint natively, so lsn/timestamp come as strings
+    const rawEntries = message.entries;
+    if (!isArray(rawEntries)) {
+      throw new Error('Invalid CDC message: entries must be an array');
+    }
+
+    const entries: WalEntry[] = rawEntries.map((e, i) => {
+      if (!isRecord(e)) {
+        throw new Error(`Invalid CDC entry at index ${i}: must be an object`);
+      }
+      // lsn and timestamp are serialized as strings in JSON
+      const lsnValue = e.lsn;
+      const timestampValue = e.timestamp;
+      if (!isString(lsnValue) && typeof lsnValue !== 'bigint') {
+        throw new Error(`Invalid CDC entry at index ${i}: lsn must be a string or bigint`);
+      }
+      if (!isString(timestampValue) && typeof timestampValue !== 'bigint') {
+        throw new Error(`Invalid CDC entry at index ${i}: timestamp must be a string or bigint`);
+      }
+      if (!isNumber(e.op) || !isNumber(e.flags) || !isNumber(e.checksum)) {
+        throw new Error(`Invalid CDC entry at index ${i}: op, flags, checksum must be numbers`);
+      }
+
+      return {
+        lsn: typeof lsnValue === 'bigint' ? lsnValue : BigInt(lsnValue),
+        timestamp: typeof timestampValue === 'bigint' ? timestampValue : BigInt(timestampValue),
+        op: e.op,
+        flags: e.flags,
+        data: e.data instanceof Uint8Array ? e.data : new Uint8Array(Object.values(e.data as Record<string, number>)),
+        checksum: e.checksum,
+      };
+    });
 
     // Receive CDC
     await this.writer.receiveCDC(message.sourceDoId, entries);

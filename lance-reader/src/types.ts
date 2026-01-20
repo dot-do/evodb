@@ -362,6 +362,8 @@ export interface LanceReaderConfig {
   cacheStrategy?: 'none' | 'lru' | 'session';
   /** Maximum cache size in bytes */
   maxCacheSize?: number;
+  /** Maximum number of vector indices to cache (default: 10) */
+  maxIndexCacheSize?: number;
   /** Specific version to read (latest if not specified) */
   version?: number;
 }

@@ -10,12 +10,10 @@ import type {
   ScatterGatherConfig,
   PartitionMetadata,
   AggregationSpec,
-  PartialAggregation,
   QueryResult,
 } from '../types.js';
 import { WorkerSimulator, createWorkerSimulator } from '../workers/worker-simulator.js';
 import {
-  TaskScheduler,
   createTaskScheduler,
   generateBenchmarkAggregations,
 } from '../workers/task-scheduler.js';
@@ -135,9 +133,7 @@ export class ScatterGatherScenario {
       );
 
       // Gather phase - merge partial results
-      const gatherStart = performance.now();
-      const mergedResult = this.gatherResults(scatterResults, aggregation);
-      const gatherTime = performance.now() - gatherStart;
+      this.gatherResults(scatterResults, aggregation);
 
       const totalQueryTime = performance.now() - scatterStart;
       latencySamples.push(totalQueryTime);
@@ -169,9 +165,13 @@ export class ScatterGatherScenario {
     results: QueryResult[],
     aggregation: AggregationSpec
   ): unknown {
+    // Filter for successful results with partial results and extract
+    // Use type narrowing by filtering and mapping separately
     const partialResults = results
-      .filter(r => r.success && r.partialResult)
-      .map(r => r.partialResult!);
+      .filter((r): r is QueryResult & { partialResult: NonNullable<QueryResult['partialResult']> } =>
+        r.success && r.partialResult !== undefined && r.partialResult !== null
+      )
+      .map(r => r.partialResult);
 
     if (partialResults.length === 0) {
       return null;

@@ -8,10 +8,6 @@
  */
 
 import type {
-  TitleBasics,
-  TitleRatings,
-  NameBasics,
-  TitlePrincipals,
   TitleType,
   PrincipalCategory,
   ImdbDataSize,

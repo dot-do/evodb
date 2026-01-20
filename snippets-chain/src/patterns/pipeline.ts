@@ -270,11 +270,16 @@ export class PipelineBuilder {
 
   /**
    * Build the pipeline chain
+   * @throws Error if id or name are not set (should not happen if using constructor)
    */
   build(): ChainDefinition {
+    // Validate required fields (should always be set from constructor)
+    if (!this.config.id || !this.config.name) {
+      throw new Error('Pipeline id and name are required. Use PipelineBuilder.create(id, name).');
+    }
     return pipeline({
-      id: this.config.id!,
-      name: this.config.name!,
+      id: this.config.id,
+      name: this.config.name,
       description: this.config.description,
       stages: this.stages,
       shortCircuitOnError: this.config.shortCircuitOnError,

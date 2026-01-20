@@ -18,7 +18,6 @@ import type {
   Translation,
   WordForm,
   Etymology,
-  RelatedWord,
   PartOfSpeech,
   LanguageCode,
 } from './schema.js';
@@ -571,7 +570,7 @@ function generateEtymology(rng: SeededRandom): Etymology {
 function generateEntry(
   rng: SeededRandom,
   config: Required<GeneratorConfig>,
-  index: number
+  _index: number
 ): WiktionaryEntry {
   const langCode = rng.weighted(config.languageDistribution);
   const pos = rng.weighted(config.posDistribution) as PartOfSpeech;
@@ -814,12 +813,13 @@ export function transformRawEntry(raw: RawWiktextractEntry): WiktionaryEntry {
 
   // Translations
   if (raw.translations && raw.translations.length > 0) {
+    // Use type guard filter to narrow types
     entry.translations = raw.translations
-      .filter(t => t.code && t.word)
+      .filter((t): t is typeof t & { code: string; word: string } => Boolean(t.code && t.word))
       .map(t => ({
-        code: t.code!,
-        lang: t.lang || t.code!,
-        word: t.word!,
+        code: t.code,
+        lang: t.lang || t.code,
+        word: t.word,
         ...(t.sense && { sense: t.sense }),
         ...(t.tags && { tags: t.tags }),
         ...(t.roman && { roman: t.roman }),

@@ -14,7 +14,6 @@
 import {
   SNIPPETS_CONSTRAINTS,
   CPU_BUDGET,
-  assertWithinConstraints,
   validateConstraints,
   runBenchmark,
   formatBytes,

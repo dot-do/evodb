@@ -135,6 +135,18 @@ export class IvfPqLoader {
     return this.initialized;
   }
 
+  /**
+   * Assert that the loader is initialized and return non-null index structures.
+   * @throws Error if loader is not initialized
+   * @returns Object containing ivfIndex and pqCodebook, both guaranteed non-null
+   */
+  private assertInitialized(): { ivfIndex: IvfIndex; pqCodebook: PqCodebook } {
+    if (!this.initialized || !this.ivfIndex || !this.pqCodebook) {
+      throw new Error('Loader not initialized. Call initialize() first.');
+    }
+    return { ivfIndex: this.ivfIndex, pqCodebook: this.pqCodebook };
+  }
+
   // ==========================================
   // IVF Loading
   // ==========================================
@@ -292,9 +304,8 @@ export class IvfPqLoader {
    * Load partition data by partition ID
    */
   async loadPartition(partitionId: number): Promise<PartitionRawData> {
-    if (!this.initialized) {
-      throw new Error('Loader not initialized. Call initialize() first.');
-    }
+    // Validate initialization upfront - this also narrows types for ivfIndex and pqCodebook
+    const { ivfIndex, pqCodebook } = this.assertInitialized();
 
     // Check cache first
     const cached = this.partitionCache.get(partitionId);
@@ -306,7 +317,7 @@ export class IvfPqLoader {
     }
 
     // Load from storage
-    const partitionData = await this.loadPartitionFromStorage(partitionId);
+    const partitionData = await this.loadPartitionFromStorage(partitionId, ivfIndex, pqCodebook);
 
     // Cache with LRU eviction
     if (this.partitionCache.size >= this.maxCachedPartitions) {
@@ -322,11 +333,15 @@ export class IvfPqLoader {
 
   /**
    * Load partition data from auxiliary file
+   * @param partitionId - Partition ID to load
+   * @param ivf - Validated IVF index structure
+   * @param pq - Validated PQ codebook
    */
-  private async loadPartitionFromStorage(partitionId: number): Promise<PartitionRawData> {
-    const ivf = this.ivfIndex!;
-    const pq = this.pqCodebook!;
-
+  private async loadPartitionFromStorage(
+    partitionId: number,
+    ivf: IvfIndex,
+    pq: PqCodebook
+  ): Promise<PartitionRawData> {
     const offset = Number(ivf.partitions.offsets[partitionId]);
     const numRows = ivf.partitions.lengths[partitionId];
 
@@ -350,18 +365,22 @@ export class IvfPqLoader {
 
     const buffer = await this.storage.getRange(this.auxiliaryPath, byteOffset, byteLength);
 
-    return this.parsePartitionData(buffer, numRows, partitionId);
+    return this.parsePartitionData(buffer, numRows, partitionId, pq);
   }
 
   /**
    * Parse raw partition data into structured format
+   * @param buffer - Raw buffer data
+   * @param numRows - Number of rows in partition
+   * @param partitionId - Partition ID
+   * @param pq - Validated PQ codebook
    */
   private parsePartitionData(
     buffer: ArrayBuffer,
     numRows: number,
-    partitionId: number
+    partitionId: number,
+    pq: PqCodebook
   ): PartitionRawData {
-    const pq = this.pqCodebook!;
     const numSubVectors = pq.config.numSubVectors;
     const rowSize = calculatePartitionRowSize(numSubVectors);
 

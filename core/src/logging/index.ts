@@ -18,6 +18,11 @@ export {
   type LoggerConfig,
   type ConsoleLoggerConfig,
   type TestLogger,
+  type LogContext,
+  type LogContextValue,
+  // Type guards
+  isLogContext,
+  isLogContextValue,
   // Factory functions
   createLogger,
   createConsoleLogger,

@@ -42,6 +42,7 @@ export type {
   AggregationFunction,
   OrderBy,
   QueryHints,
+  QueryExecutionOptions,
 
   // Query plan types
   QueryPlan,
@@ -61,7 +62,10 @@ export type {
   PruneReason,
   QueryCost,
 
-  // Result types
+  // Result types (engine-specific internal format)
+  EngineQueryResult,
+  EngineQueryStats,
+  // Backward compatibility aliases (deprecated)
   QueryResult,
   QueryStats,
   StreamingQueryResult,
@@ -119,6 +123,24 @@ export {
 } from './engine.js';
 
 // =============================================================================
+// Cache-Aware Query Planner Exports
+// =============================================================================
+
+export {
+  CacheAwareQueryPlanner,
+  createCacheAwareQueryPlanner,
+} from './cache-aware-planner.js';
+
+export type {
+  CacheAwarePlanConfig,
+  CacheAwarePlan,
+  CacheAwarePlanStats,
+  CacheBenefitStats,
+  PlanCacheStats,
+  PrefetchRecommendation,
+} from './cache-aware-planner.js';
+
+// =============================================================================
 // QueryExecutor Interface (unified query execution)
 // =============================================================================
 
@@ -147,7 +169,7 @@ import type {
   StreamingExecutorResult,
 } from '@evodb/core';
 import { toQueryEngineQuery } from '@evodb/core';
-import type { Query, QueryEngineConfig, QueryResult, QueryPlan, QueryStats as InternalQueryStats } from './types.js';
+import type { Query, QueryEngineConfig, EngineQueryResult, QueryPlan, EngineQueryStats } from './types.js';
 import { QueryEngine } from './engine.js';
 
 /**
@@ -213,7 +235,7 @@ export class QueryExecutorAdapter implements StreamingQueryExecutor, CacheableQu
     };
 
     // Execute query using internal method
-    const result: QueryResult = await this.engine.execute(query);
+    const result: EngineQueryResult = await this.engine.execute(query);
 
     // Convert internal QueryResult to ExecutorResult format
     const executorStats: ExecutorStats = {
@@ -331,7 +353,7 @@ export class QueryExecutorAdapter implements StreamingQueryExecutor, CacheableQu
     return {
       rows: streamResult.rows,
       async getStats(): Promise<ExecutorStats> {
-        const stats: InternalQueryStats = await streamResult.getStats();
+        const stats: EngineQueryStats = await streamResult.getStats();
         return {
           executionTimeMs: stats.executionTimeMs,
           rowsScanned: stats.rowsScanned,

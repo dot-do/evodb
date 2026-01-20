@@ -50,3 +50,16 @@ export {
   createMemoryObjectAdapter,
   wrapStorageBackend,
 } from '../storage.js';
+
+// ==========================================================================
+// CIRCUIT BREAKER (Issue evodb-9t6)
+// ==========================================================================
+export {
+  CircuitBreaker,
+  CircuitBreakerStorage,
+  CircuitState,
+  CircuitBreakerError,
+  createCircuitBreakerStorage,
+  type CircuitBreakerOptions,
+  type CircuitBreakerStats,
+} from '../circuit-breaker.js';

@@ -175,13 +175,13 @@ export abstract class LakehouseParentDO {
       // Handle binary CDC message
       if (message instanceof ArrayBuffer) {
         const data = new Uint8Array(message);
-        await this.handleBinaryCDCMessage(trackedWs, data);
+        await this.handleBinaryCDCMessage(trackedWs, data, sourceDoId);
         return;
       }
 
       // Handle text message (JSON)
       const parsed = JSON.parse(message as string);
-      await this.handleJsonMessage(trackedWs, parsed);
+      await this.handleJsonMessage(trackedWs, parsed, sourceDoId);
     } catch (error) {
       console.error('Error handling WebSocket message:', error);
 
@@ -197,8 +197,11 @@ export abstract class LakehouseParentDO {
 
   /**
    * Handle binary CDC message (batched WAL entries)
+   * @param ws - The tracked WebSocket connection
+   * @param data - Binary message data
+   * @param sourceDoId - Validated source DO ID
    */
-  private async handleBinaryCDCMessage(ws: TrackedWebSocket, data: Uint8Array): Promise<void> {
+  private async handleBinaryCDCMessage(ws: TrackedWebSocket, data: Uint8Array, sourceDoId: string): Promise<void> {
     // Parse message header (16 bytes)
     // Format: sequenceNumber(8) + entryCount(4) + reserved(4)
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -220,8 +223,8 @@ export abstract class LakehouseParentDO {
       return;
     }
 
-    // Receive CDC
-    await this.writer.receiveCDC(ws.sourceDoId!, entries);
+    // Receive CDC - sourceDoId is validated by caller
+    await this.writer.receiveCDC(sourceDoId, entries);
     ws.lastSequence = sequenceNumber;
 
     // Check if we should flush
@@ -239,16 +242,20 @@ export abstract class LakehouseParentDO {
 
   /**
    * Handle JSON message (from @evodb/rpc)
+   * @param ws - The tracked WebSocket connection
+   * @param message - Parsed JSON message
+   * @param sourceDoId - Validated source DO ID
    */
   private async handleJsonMessage(
     ws: TrackedWebSocket,
-    message: CDCBatchMessage | ConnectMessage | HeartbeatMessage | FlushRequestMessage | CDCMessage
+    message: CDCBatchMessage | ConnectMessage | HeartbeatMessage | FlushRequestMessage | CDCMessage,
+    sourceDoId: string
   ): Promise<void> {
     // Handle @evodb/rpc message types
     if ('type' in message) {
       switch (message.type) {
         case 'cdc_batch':
-          await this.handleCDCBatchMessage(ws, message as CDCBatchMessage);
+          await this.handleCDCBatchMessage(ws, message as CDCBatchMessage, sourceDoId);
           break;
         case 'connect':
           await this.handleConnectMessage(ws, message as ConnectMessage);
@@ -261,7 +268,7 @@ export abstract class LakehouseParentDO {
           break;
         case 'cdc':
           // Legacy CDC message format
-          await this.handleLegacyCDCMessage(ws, message as CDCMessage);
+          await this.handleLegacyCDCMessage(ws, message as CDCMessage, sourceDoId);
           break;
         default:
           console.warn('Unknown message type:', (message as { type: string }).type);
@@ -271,8 +278,11 @@ export abstract class LakehouseParentDO {
 
   /**
    * Handle CDC batch message from @evodb/rpc
+   * @param ws - The tracked WebSocket connection
+   * @param message - CDC batch message
+   * @param sourceDoId - Validated source DO ID
    */
-  private async handleCDCBatchMessage(ws: TrackedWebSocket, message: CDCBatchMessage): Promise<void> {
+  private async handleCDCBatchMessage(ws: TrackedWebSocket, message: CDCBatchMessage, sourceDoId: string): Promise<void> {
     // Check for backpressure
     if (this.writer.shouldApplyBackpressure()) {
       const delay = this.writer.getBackpressureDelay();
@@ -290,7 +300,8 @@ export abstract class LakehouseParentDO {
       checksum: 0,
     }));
 
-    await this.writer.receiveCDC(ws.sourceDoId!, entries);
+    // sourceDoId is validated by caller
+    await this.writer.receiveCDC(sourceDoId, entries);
     ws.lastSequence = BigInt(message.sequenceNumber);
 
     // Check if we should flush
@@ -357,8 +368,11 @@ export abstract class LakehouseParentDO {
 
   /**
    * Handle legacy CDC message format
+   * @param ws - The tracked WebSocket connection
+   * @param message - Legacy CDC message
+   * @param sourceDoId - Validated source DO ID
    */
-  private async handleLegacyCDCMessage(ws: TrackedWebSocket, message: CDCMessage): Promise<void> {
+  private async handleLegacyCDCMessage(ws: TrackedWebSocket, message: CDCMessage, sourceDoId: string): Promise<void> {
     if (message.type !== 'cdc' || !message.entries) {
       return;
     }
@@ -367,7 +381,8 @@ export abstract class LakehouseParentDO {
     const entries = message.entries;
     const sequenceNumber = message.sequenceNumber;
 
-    await this.writer.receiveCDC(ws.sourceDoId!, entries);
+    // sourceDoId is validated by caller
+    await this.writer.receiveCDC(sourceDoId, entries);
     ws.lastSequence = sequenceNumber;
 
     // Check if we should flush

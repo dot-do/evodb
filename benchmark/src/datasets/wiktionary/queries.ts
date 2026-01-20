@@ -25,7 +25,6 @@ import type {
   FilterQuery,
   FullTextQuery,
   TranslationQuery,
-  LanguageCode,
   PartOfSpeech,
 } from './schema.js';
 import { WIKTIONARY_DATA_SIZES } from './schema.js';
@@ -188,7 +187,7 @@ export function filterQuery(
   query: FilterQuery
 ): number[] {
   const matches: number[] = [];
-  const { langCode, pos, category, tag, hasAudio, hasEtymology, limit = 1000 } = query;
+  const { langCode, pos, category, tag: _tag, hasAudio, hasEtymology, limit = 1000 } = query;
 
   const langCol = langCode ? index.byPath.get('langCode') : null;
   const posCol = pos ? index.byPath.get('pos') : null;
@@ -369,7 +368,7 @@ export function countByPos(index: ColumnIndex): Map<string, number> {
  * Calculate average senses per entry by language
  */
 export function avgSensesByLanguage(
-  index: ColumnIndex,
+  _index: ColumnIndex,
   entries: WiktionaryEntry[]
 ): Map<string, number> {
   const langCounts = new Map<string, { total: number; senseSum: number }>();

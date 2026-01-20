@@ -11,8 +11,6 @@
 
 import type {
   SimulatedWorker,
-  WorkerStatus,
-  WorkerStats,
   QueryTask,
   QueryResult,
   QueryFilter,
@@ -108,7 +106,6 @@ export class WorkerSimulator {
   private readonly random: SeededRandom;
   private readonly workers: Map<string, SimulatedWorker> = new Map();
   private readonly cache: Map<string, CacheEntry> = new Map();
-  private readonly taskQueue: QueryTask[] = [];
   private readonly activeTasksByWorker: Map<string, Set<string>> = new Map();
 
   // Statistics
@@ -280,6 +277,7 @@ export class WorkerSimulator {
 
   /**
    * Select the best worker for a task
+   * @throws Error if no workers are available
    */
   private selectWorker(task: QueryTask): SimulatedWorker {
     // Find worker with lowest load that has assigned partitions
@@ -308,7 +306,12 @@ export class WorkerSimulator {
       }
     }
 
-    return bestWorker!;
+    // Should never happen if workers exist, but provides type safety
+    if (!bestWorker) {
+      throw new Error('No workers available to process task');
+    }
+
+    return bestWorker;
   }
 
   /**
@@ -451,11 +454,14 @@ export class WorkerSimulator {
       case 'aggregate':
         cpuTimeMs = rowsScanned / this.config.cpu.aggregateRowsPerMs;
         rowsReturned = 1;
-        partialAggregation = this.computePartialAggregation(
-          task.aggregation!,
-          partition,
-          data
-        );
+        // For aggregate tasks, aggregation should be defined
+        if (task.aggregation) {
+          partialAggregation = this.computePartialAggregation(
+            task.aggregation,
+            partition,
+            data
+          );
+        }
         break;
 
       default:

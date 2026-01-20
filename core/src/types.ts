@@ -404,6 +404,64 @@ export interface TableSchema {
 // =============================================================================
 
 /**
+ * Metadata associated with a WAL entry for RPC communication.
+ *
+ * This interface defines the structure for optional metadata that can be
+ * attached to WAL entries during DO-to-DO CDC streaming.
+ *
+ * @example
+ * ```typescript
+ * const metadata: WalEntryMetadata = {
+ *   transactionId: 'tx-12345',
+ *   userId: 'user-abc',
+ *   source: 'api',
+ *   correlationId: 'req-xyz',
+ * };
+ * ```
+ */
+export interface WalEntryMetadata {
+  /** Transaction identifier for grouping related changes */
+  transactionId?: string;
+  /** User identifier who initiated the change */
+  userId?: string;
+  /** Source system or service that produced the entry */
+  source?: string;
+  /** Correlation ID for request tracing */
+  correlationId?: string;
+  /** Session identifier */
+  sessionId?: string;
+  /** Client IP address (for audit logging) */
+  clientIp?: string;
+  /** Custom tags for categorization */
+  tags?: string[];
+  /** Additional custom fields (escape hatch for unforeseen metadata needs) */
+  [key: string]: string | string[] | undefined;
+}
+
+/**
+ * Type guard to check if a value is a valid WalEntryMetadata object.
+ *
+ * @param value - The value to check
+ * @returns True if value conforms to WalEntryMetadata structure
+ */
+export function isWalEntryMetadata(value: unknown): value is WalEntryMetadata {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  // All known fields should be string, string[], or undefined
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined) continue;
+    if (typeof val === 'string') continue;
+    if (key === 'tags' && Array.isArray(val) && val.every(v => typeof v === 'string')) continue;
+    // Unknown fields must be string or string[]
+    if (Array.isArray(val) && val.every(v => typeof v === 'string')) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
  * WAL operation types for RPC communication (string-based).
  */
 export type RpcWalOperation = 'INSERT' | 'UPDATE' | 'DELETE';
@@ -445,7 +503,7 @@ export interface RpcWalEntry<T = unknown> {
   /** Row data after the change (for INSERT/UPDATE) */
   after?: T;
   /** Optional metadata (e.g., transaction ID, user ID) */
-  metadata?: Record<string, unknown>;
+  metadata?: WalEntryMetadata;
 }
 
 // =============================================================================

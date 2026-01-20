@@ -766,8 +766,9 @@ export function executeMin(columns: Column[], columnName: string): unknown {
   let min: unknown = null;
   for (let i = 0; i < col.values.length; i++) {
     if (!col.nulls[i]) {
-      if (min === null || col.values[i] < (min as number | string)) {
-        min = col.values[i];
+      const value = col.values[i] as number | string;
+      if (min === null || value < (min as number | string)) {
+        min = value;
       }
     }
   }
@@ -784,8 +785,9 @@ export function executeMax(columns: Column[], columnName: string): unknown {
   let max: unknown = null;
   for (let i = 0; i < col.values.length; i++) {
     if (!col.nulls[i]) {
-      if (max === null || col.values[i] > (max as number | string)) {
-        max = col.values[i];
+      const value = col.values[i] as number | string;
+      if (max === null || value > (max as number | string)) {
+        max = value;
       }
     }
   }

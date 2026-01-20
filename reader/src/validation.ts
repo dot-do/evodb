@@ -14,6 +14,99 @@
 
 import type { ColumnType } from './types.js';
 
+// =============================================================================
+// Validation Error Details Types
+// =============================================================================
+
+/**
+ * Base interface for all validation error details.
+ */
+export interface BaseValidationErrorDetails {
+  /** The actual type received when validation failed */
+  receivedType?: string;
+}
+
+/**
+ * Error details for block data validation failures.
+ */
+export interface BlockValidationErrorDetails extends BaseValidationErrorDetails {
+  /** Column name that caused the error */
+  column?: string;
+  /** Expected array length for column mismatch errors */
+  expectedLength?: number;
+  /** Actual array length for column mismatch errors */
+  actualLength?: number;
+  /** First column name used for comparison */
+  firstColumn?: string;
+  /** JSON parse error message */
+  parseError?: string;
+}
+
+/**
+ * Error details for manifest validation failures.
+ */
+export interface ManifestValidationErrorDetails extends BaseValidationErrorDetails {
+  /** Field name that failed validation */
+  field?: string;
+  /** Table name context */
+  table?: string;
+  /** Column name context */
+  column?: string;
+  /** Column index in schema array */
+  columnIndex?: number;
+  /** Expected type for the field */
+  expectedType?: string;
+  /** Invalid column type value */
+  invalidType?: string;
+  /** List of valid column types */
+  validTypes?: string[];
+}
+
+/**
+ * Type guard for BlockValidationErrorDetails.
+ */
+export function isBlockValidationErrorDetails(
+  value: unknown
+): value is BlockValidationErrorDetails {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  // Check that all properties are of expected types
+  if (obj.receivedType !== undefined && typeof obj.receivedType !== 'string') return false;
+  if (obj.column !== undefined && typeof obj.column !== 'string') return false;
+  if (obj.expectedLength !== undefined && typeof obj.expectedLength !== 'number') return false;
+  if (obj.actualLength !== undefined && typeof obj.actualLength !== 'number') return false;
+  if (obj.firstColumn !== undefined && typeof obj.firstColumn !== 'string') return false;
+  if (obj.parseError !== undefined && typeof obj.parseError !== 'string') return false;
+  return true;
+}
+
+/**
+ * Type guard for ManifestValidationErrorDetails.
+ */
+export function isManifestValidationErrorDetails(
+  value: unknown
+): value is ManifestValidationErrorDetails {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  // Check that all properties are of expected types
+  if (obj.receivedType !== undefined && typeof obj.receivedType !== 'string') return false;
+  if (obj.field !== undefined && typeof obj.field !== 'string') return false;
+  if (obj.table !== undefined && typeof obj.table !== 'string') return false;
+  if (obj.column !== undefined && typeof obj.column !== 'string') return false;
+  if (obj.columnIndex !== undefined && typeof obj.columnIndex !== 'number') return false;
+  if (obj.expectedType !== undefined && typeof obj.expectedType !== 'string') return false;
+  if (obj.invalidType !== undefined && typeof obj.invalidType !== 'string') return false;
+  if (obj.validTypes !== undefined) {
+    if (!Array.isArray(obj.validTypes)) return false;
+    if (!obj.validTypes.every(v => typeof v === 'string')) return false;
+  }
+  return true;
+}
+
 /**
  * Error codes for block data validation failures
  * Use these for programmatic error handling
@@ -62,7 +155,7 @@ export class BlockDataValidationError extends Error {
     message: string,
     public readonly blockPath: string,
     code: BlockDataValidationErrorCode,
-    public readonly details?: Record<string, unknown>
+    public readonly details?: BlockValidationErrorDetails
   ) {
     super(message);
     this.name = 'BlockDataValidationError';
@@ -350,7 +443,7 @@ export class ManifestValidationError extends Error {
   constructor(
     message: string,
     code: ManifestValidationErrorCode,
-    public readonly details?: Record<string, unknown>
+    public readonly details?: ManifestValidationErrorDetails
   ) {
     super(message);
     this.name = 'ManifestValidationError';

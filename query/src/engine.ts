@@ -29,6 +29,7 @@ import type {
   ZoneMapColumn,
   TableDataSource,
   TableDataSourceMetadata,
+  QueryExecutionOptions,
 } from './types.js';
 
 // Import shared query operations from @evodb/core
@@ -38,6 +39,7 @@ import {
   compareValues as coreCompareValues,
   compareForSort,
   evaluateFilter as coreEvaluateFilter,
+  isNumberTuple,
   type FilterPredicate,
 } from '@evodb/core';
 
@@ -45,16 +47,10 @@ import {
 // Data Sources
 // =============================================================================
 
-// Import MockDataSource and createMockDataSource from test fixtures for backward compatibility.
-// NOTE: MockDataSource is intended for testing only. Production code should use
-// R2DataSource or a custom TableDataSource implementation.
-import {
-  MockDataSource,
-  createMockDataSource,
-} from './__tests__/fixtures/mock-data.js';
-
-// Re-export for backward compatibility
-export { MockDataSource, createMockDataSource };
+// NOTE: MockDataSource has been moved to test fixtures.
+// For testing, import MockDataSource from '@evodb/query/__tests__/fixtures/mock-data.js'
+// and pass it via config.dataSource.
+// For production, use R2DataSource or a custom TableDataSource implementation.
 
 /**
  * R2DataSource - Reads table data from R2 bucket using the manifest format.
@@ -153,6 +149,50 @@ export function createR2DataSource(bucket: R2Bucket): R2DataSource {
  */
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+/**
+ * Check if an AbortSignal is aborted and throw if so.
+ * @throws {Error} If the signal is aborted
+ */
+function checkAbortSignal(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const reason = signal.reason instanceof Error
+      ? signal.reason.message
+      : typeof signal.reason === 'string'
+        ? signal.reason
+        : 'Query aborted';
+    throw new Error(`Query aborted: ${reason}`);
+  }
+}
+
+/**
+ * Create a promise that rejects when the abort signal fires.
+ * Used for racing long operations against abort.
+ */
+function createAbortPromise(signal?: AbortSignal): Promise<never> | null {
+  if (!signal) return null;
+
+  return new Promise((_, reject) => {
+    if (signal.aborted) {
+      const reason = signal.reason instanceof Error
+        ? signal.reason.message
+        : typeof signal.reason === 'string'
+          ? signal.reason
+          : 'Query aborted';
+      reject(new Error(`Query aborted: ${reason}`));
+      return;
+    }
+
+    signal.addEventListener('abort', () => {
+      const reason = signal.reason instanceof Error
+        ? signal.reason.message
+        : typeof signal.reason === 'string'
+          ? signal.reason
+          : 'Query aborted';
+      reject(new Error(`Query aborted: ${reason}`));
+    }, { once: true });
+  });
 }
 
 /**
@@ -568,8 +608,8 @@ export class ZoneMapOptimizer {
         case 'lte':
           return Math.max(0, Math.min(1, (value - min + 1) / range));
         case 'between':
-          if (Array.isArray(value) && value.length === 2) {
-            const [lo, hi] = value as unknown as [number, number];
+          if (isNumberTuple(value)) {
+            const [lo, hi] = value;
             const overlapStart = Math.max(min, lo);
             const overlapEnd = Math.min(max, hi);
             return Math.max(0, (overlapEnd - overlapStart) / range);
@@ -868,13 +908,17 @@ export class AggregationEngine {
 // Cache Manager
 // =============================================================================
 
+/** Default maximum cache entries for CacheManager */
+const DEFAULT_MAX_CACHE_ENTRIES = 1000;
+
 /**
  * Cache Manager
  *
- * Manages edge cache integration for query results.
+ * Manages edge cache integration for query results with LRU eviction.
  */
 export class CacheManager {
   private readonly config: QueryEngineConfig;
+  private readonly maxEntries: number;
   private cache: Map<string, { data: ArrayBuffer; cachedAt: number }> = new Map();
   private stats: CacheStats = {
     hits: 0,
@@ -886,6 +930,21 @@ export class CacheManager {
 
   constructor(config: QueryEngineConfig) {
     this.config = config;
+    this.maxEntries = config.cache?.maxEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
+  }
+
+  /**
+   * Get the maximum number of cache entries
+   */
+  getMaxEntries(): number {
+    return this.maxEntries;
+  }
+
+  /**
+   * Get the current number of cache entries
+   */
+  getCacheSize(): number {
+    return this.cache.size;
   }
 
   /**
@@ -899,6 +958,9 @@ export class CacheManager {
 
     // Check local cache first
     if (cached) {
+      // LRU: Move to end by deleting and re-inserting
+      this.cache.delete(cacheKey);
+      this.cache.set(cacheKey, cached);
       this.stats.hits++;
       this.stats.bytesFromCache += cached.data.byteLength;
       this.updateHitRatio();
@@ -910,7 +972,7 @@ export class CacheManager {
       this.stats.hits++;
       const mockData = new ArrayBuffer(partition.sizeBytes || 100);
       this.stats.bytesFromCache += mockData.byteLength;
-      this.cache.set(cacheKey, { data: mockData, cachedAt: Date.now() });
+      this.setCacheEntry(cacheKey, { data: mockData, cachedAt: Date.now() });
       this.updateHitRatio();
       return { data: mockData, fromCache: true };
     }
@@ -931,11 +993,32 @@ export class CacheManager {
 
     // Cache if configured
     if (this.config.cache?.enabled) {
-      this.cache.set(cacheKey, { data, cachedAt: Date.now() });
+      this.setCacheEntry(cacheKey, { data, cachedAt: Date.now() });
     }
 
     this.updateHitRatio();
     return { data, fromCache: false };
+  }
+
+  /**
+   * Set a cache entry with LRU eviction
+   */
+  private setCacheEntry(cacheKey: string, entry: { data: ArrayBuffer; cachedAt: number }): void {
+    // If key already exists, delete it first to update its position
+    if (this.cache.has(cacheKey)) {
+      this.cache.delete(cacheKey);
+    } else {
+      // Evict oldest entries if cache is full
+      while (this.cache.size >= this.maxEntries) {
+        const oldestKey = this.cache.keys().next().value;
+        if (oldestKey !== undefined) {
+          this.cache.delete(oldestKey);
+        } else {
+          break;
+        }
+      }
+    }
+    this.cache.set(cacheKey, entry);
   }
 
   private getCacheKey(path: string): string {
@@ -972,7 +1055,7 @@ export class CacheManager {
           // For mock testing, create placeholder data
           data = new ArrayBuffer(partition.sizeBytes || 100);
         }
-        this.cache.set(cacheKey, { data, cachedAt: Date.now() });
+        this.setCacheEntry(cacheKey, { data, cachedAt: Date.now() });
         partition.isCached = true;
         partition.cacheKey = cacheKey;
       } else {
@@ -1411,7 +1494,9 @@ export class QueryEngine {
 
   /**
    * Data source for reading table data.
-   * Defaults to MockDataSource for backward compatibility with existing tests.
+   * Must be provided via config.dataSource.
+   * For testing, use MockDataSource from test fixtures.
+   * For production, use R2DataSource or a custom TableDataSource implementation.
    */
   private readonly dataSource: TableDataSource;
 
@@ -1423,33 +1508,58 @@ export class QueryEngine {
     this.cacheManager = new CacheManager(config);
     this.resultProcessor = new ResultProcessor();
 
-    // Use provided data source or default to MockDataSource for backward compatibility
-    this.dataSource = config.dataSource ?? new MockDataSource();
+    // Data source is required - use R2DataSource for production or MockDataSource for testing
+    if (!config.dataSource) {
+      // Default to R2DataSource if bucket is provided, otherwise error
+      if (config.bucket) {
+        this.dataSource = new R2DataSource(config.bucket);
+      } else {
+        throw new Error(
+          'QueryEngine requires either config.dataSource or config.bucket. ' +
+          'For testing, provide a MockDataSource via config.dataSource. ' +
+          'For production, provide an R2 bucket via config.bucket.'
+        );
+      }
+    } else {
+      this.dataSource = config.dataSource;
+    }
   }
-
-  // NOTE: Mock data generation has been moved to MockDataSource class.
-  // The QueryEngine now uses the dataSource interface to retrieve data.
-  // See: MockDataSource for test data, R2DataSource for production R2 integration.
-
-  // The following methods have been removed:
-  // - initializeMockData() - replaced by MockDataSource.initializeMockTables()
-  // - generateUserRows() - replaced by MockDataSource.generateUserRows()
-  // - generateOrderRows() - replaced by MockDataSource.generateOrderRows()
-  // - generateEventRows() - replaced by MockDataSource.generateEventRows()
-  // - generateProductRows() - replaced by MockDataSource.generateProductRows()
-  // - generateProfileRows() - replaced by MockDataSource.generateProfileRows()
-  // - generateLargeTableRows() - replaced by MockDataSource.generateLargeTableRows()
-  // - generateLargeEventRows() - replaced by MockDataSource.generateLargeEventRows()
 
   /**
    * Execute a query and return all results
+   *
+   * @param query - The query to execute
+   * @param options - Execution options including AbortSignal for cancellation
+   * @returns Query result with rows and statistics
+   * @throws {Error} If the query is aborted via AbortSignal
+   *
+   * @example
+   * ```typescript
+   * // Execute with cancellation support
+   * const controller = new AbortController();
+   * const promise = engine.execute(query, { signal: controller.signal });
+   *
+   * // Cancel if needed
+   * controller.abort('User cancelled');
+   * ```
    */
-  async execute<T = Record<string, unknown>>(query: Query): Promise<QueryResult<T>> {
+  async execute<T = Record<string, unknown>>(
+    query: Query,
+    options?: QueryExecutionOptions
+  ): Promise<QueryResult<T>> {
+    const signal = options?.signal;
+
+    // Check if already aborted before starting
+    checkAbortSignal(signal);
+
     const startTime = Date.now();
     const planningStart = startTime;
 
     // Validate column names to prevent injection attacks
     validateQueryColumns(query);
+
+    // Check for abort after validation
+    checkAbortSignal(signal);
 
     // Check timeout
     const timeoutMs = query.hints?.timeoutMs || this.config.defaultTimeoutMs || 30000;
@@ -1458,13 +1568,18 @@ export class QueryEngine {
     // Get table data from data source
     const tableMetadata = await this.dataSource.getTableMetadata(query.table);
 
+    // Check for abort after metadata fetch
+    checkAbortSignal(signal);
+
     // Handle non-existent tables
     if (!tableMetadata) {
       throw new Error(`Table not found: ${query.table}`);
     }
 
-    // Handle huge table cases (timeout/memory errors) for MockDataSource
-    if (this.dataSource instanceof MockDataSource && this.dataSource.isHugeTable(query.table)) {
+    // Handle huge table cases (timeout/memory errors) for test data sources
+    // Use duck typing to check for optional isHugeTable method
+    const dataSourceWithHugeTable = this.dataSource as TableDataSource & { isHugeTable?: (table: string) => boolean };
+    if (dataSourceWithHugeTable.isHugeTable?.(query.table)) {
       if (timeoutMs < 1000) {
         throw new Error('Query timeout exceeded');
       }
@@ -1473,18 +1588,26 @@ export class QueryEngine {
       }
     }
 
-    // Get rows - for MockDataSource use optimized path, otherwise read from partitions
+    // Get rows from data source
+    // Use duck typing to check for optional getTableRows method (optimization for test data sources)
+    const dataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
     let rows: Record<string, unknown>[];
-    if (this.dataSource instanceof MockDataSource) {
-      rows = this.dataSource.getTableRows(query.table) ?? [];
+    if (dataSourceWithRows.getTableRows) {
+      // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
+      rows = dataSourceWithRows.getTableRows(query.table) ?? [];
     } else {
-      // For R2DataSource or other sources, read from all partitions
+      // Standard path: read from all partitions
       rows = [];
       for (const partition of tableMetadata.partitions) {
+        // Check for abort between partition reads
+        checkAbortSignal(signal);
         const partitionRows = await this.dataSource.readPartition(partition);
         rows.push(...partitionRows);
       }
     }
+
+    // Check for abort after data loading
+    checkAbortSignal(signal);
 
     let partitions = tableMetadata.partitions;
     const schema = tableMetadata.schema;
@@ -1548,12 +1671,34 @@ export class QueryEngine {
     // In a real implementation, this would read from R2
     let filteredRows = [...rows];
 
-    // Apply predicate filters
+    // Apply predicate filters with periodic abort checks for large datasets
     if (query.predicates && query.predicates.length > 0) {
-      filteredRows = filteredRows.filter(row =>
-        this.matchesAllPredicates(row, query.predicates!)
-      );
+      // Assign to local const for type narrowing in closure
+      const predicates = query.predicates;
+
+      // For large datasets, check abort periodically during filtering
+      if (rows.length > 1000) {
+        const result: Record<string, unknown>[] = [];
+        const checkInterval = 500; // Check every 500 rows
+
+        for (let i = 0; i < filteredRows.length; i++) {
+          if (i % checkInterval === 0) {
+            checkAbortSignal(signal);
+          }
+          if (this.matchesAllPredicates(filteredRows[i], predicates)) {
+            result.push(filteredRows[i]);
+          }
+        }
+        filteredRows = result;
+      } else {
+        filteredRows = filteredRows.filter(row =>
+          this.matchesAllPredicates(row, predicates)
+        );
+      }
     }
+
+    // Check for abort after filtering
+    checkAbortSignal(signal);
 
     const rowsScanned = rows.length;
     const rowsMatched = filteredRows.length;
@@ -1561,12 +1706,18 @@ export class QueryEngine {
 
     // Apply aggregations if present
     if (query.aggregations && query.aggregations.length > 0) {
+      // Check for abort before aggregation
+      checkAbortSignal(signal);
+
       filteredRows = await this.applyAggregations(
         filteredRows,
         query.aggregations,
         query.groupBy,
         query.predicates
       );
+
+      // Check for abort after aggregation
+      checkAbortSignal(signal);
     }
 
     // Apply column projection
@@ -1762,30 +1913,39 @@ export class QueryEngine {
         if (agg.column === null) {
           return rows.length;
         }
-        return rows.filter(r => getNestedValue(r, agg.column!) !== null).length;
+        // Assign to local const for type narrowing in closure
+        const countCol = agg.column;
+        return rows.filter(r => getNestedValue(r, countCol) !== null).length;
 
-      case 'countDistinct':
+      case 'countDistinct': {
         if (agg.column === null) return rows.length;
-        const distinctValues = new Set(rows.map(r => getNestedValue(r, agg.column!)));
+        const distinctCol = agg.column;
+        const distinctValues = new Set(rows.map(r => getNestedValue(r, distinctCol)));
         return distinctValues.size;
+      }
 
-      case 'sum':
+      case 'sum': {
         if (!agg.column) return 0;
+        const sumCol = agg.column;
         return rows.reduce((sum, r) => {
-          const val = getNestedValue(r, agg.column!) as number;
+          const val = getNestedValue(r, sumCol) as number;
           return sum + (typeof val === 'number' ? val : 0);
         }, 0);
+      }
 
-      case 'avg':
+      case 'avg': {
         if (!agg.column) return 0;
-        const values = rows.map(r => getNestedValue(r, agg.column!) as number).filter(v => typeof v === 'number');
+        const avgCol = agg.column;
+        const values = rows.map(r => getNestedValue(r, avgCol) as number).filter(v => typeof v === 'number');
         return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+      }
 
-      case 'min':
+      case 'min': {
         if (!agg.column) return null;
+        const minCol = agg.column;
         let minVal: unknown = undefined;
         for (const r of rows) {
-          const val = getNestedValue(r, agg.column!);
+          const val = getNestedValue(r, minCol);
           if (val !== null && val !== undefined) {
             if (minVal === undefined || this.compareValues(val, minVal) < 0) {
               minVal = val;
@@ -1793,12 +1953,14 @@ export class QueryEngine {
           }
         }
         return minVal;
+      }
 
-      case 'max':
+      case 'max': {
         if (!agg.column) return null;
+        const maxCol = agg.column;
         let maxVal: unknown = undefined;
         for (const r of rows) {
-          const val = getNestedValue(r, agg.column!);
+          const val = getNestedValue(r, maxCol);
           if (val !== null && val !== undefined) {
             if (maxVal === undefined || this.compareValues(val, maxVal) > 0) {
               maxVal = val;
@@ -1806,19 +1968,22 @@ export class QueryEngine {
           }
         }
         return maxVal;
+      }
 
       case 'sumDistinct': {
         if (!agg.column) return 0;
+        const sumDistinctCol = agg.column;
         const distinctSumVals = new Set(
-          rows.map(r => getNestedValue(r, agg.column!) as number).filter(v => typeof v === 'number')
+          rows.map(r => getNestedValue(r, sumDistinctCol) as number).filter(v => typeof v === 'number')
         );
         return [...distinctSumVals].reduce((a, b) => a + b, 0);
       }
 
       case 'avgDistinct': {
         if (!agg.column) return 0;
+        const avgDistinctCol = agg.column;
         const distinctAvgVals = [...new Set(
-          rows.map(r => getNestedValue(r, agg.column!) as number).filter(v => typeof v === 'number')
+          rows.map(r => getNestedValue(r, avgDistinctCol) as number).filter(v => typeof v === 'number')
         )];
         return distinctAvgVals.length > 0 ? distinctAvgVals.reduce((a, b) => a + b, 0) / distinctAvgVals.length : 0;
       }
@@ -1835,7 +2000,8 @@ export class QueryEngine {
 
       case 'stddev': {
         if (!agg.column) return 0;
-        const stddevVals = rows.map(r => getNestedValue(r, agg.column!) as number).filter(v => typeof v === 'number');
+        const stddevCol = agg.column;
+        const stddevVals = rows.map(r => getNestedValue(r, stddevCol) as number).filter(v => typeof v === 'number');
         if (stddevVals.length === 0) return 0;
         const stddevMean = stddevVals.reduce((a, b) => a + b, 0) / stddevVals.length;
         const stddevSquaredDiffs = stddevVals.map(v => Math.pow(v - stddevMean, 2));
@@ -1844,7 +2010,8 @@ export class QueryEngine {
 
       case 'variance': {
         if (!agg.column) return 0;
-        const varVals = rows.map(r => getNestedValue(r, agg.column!) as number).filter(v => typeof v === 'number');
+        const varCol = agg.column;
+        const varVals = rows.map(r => getNestedValue(r, varCol) as number).filter(v => typeof v === 'number');
         if (varVals.length === 0) return 0;
         const varMean = varVals.reduce((a, b) => a + b, 0) / varVals.length;
         const varSquaredDiffs = varVals.map(v => Math.pow(v - varMean, 2));
@@ -1862,34 +2029,74 @@ export class QueryEngine {
 
   /**
    * Execute a query and stream results
+   *
+   * @param query - The query to execute
+   * @param options - Execution options including AbortSignal for cancellation
+   * @returns Streaming query result with async iterator
+   * @throws {Error} If the query is aborted via AbortSignal
+   *
+   * @example
+   * ```typescript
+   * const controller = new AbortController();
+   * const stream = await engine.executeStream(query, { signal: controller.signal });
+   *
+   * for await (const row of stream.rows) {
+   *   // Process row
+   *   if (shouldStop) {
+   *     controller.abort();
+   *     break;
+   *   }
+   * }
+   * ```
    */
-  async executeStream<T = Record<string, unknown>>(query: Query): Promise<StreamingQueryResult<T>> {
+  async executeStream<T = Record<string, unknown>>(
+    query: Query,
+    options?: QueryExecutionOptions
+  ): Promise<StreamingQueryResult<T>> {
+    const signal = options?.signal;
+
+    // Check if already aborted before starting
+    checkAbortSignal(signal);
+
     // Validate column names to prevent injection attacks
     validateQueryColumns(query);
 
     // Get table data from data source
     const tableMetadata = await this.dataSource.getTableMetadata(query.table);
 
+    // Check for abort after metadata fetch
+    checkAbortSignal(signal);
+
     if (!tableMetadata) {
       throw new Error(`Table not found: ${query.table}`);
     }
 
     // Get rows from data source
+    // Use duck typing to check for optional getTableRows method (optimization for test data sources)
+    const streamDataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
     let rows: Record<string, unknown>[];
-    if (this.dataSource instanceof MockDataSource) {
-      rows = this.dataSource.getTableRows(query.table) ?? [];
+    if (streamDataSourceWithRows.getTableRows) {
+      // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
+      rows = streamDataSourceWithRows.getTableRows(query.table) ?? [];
     } else {
+      // Standard path: read from all partitions
       rows = [];
       for (const partition of tableMetadata.partitions) {
+        checkAbortSignal(signal);
         const partitionRows = await this.dataSource.readPartition(partition);
         rows.push(...partitionRows);
       }
     }
 
+    // Check for abort after data loading
+    checkAbortSignal(signal);
+
     // Apply filters
     if (query.predicates && query.predicates.length > 0) {
+      // Assign to local const for type narrowing in closure
+      const predicates = query.predicates;
       rows = rows.filter((row: Record<string, unknown>) =>
-        this.matchesAllPredicates(row, query.predicates!)
+        this.matchesAllPredicates(row, predicates)
       );
     }
 
@@ -1908,13 +2115,27 @@ export class QueryEngine {
     const startTime = Date.now();
     let currentIndex = 0;
 
+    // Set up abort listener to stop the stream
+    const abortHandler = () => {
+      running = false;
+    };
+    signal?.addEventListener('abort', abortHandler, { once: true });
+
     const rowIterator: AsyncIterableIterator<T> = {
       [Symbol.asyncIterator]() {
         return this;
       },
       async next(): Promise<IteratorResult<T>> {
+        // Check for abort on each iteration
+        if (signal?.aborted) {
+          running = false;
+          return { done: true, value: undefined };
+        }
+
         if (!running || currentIndex >= rows.length) {
           running = false;
+          // Clean up abort listener
+          signal?.removeEventListener('abort', abortHandler);
           return { done: true, value: undefined };
         }
         rowCount++;
@@ -1956,6 +2177,7 @@ export class QueryEngine {
       },
       async cancel(): Promise<void> {
         running = false;
+        signal?.removeEventListener('abort', abortHandler);
       },
       isRunning(): boolean {
         return running;
@@ -1965,10 +2187,24 @@ export class QueryEngine {
 
   /**
    * Create an execution plan without running the query
+   *
+   * @param query - The query to plan
+   * @param options - Execution options including AbortSignal for cancellation
+   * @returns Query execution plan
+   * @throws {Error} If the planning is aborted via AbortSignal
    */
-  async plan(query: Query): Promise<QueryPlan> {
+  async plan(query: Query, options?: QueryExecutionOptions): Promise<QueryPlan> {
+    const signal = options?.signal;
+
+    // Check if already aborted before starting
+    checkAbortSignal(signal);
+
     // Validate column names to prevent injection attacks
     validateQueryColumns(query);
+
+    // Check for abort after validation
+    checkAbortSignal(signal);
+
     return this.planner.createPlan(query);
   }
 

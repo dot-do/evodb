@@ -21,10 +21,15 @@ import {
   isValidDate,
   isUint8Array,
   isArrayBuffer,
+  isNumberTuple,
+  isArrayOf,
+  hasProperty,
+  hasProperties,
   assertArray,
   assertRecord,
   assertNumber,
   assertString,
+  assertNumberTuple,
 } from '../guards.js';
 
 describe('Type Guards', () => {
@@ -440,6 +445,187 @@ describe('Assertion Helpers', () => {
   });
 });
 
+describe('isNumberTuple', () => {
+  it('returns true for valid number tuples', () => {
+    expect(isNumberTuple([1, 2])).toBe(true);
+    expect(isNumberTuple([0, 0])).toBe(true);
+    expect(isNumberTuple([-1, 100])).toBe(true);
+    expect(isNumberTuple([3.14, 2.71])).toBe(true);
+    expect(isNumberTuple([Infinity, -Infinity])).toBe(true);
+  });
+
+  it('returns false for non-arrays', () => {
+    expect(isNumberTuple(null)).toBe(false);
+    expect(isNumberTuple(undefined)).toBe(false);
+    expect(isNumberTuple({})).toBe(false);
+    expect(isNumberTuple('1,2')).toBe(false);
+    expect(isNumberTuple(42)).toBe(false);
+  });
+
+  it('returns false for arrays with wrong length', () => {
+    expect(isNumberTuple([])).toBe(false);
+    expect(isNumberTuple([1])).toBe(false);
+    expect(isNumberTuple([1, 2, 3])).toBe(false);
+  });
+
+  it('returns false for arrays with non-number elements', () => {
+    expect(isNumberTuple(['1', '2'])).toBe(false);
+    expect(isNumberTuple([1, '2'])).toBe(false);
+    expect(isNumberTuple(['1', 2])).toBe(false);
+    expect(isNumberTuple([null, 2])).toBe(false);
+    expect(isNumberTuple([1, undefined])).toBe(false);
+    expect(isNumberTuple([{}, []])).toBe(false);
+  });
+
+  it('returns false for NaN values by default', () => {
+    expect(isNumberTuple([NaN, 2])).toBe(false);
+    expect(isNumberTuple([1, NaN])).toBe(false);
+    expect(isNumberTuple([NaN, NaN])).toBe(false);
+  });
+
+  it('narrows type correctly', () => {
+    const value: unknown = [10, 20];
+    if (isNumberTuple(value)) {
+      // TypeScript should know this is [number, number]
+      const [lo, hi] = value;
+      expect(lo).toBe(10);
+      expect(hi).toBe(20);
+      expect(lo + hi).toBe(30);
+    }
+  });
+});
+
+describe('isArrayOf', () => {
+  it('returns true for empty arrays', () => {
+    expect(isArrayOf([], isNumber)).toBe(true);
+    expect(isArrayOf([], isString)).toBe(true);
+  });
+
+  it('returns true when all elements pass the guard', () => {
+    expect(isArrayOf([1, 2, 3], isNumber)).toBe(true);
+    expect(isArrayOf(['a', 'b', 'c'], isString)).toBe(true);
+    expect(isArrayOf([true, false], isBoolean)).toBe(true);
+  });
+
+  it('returns false when any element fails the guard', () => {
+    expect(isArrayOf([1, '2', 3], isNumber)).toBe(false);
+    expect(isArrayOf(['a', 1, 'c'], isString)).toBe(false);
+    expect(isArrayOf([true, 'false'], isBoolean)).toBe(false);
+  });
+
+  it('returns false for non-arrays', () => {
+    expect(isArrayOf(null, isNumber)).toBe(false);
+    expect(isArrayOf(undefined, isNumber)).toBe(false);
+    expect(isArrayOf({}, isNumber)).toBe(false);
+    expect(isArrayOf('123', isNumber)).toBe(false);
+  });
+
+  it('works with custom guards', () => {
+    const isPositive = (v: unknown): v is number => isNumber(v) && v > 0;
+    expect(isArrayOf([1, 2, 3], isPositive)).toBe(true);
+    expect(isArrayOf([1, 0, 3], isPositive)).toBe(false);
+    expect(isArrayOf([1, -1, 3], isPositive)).toBe(false);
+  });
+
+  it('works with nested record guards', () => {
+    expect(isArrayOf([{ a: 1 }, { b: 2 }], isRecord)).toBe(true);
+    expect(isArrayOf([{ a: 1 }, [1, 2]], isRecord)).toBe(false);
+  });
+});
+
+describe('hasProperty', () => {
+  it('returns true when object has the property', () => {
+    expect(hasProperty({ name: 'Alice' }, 'name')).toBe(true);
+    expect(hasProperty({ age: 30 }, 'age')).toBe(true);
+    expect(hasProperty({ value: undefined }, 'value')).toBe(true);
+    expect(hasProperty({ value: null }, 'value')).toBe(true);
+  });
+
+  it('returns false when object lacks the property', () => {
+    expect(hasProperty({}, 'name')).toBe(false);
+    expect(hasProperty({ age: 30 }, 'name')).toBe(false);
+  });
+
+  it('returns false for non-objects', () => {
+    expect(hasProperty(null, 'name')).toBe(false);
+    expect(hasProperty(undefined, 'name')).toBe(false);
+    expect(hasProperty('string', 'length')).toBe(false);
+    expect(hasProperty([], 'length')).toBe(false);
+  });
+
+  it('narrows type correctly', () => {
+    const value: unknown = { name: 'Alice', age: 30 };
+    if (hasProperty(value, 'name')) {
+      // TypeScript should allow access to the property
+      expect(value.name).toBe('Alice');
+    }
+  });
+});
+
+describe('hasProperties', () => {
+  it('returns true when object has all properties', () => {
+    expect(hasProperties({ name: 'Alice', age: 30 }, ['name', 'age'])).toBe(true);
+    expect(hasProperties({ a: 1, b: 2, c: 3 }, ['a', 'b'])).toBe(true);
+  });
+
+  it('returns false when object lacks any property', () => {
+    expect(hasProperties({ name: 'Alice' }, ['name', 'age'])).toBe(false);
+    expect(hasProperties({}, ['name'])).toBe(false);
+  });
+
+  it('returns true for empty property list', () => {
+    expect(hasProperties({}, [])).toBe(true);
+    expect(hasProperties({ name: 'Alice' }, [])).toBe(true);
+  });
+
+  it('returns false for non-objects', () => {
+    expect(hasProperties(null, ['name'])).toBe(false);
+    expect(hasProperties(undefined, ['name'])).toBe(false);
+  });
+
+  it('narrows type correctly', () => {
+    const value: unknown = { lsn: '123', timestamp: '456', op: 1 };
+    if (hasProperties(value, ['lsn', 'timestamp', 'op'])) {
+      expect(value.lsn).toBe('123');
+      expect(value.timestamp).toBe('456');
+      expect(value.op).toBe(1);
+    }
+  });
+});
+
+describe('assertNumberTuple', () => {
+  it('does not throw for valid number tuples', () => {
+    expect(() => assertNumberTuple([1, 2])).not.toThrow();
+    expect(() => assertNumberTuple([0, 100])).not.toThrow();
+    expect(() => assertNumberTuple([-5, 5])).not.toThrow();
+  });
+
+  it('throws TypeError for non-arrays', () => {
+    expect(() => assertNumberTuple(null)).toThrow(TypeError);
+    expect(() => assertNumberTuple({})).toThrow(TypeError);
+    expect(() => assertNumberTuple('1,2')).toThrow(TypeError);
+  });
+
+  it('throws TypeError for wrong length arrays', () => {
+    expect(() => assertNumberTuple([])).toThrow(TypeError);
+    expect(() => assertNumberTuple([1])).toThrow(TypeError);
+    expect(() => assertNumberTuple([1, 2, 3])).toThrow(TypeError);
+  });
+
+  it('throws TypeError for non-number elements', () => {
+    expect(() => assertNumberTuple(['1', '2'])).toThrow(TypeError);
+    expect(() => assertNumberTuple([1, '2'])).toThrow(TypeError);
+  });
+
+  it('includes custom message in error', () => {
+    expect(() => assertNumberTuple(null, 'Custom message')).toThrow('Custom message');
+  });
+
+  it('includes default message with type info', () => {
+    expect(() => assertNumberTuple([1])).toThrow('Expected [number, number] tuple');
+  });
+});
+
 describe('Integration: Guard + Assertion Pattern', () => {
   it('demonstrates safe type narrowing pattern', () => {
     function processData(data: unknown): string {
@@ -471,5 +657,99 @@ describe('Integration: Guard + Assertion Pattern', () => {
     expect(parseConfig('{"key": "value"}')).toEqual({ key: 'value' });
     expect(() => parseConfig('"just a string"')).toThrow('Config must be an object');
     expect(() => parseConfig('[1, 2, 3]')).toThrow('Config must be an object');
+  });
+
+  it('demonstrates isNumberTuple for range operations (query engine use case)', () => {
+    function estimateBetweenSelectivity(
+      value: unknown,
+      min: number,
+      max: number
+    ): number {
+      const range = max - min;
+      if (range === 0) return 1;
+
+      // Use type guard instead of unsafe cast
+      if (isNumberTuple(value)) {
+        const [lo, hi] = value;
+        const overlapStart = Math.max(min, lo);
+        const overlapEnd = Math.min(max, hi);
+        return Math.max(0, (overlapEnd - overlapStart) / range);
+      }
+      return 0.5; // Default for invalid input
+    }
+
+    // Valid range [10, 30] within stats [0, 100]
+    expect(estimateBetweenSelectivity([10, 30], 0, 100)).toBe(0.2);
+
+    // Invalid inputs return default
+    expect(estimateBetweenSelectivity(['10', '30'], 0, 100)).toBe(0.5);
+    expect(estimateBetweenSelectivity([10], 0, 100)).toBe(0.5);
+    expect(estimateBetweenSelectivity(null, 0, 100)).toBe(0.5);
+  });
+
+  it('demonstrates hasProperties for CDC message validation (writer use case)', () => {
+    interface SerializedWalEntry {
+      lsn: string;
+      timestamp: string;
+      op: number;
+      flags: number;
+    }
+
+    function validateCdcEntry(entry: unknown): SerializedWalEntry | null {
+      if (hasProperties(entry, ['lsn', 'timestamp', 'op', 'flags'])) {
+        // Now we can safely access these properties
+        if (
+          isString(entry.lsn) &&
+          isString(entry.timestamp) &&
+          isNumber(entry.op) &&
+          isNumber(entry.flags)
+        ) {
+          return {
+            lsn: entry.lsn,
+            timestamp: entry.timestamp,
+            op: entry.op,
+            flags: entry.flags,
+          };
+        }
+      }
+      return null;
+    }
+
+    // Valid entry
+    expect(validateCdcEntry({
+      lsn: '123',
+      timestamp: '456',
+      op: 1,
+      flags: 0,
+    })).toEqual({
+      lsn: '123',
+      timestamp: '456',
+      op: 1,
+      flags: 0,
+    });
+
+    // Missing property
+    expect(validateCdcEntry({ lsn: '123', timestamp: '456' })).toBeNull();
+
+    // Wrong types
+    expect(validateCdcEntry({
+      lsn: 123, // should be string
+      timestamp: '456',
+      op: 1,
+      flags: 0,
+    })).toBeNull();
+  });
+
+  it('demonstrates isArrayOf for validating typed arrays', () => {
+    function processNumbers(data: unknown): number {
+      if (isArrayOf(data, isNumber)) {
+        return data.reduce((sum, n) => sum + n, 0);
+      }
+      throw new Error('Expected array of numbers');
+    }
+
+    expect(processNumbers([1, 2, 3])).toBe(6);
+    expect(() => processNumbers([1, '2', 3])).toThrow('Expected array of numbers');
+    expect(() => processNumbers('not an array')).toThrow('Expected array of numbers');
   });
 });

@@ -37,6 +37,101 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /**
+ * Allowed value types in log context.
+ *
+ * Log context values are serialized to JSON, so only JSON-compatible
+ * types are allowed. This provides type safety while still allowing
+ * flexible structured logging.
+ */
+export type LogContextValue =
+  | string
+  | number
+  | boolean
+  | null
+  | LogContextValue[]
+  | { [key: string]: LogContextValue };
+
+/**
+ * Structured context data attached to log entries.
+ *
+ * LogContext provides type-safe structured logging with common fields
+ * used for observability and debugging. All values must be JSON-serializable.
+ *
+ * @example
+ * ```typescript
+ * const context: LogContext = {
+ *   requestId: 'req-123',
+ *   userId: 'user-456',
+ *   table: 'events',
+ *   rowsProcessed: 1000,
+ *   durationMs: 42.5,
+ *   metadata: { region: 'us-east-1' },
+ * };
+ *
+ * logger.info('Query completed', context);
+ * ```
+ */
+export interface LogContext {
+  /** Request or correlation ID for tracing */
+  requestId?: string;
+  /** User identifier */
+  userId?: string;
+  /** Session identifier */
+  sessionId?: string;
+  /** Service or component name */
+  service?: string;
+  /** Operation being performed */
+  operation?: string;
+  /** Table or resource name */
+  table?: string;
+  /** Duration in milliseconds */
+  durationMs?: number;
+  /** Number of rows processed/returned */
+  rowsProcessed?: number;
+  /** Number of bytes processed */
+  bytesProcessed?: number;
+  /** Error code for error logs */
+  errorCode?: string;
+  /** Additional custom fields */
+  [key: string]: LogContextValue | undefined;
+}
+
+/**
+ * Type guard to check if a value is a valid LogContextValue.
+ *
+ * @param value - The value to check
+ * @returns True if value is JSON-serializable
+ */
+export function isLogContextValue(value: unknown): value is LogContextValue {
+  if (value === null) return true;
+  if (typeof value === 'string') return true;
+  if (typeof value === 'number') return true;
+  if (typeof value === 'boolean') return true;
+  if (Array.isArray(value)) {
+    return value.every(isLogContextValue);
+  }
+  if (typeof value === 'object') {
+    return Object.values(value as LogContext).every(isLogContextValue);
+  }
+  return false;
+}
+
+/**
+ * Type guard to check if a value is a valid LogContext.
+ *
+ * @param value - The value to check
+ * @returns True if value is a valid LogContext object
+ */
+export function isLogContext(value: unknown): value is LogContext {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  return Object.values(value as LogContext).every(
+    v => v === undefined || isLogContextValue(v)
+  );
+}
+
+/**
  * A single log entry with all metadata
  */
 export interface LogEntry {
@@ -47,7 +142,7 @@ export interface LogEntry {
   /** Unix timestamp in milliseconds */
   timestamp: number;
   /** Structured context data */
-  context?: Record<string, unknown>;
+  context?: LogContext;
   /** Error object (for error level logs) */
   error?: Error;
 }
@@ -59,17 +154,17 @@ export interface Logger {
   /**
    * Log a debug message (lowest priority, typically filtered in production)
    */
-  debug(message: string, context?: Record<string, unknown>): void;
+  debug(message: string, context?: LogContext): void;
 
   /**
    * Log an info message (general information)
    */
-  info(message: string, context?: Record<string, unknown>): void;
+  info(message: string, context?: LogContext): void;
 
   /**
    * Log a warning message (potential issues)
    */
-  warn(message: string, context?: Record<string, unknown>): void;
+  warn(message: string, context?: LogContext): void;
 
   /**
    * Log an error message (errors and exceptions)
@@ -77,7 +172,7 @@ export interface Logger {
    * @param error - Optional Error object
    * @param context - Optional structured context
    */
-  error(message: string, error?: Error, context?: Record<string, unknown>): void;
+  error(message: string, error?: Error, context?: LogContext): void;
 }
 
 /**
@@ -171,7 +266,7 @@ export function createLogger(config: LoggerConfig = {}): Logger {
     return LogLevels.isAtLeast(level, minLevel);
   };
 
-  const log = (level: LogLevel, message: string, context?: Record<string, unknown>, error?: Error): void => {
+  const log = (level: LogLevel, message: string, context?: LogContext, error?: Error): void => {
     if (!shouldLog(level)) return;
 
     const entry: LogEntry = {
@@ -192,16 +287,16 @@ export function createLogger(config: LoggerConfig = {}): Logger {
   };
 
   return {
-    debug(message: string, context?: Record<string, unknown>): void {
+    debug(message: string, context?: LogContext): void {
       log('debug', message, context);
     },
-    info(message: string, context?: Record<string, unknown>): void {
+    info(message: string, context?: LogContext): void {
       log('info', message, context);
     },
-    warn(message: string, context?: Record<string, unknown>): void {
+    warn(message: string, context?: LogContext): void {
       log('warn', message, context);
     },
-    error(message: string, error?: Error, context?: Record<string, unknown>): void {
+    error(message: string, error?: Error, context?: LogContext): void {
       log('error', message, context, error);
     },
   };
@@ -313,7 +408,7 @@ export function createTestLogger(config: LoggerConfig = {}): TestLogger {
     return LogLevels.isAtLeast(level, minLevel);
   };
 
-  const log = (level: LogLevel, message: string, context?: Record<string, unknown>, error?: Error): void => {
+  const log = (level: LogLevel, message: string, context?: LogContext, error?: Error): void => {
     if (!shouldLog(level)) return;
 
     const entry: LogEntry = {
@@ -334,16 +429,16 @@ export function createTestLogger(config: LoggerConfig = {}): TestLogger {
   };
 
   return {
-    debug(message: string, context?: Record<string, unknown>): void {
+    debug(message: string, context?: LogContext): void {
       log('debug', message, context);
     },
-    info(message: string, context?: Record<string, unknown>): void {
+    info(message: string, context?: LogContext): void {
       log('info', message, context);
     },
-    warn(message: string, context?: Record<string, unknown>): void {
+    warn(message: string, context?: LogContext): void {
       log('warn', message, context);
     },
-    error(message: string, error?: Error, context?: Record<string, unknown>): void {
+    error(message: string, error?: Error, context?: LogContext): void {
       log('error', message, context, error);
     },
     getLogs(): LogEntry[] {
@@ -381,8 +476,8 @@ export function createTestLogger(config: LoggerConfig = {}): TestLogger {
  * requestLogger.info('Processing query');
  * ```
  */
-export function withContext(logger: Logger, context: Record<string, unknown>): Logger {
-  const mergeContext = (localContext?: Record<string, unknown>): Record<string, unknown> => {
+export function withContext(logger: Logger, context: LogContext): Logger {
+  const mergeContext = (localContext?: LogContext): LogContext => {
     if (localContext === undefined) {
       return context;
     }
@@ -390,16 +485,16 @@ export function withContext(logger: Logger, context: Record<string, unknown>): L
   };
 
   return {
-    debug(message: string, localContext?: Record<string, unknown>): void {
+    debug(message: string, localContext?: LogContext): void {
       logger.debug(message, mergeContext(localContext));
     },
-    info(message: string, localContext?: Record<string, unknown>): void {
+    info(message: string, localContext?: LogContext): void {
       logger.info(message, mergeContext(localContext));
     },
-    warn(message: string, localContext?: Record<string, unknown>): void {
+    warn(message: string, localContext?: LogContext): void {
       logger.warn(message, mergeContext(localContext));
     },
-    error(message: string, error?: Error, localContext?: Record<string, unknown>): void {
+    error(message: string, error?: Error, localContext?: LogContext): void {
       logger.error(message, error, mergeContext(localContext));
     },
   };

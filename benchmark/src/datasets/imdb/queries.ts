@@ -12,7 +12,7 @@ import type { DenormalizedMovie, DecadeInfo } from './denormalized.js';
 import type { ImdbQueryType, ImdbQueryResult, ImdbBenchmarkResult, ImdbDataSize } from './schema.js';
 import { IMDB_DATA_SIZES } from './schema.js';
 import { generateMovies } from './loader.js';
-import { shred, encode, type Column, type EncodedColumn } from '@evodb/core';
+import { shred, type Column } from '@evodb/core';
 
 // ============================================================================
 // Query Functions

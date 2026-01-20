@@ -23,9 +23,15 @@ export {
   isValidDate,
   isUint8Array,
   isArrayBuffer,
+  // Advanced type guards
+  isNumberTuple,
+  isArrayOf,
+  hasProperty,
+  hasProperties,
   // Assertion helpers
   assertArray,
   assertRecord,
   assertNumber,
   assertString,
+  assertNumberTuple,
 } from '../guards.js';

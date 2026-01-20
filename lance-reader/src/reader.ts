@@ -300,10 +300,13 @@ export { VectorIndex };
  * const results = await reader.search('embedding', queryVector, { k: 10 });
  * ```
  */
+/** Default maximum index cache size */
+const DEFAULT_MAX_INDEX_CACHE_SIZE = 10;
+
 export class LanceReader {
   private config: LanceReaderConfig;
   private manifest: LanceManifest | null = null;
-  private indexCache: Map<string, VectorIndex> = new Map();
+  private indexCache: LRUCache<string, VectorIndex>;
   private bufferCache: LRUCache<string, ArrayBuffer>;
   private initialized = false;
 
@@ -311,12 +314,17 @@ export class LanceReader {
     this.config = {
       cacheStrategy: 'lru',
       maxCacheSize: 50 * 1024 * 1024, // 50MB default
+      maxIndexCacheSize: DEFAULT_MAX_INDEX_CACHE_SIZE,
       ...config,
     };
 
     // Initialize buffer cache based on strategy
     const cacheSize = this.config.cacheStrategy === 'none' ? 0 : 100;
     this.bufferCache = new LRUCache<string, ArrayBuffer>(cacheSize);
+
+    // Initialize index cache with LRU eviction
+    const indexCacheSize = this.config.cacheStrategy === 'none' ? 0 : (this.config.maxIndexCacheSize ?? DEFAULT_MAX_INDEX_CACHE_SIZE);
+    this.indexCache = new LRUCache<string, VectorIndex>(indexCacheSize);
   }
 
   /**

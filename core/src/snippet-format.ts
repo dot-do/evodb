@@ -200,9 +200,23 @@ export function bitPack(values: number[], bitWidth: number): Uint8Array {
  * Unpack bit-packed integers
  */
 export function bitUnpack(data: Uint8Array, count: number): Int32Array {
-  const bitWidth = data[0];
   const result = new Int32Array(count);
-  const mask = (1 << bitWidth) - 1;
+
+  // Bounds check: need at least 1 byte for bit width
+  if (data.length === 0) {
+    return result;
+  }
+
+  const bitWidth = data[0];
+
+  // Handle edge case of zero bit width
+  if (bitWidth === 0) {
+    return result; // All zeros
+  }
+
+  // Cap bit width to reasonable range (32 bits max for Int32)
+  const effectiveBitWidth = Math.min(bitWidth, 32);
+  const mask = effectiveBitWidth === 32 ? 0xFFFFFFFF : (1 << effectiveBitWidth) - 1;
 
   let bitOffset = 8; // Start after bit width byte
 
@@ -210,19 +224,25 @@ export function bitUnpack(data: Uint8Array, count: number): Int32Array {
     const byteIndex = Math.floor(bitOffset / 8);
     const bitPos = bitOffset % 8;
 
-    // Read value across bytes
+    // Bounds check for data access
+    if (byteIndex >= data.length) {
+      // Fill remaining with zeros
+      break;
+    }
+
+    // Read value across bytes with bounds checking
     let value = data[byteIndex] >> bitPos;
-    if (bitPos + bitWidth > 8) {
+    if (bitPos + effectiveBitWidth > 8 && byteIndex + 1 < data.length) {
       value |= (data[byteIndex + 1] << (8 - bitPos));
-      if (bitPos + bitWidth > 16) {
+      if (bitPos + effectiveBitWidth > 16 && byteIndex + 2 < data.length) {
         value |= (data[byteIndex + 2] << (16 - bitPos));
-        if (bitPos + bitWidth > 24) {
+        if (bitPos + effectiveBitWidth > 24 && byteIndex + 3 < data.length) {
           value |= (data[byteIndex + 3] << (24 - bitPos));
         }
       }
     }
     result[i] = value & mask;
-    bitOffset += bitWidth;
+    bitOffset += effectiveBitWidth;
   }
 
   return result;
@@ -635,6 +655,11 @@ export function encodeSortedDict(dict: string[]): Uint8Array {
  * Decode dictionary from bytes
  */
 export function decodeSortedDict(data: Uint8Array): string[] {
+  // Bounds check: need at least 4 bytes for dict size
+  if (data.byteLength < 4) {
+    return [];
+  }
+
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const decoder = new TextDecoder();
   let offset = 0;
@@ -644,8 +669,16 @@ export function decodeSortedDict(data: Uint8Array): string[] {
 
   const dict: string[] = [];
   for (let i = 0; i < dictSize; i++) {
+    // Bounds check for entry length
+    if (offset + 2 > data.byteLength) {
+      break;
+    }
     const len = view.getUint16(offset, true);
     offset += 2;
+    // Bounds check for entry content
+    if (offset + len > data.byteLength) {
+      break;
+    }
     dict.push(decoder.decode(data.subarray(offset, offset + len)));
     offset += len;
   }
@@ -1026,6 +1059,11 @@ function decodeDictColumn(data: Uint8Array, nonNullCount: number, _nulls: boolea
     return [];
   }
 
+  // Need at least 4 bytes for dict size
+  if (data.byteLength < 4) {
+    return [];
+  }
+
   const dict = decodeSortedDict(data);
 
   // Find where indices start
@@ -1033,8 +1071,17 @@ function decodeDictColumn(data: Uint8Array, nonNullCount: number, _nulls: boolea
   const dictSize = view.getUint32(0, true);
   let offset = 4;
   for (let i = 0; i < dictSize; i++) {
+    // Bounds check for entry length read
+    if (offset + 2 > data.byteLength) {
+      break;
+    }
     const len = view.getUint16(offset, true);
-    offset += 2 + len;
+    offset += 2;
+    // Bounds check for entry content
+    if (offset + len > data.byteLength) {
+      break;
+    }
+    offset += len;
   }
 
   // Calculate how many indices we can read
@@ -1044,6 +1091,10 @@ function decodeDictColumn(data: Uint8Array, nonNullCount: number, _nulls: boolea
   // Read indices - need to handle alignment
   const values: string[] = [];
   for (let i = 0; i < indexCount; i++) {
+    // Bounds check for index read
+    if (offset + i * 2 + 2 > data.byteLength) {
+      break;
+    }
     const idx = view.getUint16(offset + i * 2, true);
     if (idx === 0xFFFF || idx >= dict.length) {
       values.push('');

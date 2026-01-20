@@ -46,6 +46,7 @@ function createMockBucket() {
 function createTestConfig(overrides?: Partial<QueryEngineConfig>): QueryEngineConfig {
   return {
     bucket: createMockBucket() as any,
+    dataSource: createMockDataSource(),
     maxParallelism: 4,
     defaultTimeoutMs: 30000,
     enableStats: true,

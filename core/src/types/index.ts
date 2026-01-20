@@ -71,6 +71,8 @@ export {
   type TableSchema,
 
   // Unified RPC WAL Entry Types (for DO-to-DO communication)
+  type WalEntryMetadata,
+  isWalEntryMetadata,
   type RpcWalOperation,
   RpcWalOperationCode,
   type RpcWalOperationCodeValue,

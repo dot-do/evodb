@@ -17,11 +17,14 @@ import {
   AggregateSpec,
 } from '../index.js';
 import type { R2Bucket, R2Object, CacheStats } from '../types.js';
+import { createMockR2BucketWithData } from '@evodb/test-utils';
 
 // ============================================================================
 // Test Utilities - Mock R2 Bucket
 // ============================================================================
 
+// Use createMockR2BucketWithData from @evodb/test-utils for standard mock bucket creation.
+// The function below provides compatibility with vi.fn() mocking for tests that need spy behavior.
 function createMockR2Object(key: string, data: unknown): R2Object {
   const buffer = new TextEncoder().encode(JSON.stringify(data)).buffer;
   return {
@@ -37,6 +40,10 @@ function createMockR2Object(key: string, data: unknown): R2Object {
   };
 }
 
+/**
+ * Create a mock R2 bucket with vi.fn() spies for tests that need to verify mock behavior.
+ * For simpler tests, prefer createMockR2BucketWithData from @evodb/test-utils.
+ */
 function createMockR2Bucket(objects: Map<string, unknown>): R2Bucket {
   return {
     get: vi.fn(async (key: string) => {

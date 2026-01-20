@@ -239,18 +239,26 @@ export function validateSchema(value: unknown, filePath: string): asserts value 
 
 /**
  * Parse and validate a schema from JSON content
+ *
+ * Uses validateSchema assertion function which throws if validation fails.
+ * After the assertion, TypeScript knows the value is Schema but the type
+ * narrowing doesn't persist to the return statement, so we use a local
+ * variable to carry the type forward.
  */
 export function parseAndValidateSchema(content: string, filePath: string): Schema {
   const parsed = parseJson(content, filePath);
 
   // Handle config files with nested schema
   if (isPlainObject(parsed) && 'schema' in parsed && isPlainObject(parsed.schema)) {
-    validateSchema(parsed.schema, filePath);
-    return parsed.schema as unknown as Schema;
+    const schema = parsed.schema;
+    validateSchema(schema, filePath);
+    // After validateSchema, TypeScript knows schema is Schema
+    return schema;
   }
 
   validateSchema(parsed, filePath);
-  return parsed as unknown as Schema;
+  // After validateSchema, TypeScript knows parsed is Schema
+  return parsed;
 }
 
 // =============================================================================

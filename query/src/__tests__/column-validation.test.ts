@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { validateColumnName, validateQueryColumns, createQueryEngine, QueryEngine } from '../engine.js';
 import type { Query, QueryEngineConfig } from '../types.js';
+import { createMockDataSource } from './fixtures/mock-data.js';
 
 // =============================================================================
 // Test Utilities
@@ -16,6 +17,7 @@ import type { Query, QueryEngineConfig } from '../types.js';
 
 function createTestConfig(): QueryEngineConfig {
   return {
+    dataSource: createMockDataSource(),
     defaultTimeoutMs: 30000,
     memoryLimitBytes: 100 * 1024 * 1024,
   };

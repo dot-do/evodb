@@ -8,7 +8,6 @@
 import type {
   OnetSocCode,
   JobZone,
-  TaskType,
   RiasecType,
   WorkValueType,
   SkillCategory,
@@ -482,7 +481,7 @@ const DEFAULT_CONFIG: Required<OnetGeneratorConfig> = {
 /**
  * Generate a realistic O*NET-SOC code
  */
-function generateOnetSocCode(rng: SeededRandom, index: number): OnetSocCode {
+function generateOnetSocCode(rng: SeededRandom, _index: number): OnetSocCode {
   const group = rng.pick(MAJOR_GROUPS);
   const minor = rng.int(1000, 9999).toString().padStart(4, '0');
   const detail = rng.int(0, 99).toString().padStart(2, '0');

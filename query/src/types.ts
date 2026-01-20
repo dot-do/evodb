@@ -8,6 +8,78 @@
  */
 
 // =============================================================================
+// Partition Types
+// =============================================================================
+
+/**
+ * Valid partition value types.
+ *
+ * Partition values are used for Hive-style partitioning where directories
+ * are named with key=value patterns (e.g., year=2024/month=01/).
+ * Values must be serializable and comparable for partition pruning.
+ *
+ * @example
+ * ```typescript
+ * const datePartition: PartitionValue = '2024-01-15';
+ * const yearPartition: PartitionValue = 2024;
+ * const activePartition: PartitionValue = true;
+ * ```
+ */
+export type PartitionValue = string | number | boolean | null;
+
+/**
+ * Map of partition column names to their values.
+ *
+ * Used in PartitionInfo to describe the partition key values for a data file.
+ * Keys are column names (e.g., 'year', 'month', 'region') and values are
+ * the partition values for that file.
+ *
+ * @example
+ * ```typescript
+ * const partitionValues: PartitionValues = {
+ *   year: 2024,
+ *   month: 1,
+ *   region: 'us-east-1',
+ * };
+ * ```
+ */
+export type PartitionValues = Record<string, PartitionValue>;
+
+/**
+ * Type guard to check if a value is a valid PartitionValue.
+ *
+ * @param value - The value to check
+ * @returns True if value is a valid partition value type
+ */
+export function isPartitionValue(value: unknown): value is PartitionValue {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+/**
+ * Type guard to check if an object is a valid PartitionValues map.
+ *
+ * @param value - The value to check
+ * @returns True if value is a valid PartitionValues object
+ */
+export function isPartitionValues(value: unknown): value is PartitionValues {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  for (const val of Object.values(obj)) {
+    if (!isPartitionValue(val)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// =============================================================================
 // Core Query Types
 // =============================================================================
 
@@ -430,6 +502,48 @@ export interface QueryHints {
   memoryLimitBytes?: number;
 }
 
+/**
+ * Query execution options.
+ *
+ * Options passed to query execution methods like `execute()`, `executeStream()`,
+ * and `plan()`. These are runtime options separate from query hints.
+ *
+ * @example
+ * ```typescript
+ * // Execute with cancellation support
+ * const controller = new AbortController();
+ * const result = await engine.execute(query, { signal: controller.signal });
+ *
+ * // Cancel the query if needed
+ * controller.abort('User cancelled');
+ *
+ * // Use AbortSignal.timeout() for automatic timeout
+ * const result = await engine.execute(query, {
+ *   signal: AbortSignal.timeout(5000)
+ * });
+ * ```
+ */
+export interface QueryExecutionOptions {
+  /**
+   * AbortSignal for query cancellation.
+   *
+   * When the signal is aborted, the query will stop execution and throw
+   * an error. This allows cancelling long-running queries from outside.
+   *
+   * @example
+   * ```typescript
+   * const controller = new AbortController();
+   *
+   * // Start a query
+   * const queryPromise = engine.execute(query, { signal: controller.signal });
+   *
+   * // Cancel it later
+   * controller.abort('Query took too long');
+   * ```
+   */
+  signal?: AbortSignal;
+}
+
 // =============================================================================
 // Query Plan Types
 // =============================================================================
@@ -679,7 +793,7 @@ export interface PartitionInfo {
   path: string;
 
   /** Partition values */
-  partitionValues: Record<string, unknown>;
+  partitionValues: PartitionValues;
 
   /** File size in bytes */
   sizeBytes: number;
@@ -861,10 +975,13 @@ export interface QueryCost {
 // =============================================================================
 
 /**
- * Query result container.
+ * Query result container (engine-specific format).
  *
  * Contains the result rows from query execution along with metadata
  * about the total result set and execution statistics.
+ *
+ * Note: For cross-package compatibility, use `ExecutorResult` from `@evodb/core`
+ * which provides a unified interface. This type is internal to `@evodb/query`.
  *
  * @typeParam T - Row type, defaults to Record<string, unknown>
  *
@@ -876,7 +993,7 @@ export interface QueryCost {
  *   order_count: number;
  * }
  *
- * const result: QueryResult<SalesRow> = await engine.execute(query);
+ * const result: EngineQueryResult<SalesRow> = await engine.execute(query);
  *
  * console.log(`Returned ${result.rows.length} of ${result.totalRowCount} rows`);
  * console.log(`Execution time: ${result.stats.executionTimeMs}ms`);
@@ -893,7 +1010,7 @@ export interface QueryCost {
  * }
  * ```
  */
-export interface QueryResult<T = Record<string, unknown>> {
+export interface EngineQueryResult<T = Record<string, unknown>> {
   /** Result rows */
   rows: T[];
 
@@ -904,21 +1021,29 @@ export interface QueryResult<T = Record<string, unknown>> {
   hasMore: boolean;
 
   /** Execution statistics */
-  stats: QueryStats;
+  stats: EngineQueryStats;
 
   /** Continuation token for pagination */
   continuationToken?: string;
 }
 
 /**
- * Query execution statistics.
+ * @deprecated Use `EngineQueryResult` instead. Kept for backward compatibility.
+ */
+export type QueryResult<T = Record<string, unknown>> = EngineQueryResult<T>;
+
+/**
+ * Query execution statistics (engine-specific format).
  *
  * Detailed metrics about query execution for monitoring,
  * debugging, and performance optimization.
  *
+ * Note: For cross-package compatibility, use `ExecutorStats` from `@evodb/core`
+ * which provides a unified interface. This type is internal to `@evodb/query`.
+ *
  * @example
  * ```typescript
- * const stats: QueryStats = result.stats;
+ * const stats: EngineQueryStats = result.stats;
  *
  * // Execution timing
  * console.log(`Total: ${stats.executionTimeMs}ms`);
@@ -939,7 +1064,7 @@ export interface QueryResult<T = Record<string, unknown>> {
  * console.log(`Block prune ratio: ${(stats.blockPruneRatio * 100).toFixed(1)}%`);
  * ```
  */
-export interface QueryStats {
+export interface EngineQueryStats {
   /** Total execution time in milliseconds */
   executionTimeMs: number;
 
@@ -996,6 +1121,11 @@ export interface QueryStats {
 }
 
 /**
+ * @deprecated Use `EngineQueryStats` instead. Kept for backward compatibility.
+ */
+export type QueryStats = EngineQueryStats;
+
+/**
  * Streaming query result for large result sets.
  *
  * Provides an async iterator interface for processing results
@@ -1029,7 +1159,7 @@ export interface StreamingQueryResult<T = Record<string, unknown>> {
   rows: AsyncIterableIterator<T>;
 
   /** Get execution stats (available after iteration) */
-  getStats(): Promise<QueryStats>;
+  getStats(): Promise<EngineQueryStats>;
 
   /** Cancel the query */
   cancel(): Promise<void>;
@@ -1194,6 +1324,9 @@ export interface CacheConfig {
 
   /** Maximum cache size in bytes */
   maxSizeBytes: number;
+
+  /** Maximum number of cache entries (default: 1000) */
+  maxEntries?: number;
 
   /** Cache key prefix */
   keyPrefix: string;

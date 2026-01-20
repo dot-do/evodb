@@ -12,7 +12,6 @@
  */
 
 import {
-  CLICKBENCH_COLUMNS,
   CLICKBENCH_SIZES,
   CLICKBENCH_CARDINALITY,
   type ClickBenchDataSize,

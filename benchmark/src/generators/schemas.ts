@@ -4,7 +4,7 @@
  * Standard benchmark schemas including JSONBench-like data patterns.
  */
 
-import type { DataSchema, ColumnDef } from '../types.js';
+import type { DataSchema } from '../types.js';
 
 /**
  * JSONBench-inspired user activity schema

@@ -20,14 +20,11 @@
 
 import {
   SNIPPETS_CONSTRAINTS,
-  assertWithinConstraints,
   validateConstraints,
-  runBenchmark,
   runBenchmarkAsync,
   formatBytes,
   formatMs,
   type BenchmarkMetrics,
-  type ConstraintValidationResult,
 } from './constraints.js';
 
 // =============================================================================
@@ -148,7 +145,7 @@ export function createZoneMapStep(partitionCount: number): SnippetStep {
     estimatedCpuMs: 0.5,
     estimatedMemoryMb: 1,
     subrequests: 1, // Fetch zone maps
-    execute: async (input: unknown) => {
+    execute: async (_input: unknown) => {
       // Simulate zone map evaluation
       const start = performance.now();
 
@@ -189,7 +186,7 @@ export function createBloomFilterStep(filterCount: number): SnippetStep {
     estimatedCpuMs: 0.1,
     estimatedMemoryMb: 0.5,
     subrequests: 1, // Fetch bloom filters
-    execute: async (input: unknown) => {
+    execute: async (_input: unknown) => {
       const start = performance.now();
 
       // Simulate bloom filter lookups
@@ -223,7 +220,7 @@ export function createColumnarDecodeStep(rowCount: number, columnCount: number):
     estimatedCpuMs: 2.0,
     estimatedMemoryMb: 5,
     subrequests: 3, // Fetch column chunks
-    execute: async (input: unknown) => {
+    execute: async (_input: unknown) => {
       const start = performance.now();
 
       // Simulate columnar decode
@@ -258,7 +255,7 @@ export function createAggregationStep(rowCount: number): SnippetStep {
     estimatedCpuMs: 1.0,
     estimatedMemoryMb: 2,
     subrequests: 0, // In-memory only
-    execute: async (input: unknown) => {
+    execute: async (_input: unknown) => {
       const start = performance.now();
 
       // Simulate aggregation
@@ -300,7 +297,7 @@ export function createVectorSearchStep(numVectors: number, dimension: number): S
     estimatedCpuMs: 2.0,
     estimatedMemoryMb: (numVectors * dimension * 4) / (1024 * 1024),
     subrequests: 2, // Fetch centroids + partition
-    execute: async (input: unknown) => {
+    execute: async (_input: unknown) => {
       const start = performance.now();
 
       // Simulate vector search

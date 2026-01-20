@@ -595,14 +595,14 @@ export function createLanceStorageAdapter(storage: CoreStorageWithList): Storage
     async get(key: string): Promise<ArrayBuffer | null> {
       const data = await storage.read(key);
       if (!data) return null;
-      // Convert Uint8Array to ArrayBuffer
-      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      // Convert Uint8Array to ArrayBuffer - use slice to ensure we get a proper ArrayBuffer
+      return data.slice().buffer;
     },
 
     async getRange(key: string, offset: number, length: number): Promise<ArrayBuffer> {
       if (storage.readRange) {
         const data = await storage.readRange(key, offset, length);
-        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        return data.slice().buffer;
       }
       // Fallback: read entire file and slice
       const fullData = await storage.read(key);

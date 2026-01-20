@@ -128,7 +128,7 @@ export class CacheEffectivenessScenario {
     await simulator.executeTasks(warmupTasks, partitions, data);
 
     // Reset statistics but keep cache warm
-    const cacheStatsBefore = simulator.getCacheMetrics();
+    void simulator.getCacheMetrics();
 
     // Measurement phase
     console.log(`    Running measurement with ${this.config.measurementQueries} queries...`);
@@ -262,7 +262,7 @@ export class CacheEffectivenessScenario {
   private generateAccessPatternTasks(
     partitions: PartitionMetadata[],
     count: number,
-    scheduler: TaskScheduler
+    _scheduler: TaskScheduler
   ): ReturnType<TaskScheduler['createConcurrentWorkload']> {
     // Determine which partitions are "hot"
     const hotPartitionCount = Math.ceil(partitions.length * this.config.hotDataPercentage);

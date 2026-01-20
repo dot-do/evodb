@@ -5,8 +5,30 @@
  * - Filter evaluation
  * - Sorting
  * - Aggregation
- * - QueryExecutor interface
+ * - QueryExecutor interface (unified interface for cross-package compatibility)
  * - Query engine auto-selection
+ *
+ * ## Unified Query Types
+ *
+ * For cross-package compatibility, use the unified `Executor*` types:
+ * - `ExecutorQuery` - Unified query specification
+ * - `ExecutorResult` - Unified query result
+ * - `ExecutorStats` - Unified execution statistics
+ * - `ExecutorPlan` - Unified query plan
+ *
+ * Package-specific types (internal format):
+ * - `@evodb/reader`: `ReaderQueryResult`, `ReaderQueryStats`
+ * - `@evodb/query`: `EngineQueryResult`, `EngineQueryStats`
+ *
+ * @example
+ * ```typescript
+ * // Using unified types for cross-package compatibility
+ * import type { QueryExecutor, ExecutorQuery, ExecutorResult } from '@evodb/core';
+ *
+ * async function runQuery(executor: QueryExecutor, query: ExecutorQuery): Promise<ExecutorResult> {
+ *   return await executor.execute(query);
+ * }
+ * ```
  *
  * @module query
  */

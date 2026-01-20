@@ -327,4 +327,136 @@ describe('generateTypes', () => {
     expect(result).toContain('uuidField: string;');
     expect(result).toContain('jsonField: unknown;');
   });
+
+  it('should handle unknown types by returning unknown', () => {
+    // Test with a completely unknown type
+    const unknownType = 'some_unknown_type' as ColumnType;
+    expect(typeToTypeScript(unknownType)).toBe('unknown');
+  });
+
+  it('should handle empty columns schema', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    expect(result).toContain('export interface Root {');
+    expect(result).toContain('}');
+  });
+});
+
+// =============================================================================
+// Singularization Tests
+// =============================================================================
+
+describe('singularization edge cases', () => {
+  it('should singularize words ending in ies', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [
+        { name: 'categories[0].name', type: 'string', nullable: false },
+      ],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    // "categories" -> "RootCategories" singularized to "RootCategory"
+    expect(result).toContain('RootCategory');
+  });
+
+  it('should singularize words ending in es', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [
+        { name: 'boxes[0].label', type: 'string', nullable: false },
+      ],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    // "boxes" -> "RootBoxes" singularized to "RootBox"
+    expect(result).toContain('RootBox');
+  });
+
+  it('should singularize words ending in s but not ss', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [
+        { name: 'items[0].name', type: 'string', nullable: false },
+      ],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    expect(result).toContain('RootItem');
+  });
+
+  it('should handle words ending in ss by adding Item suffix', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [
+        { name: 'glass[0].color', type: 'string', nullable: false },
+      ],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    // "glass" ends in "ss", so singularize returns "glassItem"
+    expect(result).toContain('RootGlassItem');
+  });
+
+  it('should add Item suffix to non-plural words', () => {
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [
+        { name: 'data[0].value', type: 'string', nullable: false },
+      ],
+      createdAt: Date.now(),
+    };
+
+    const result = generateTypes(schema);
+    // "data" doesn't end in s/es/ies, so gets "Item" suffix
+    expect(result).toContain('RootDataItem');
+  });
+});
+
+// =============================================================================
+// Array without element type Tests
+// =============================================================================
+
+describe('array edge cases', () => {
+  it('should handle simple array without element type', () => {
+    const tree: PathNode = {
+      children: {
+        items: {
+          children: {},
+          isArray: true,
+          // No elementType, no children with columns
+        },
+      },
+      isArray: false,
+    };
+
+    // We can't directly test generateInterface, but we can create a schema
+    // that produces an array node without an elementType
+    const schema: Schema = {
+      schemaId: 1,
+      version: 1,
+      columns: [],
+      createdAt: Date.now(),
+    };
+
+    // Build a tree manually and verify the behavior through buildPathTree
+    const columns: SchemaColumn[] = [];
+    const result = buildPathTree(columns);
+    expect(result.children).toEqual({});
+  });
 });

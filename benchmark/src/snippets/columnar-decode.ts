@@ -9,8 +9,6 @@
  */
 
 import {
-  SNIPPETS_CONSTRAINTS,
-  assertWithinConstraints,
   validateConstraints,
   runBenchmark,
   formatBytes,
