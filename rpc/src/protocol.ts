@@ -313,7 +313,11 @@ export class ProtocolCodec {
       : new Uint8Array(0);
 
     const statusCode = this.statusToCode(message.status);
-    const totalSize = 24 + correlationIdBytes.length;
+    // Base size: 24 bytes (header) + 1 byte (statusCode) = 25 bytes
+    // With correlationId: + 2 bytes (length) + correlationIdBytes
+    const totalSize = correlationIdBytes.length > 0
+      ? 27 + correlationIdBytes.length
+      : 25;
 
     const buffer = new ArrayBuffer(totalSize);
     const view = new DataView(buffer);
