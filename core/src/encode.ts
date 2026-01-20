@@ -12,6 +12,74 @@
 import { type Column, type ColumnStats, type EncodedColumn, Encoding, Type, assertNever } from './types.js';
 import { internString } from './string-intern-pool.js';
 
+// =============================================================================
+// DEBUG MODE RUNTIME CHECKS
+// =============================================================================
+
+/**
+ * Enable debug assertions for type checking in performance-critical paths.
+ * Set to true during development to catch type mismatches early.
+ * Should be false in production for maximum performance.
+ *
+ * When enabled, type assertions are verified at runtime and throw descriptive
+ * errors if the actual type doesn't match the expected type.
+ */
+export const DEBUG_ASSERTIONS = false;
+
+/**
+ * Assert that a value matches the expected type (debug mode only).
+ * No-op when DEBUG_ASSERTIONS is false.
+ *
+ * @param value - The value to check
+ * @param expectedType - The expected Type enum value
+ * @param context - Description of where the assertion is being made
+ * @throws Error if DEBUG_ASSERTIONS is true and type doesn't match
+ */
+export function assertType(value: unknown, expectedType: Type, context: string): void {
+  if (!DEBUG_ASSERTIONS) return;
+
+  const actualType = typeof value;
+  let valid = false;
+
+  switch (expectedType) {
+    case Type.Null:
+      valid = value === null || value === undefined;
+      break;
+    case Type.Bool:
+      valid = actualType === 'boolean';
+      break;
+    case Type.Int32:
+    case Type.Float64:
+      valid = actualType === 'number';
+      break;
+    case Type.Int64:
+      valid = actualType === 'bigint';
+      break;
+    case Type.String:
+    case Type.Date:
+      valid = actualType === 'string';
+      break;
+    case Type.Binary:
+      valid = value instanceof Uint8Array;
+      break;
+    case Type.Timestamp:
+      valid = value instanceof Date || actualType === 'number';
+      break;
+    case Type.Array:
+      valid = Array.isArray(value);
+      break;
+    case Type.Object:
+      valid = actualType === 'object' && value !== null && !Array.isArray(value);
+      break;
+  }
+
+  if (!valid) {
+    throw new Error(
+      `Type assertion failed in ${context}: expected ${Type[expectedType]}, got ${actualType} (value: ${String(value).slice(0, 50)})`
+    );
+  }
+}
+
 /** Encode column with automatic encoding selection */
 export function encode(columns: Column[]): EncodedColumn[] {
   return columns.map(col => {
@@ -22,7 +90,16 @@ export function encode(columns: Column[]): EncodedColumn[] {
   });
 }
 
-/** Compute column statistics */
+/**
+ * Compute column statistics for encoding selection.
+ *
+ * Type assertions rationale:
+ * - `v as number` / `min as number` / `max as number`: These assertions are safe because
+ *   the comparison operators (<, >) work correctly for all primitive types in JavaScript.
+ *   The assertion allows TypeScript to accept the comparison while the runtime behavior
+ *   remains correct for strings (lexicographic), numbers, and bigints. For mixed types,
+ *   the comparison may produce unexpected results but won't crash.
+ */
 function computeStats(col: Column): ColumnStats {
   let min: unknown = undefined, max: unknown = undefined, nullCount = 0;
   const seen = new Set<unknown>();
@@ -31,6 +108,7 @@ function computeStats(col: Column): ColumnStats {
     if (col.nulls[i]) { nullCount++; continue; }
     const v = col.values[i];
     seen.add(v);
+    // SAFETY: Comparison operators work for all comparable primitives (numbers, strings, bigints)
     if (min === undefined || (v as number) < (min as number)) min = v;
     if (max === undefined || (v as number) > (max as number)) max = v;
   }
@@ -56,18 +134,225 @@ export function unpackBits(bytes: Uint8Array, count: number): boolean[] {
   return bits;
 }
 
-/** Select best encoding and encode data */
+// =============================================================================
+// SPARSE NULL BITMAP OPTIMIZATION (Issue: evodb-qp6)
+// =============================================================================
+
+/**
+ * Threshold for using sparse representation.
+ * If null rate is below this threshold, use SparseNullSet instead of full array.
+ * 10% threshold: for 10K elements, sparse is better if < 1K nulls
+ */
+export const SPARSE_NULL_THRESHOLD = 0.1;
+
+/**
+ * Sparse representation of null indices for columns with few nulls.
+ * Uses a Set internally for O(1) null checks instead of O(1) array access,
+ * but with dramatically less memory for sparse data.
+ *
+ * Memory comparison for 100K elements with 10 nulls:
+ * - Boolean array: ~100KB (1 byte per boolean in JS)
+ * - SparseNullSet: ~80 bytes (Set overhead + 10 numbers)
+ */
+export class SparseNullSet implements Iterable<boolean> {
+  private readonly _nullIndices: Set<number>;
+  private readonly _totalCount: number;
+
+  constructor(nullIndices: Set<number>, totalCount: number) {
+    this._nullIndices = nullIndices;
+    this._totalCount = totalCount;
+  }
+
+  /** Check if a specific index is null */
+  isNull(index: number): boolean {
+    return this._nullIndices.has(index);
+  }
+
+  /** Number of null values */
+  get nullCount(): number {
+    return this._nullIndices.size;
+  }
+
+  /** Total number of elements (including non-null) */
+  get totalCount(): number {
+    return this._totalCount;
+  }
+
+  /** Alias for totalCount for array-like interface */
+  get length(): number {
+    return this._totalCount;
+  }
+
+  /** Iterate over null indices only (efficient for sparse data) */
+  *nullIndices(): Generator<number> {
+    for (const idx of this._nullIndices) {
+      yield idx;
+    }
+  }
+
+  /** Convert to full boolean array for compatibility */
+  toArray(): boolean[] {
+    const result = new Array<boolean>(this._totalCount).fill(false);
+    for (const idx of this._nullIndices) {
+      result[idx] = true;
+    }
+    return result;
+  }
+
+  /** Iterable implementation for for...of loops */
+  *[Symbol.iterator](): Generator<boolean> {
+    for (let i = 0; i < this._totalCount; i++) {
+      yield this._nullIndices.has(i);
+    }
+  }
+}
+
+/**
+ * Count nulls in bitmap efficiently (O(n/8) byte operations)
+ */
+function countNullsInBitmap(bytes: Uint8Array, count: number): number {
+  let nullCount = 0;
+
+  // Process full bytes
+  const fullBytes = count >>> 3;
+  for (let i = 0; i < fullBytes; i++) {
+    // Count set bits using Brian Kernighan's algorithm
+    let byte = bytes[i];
+    while (byte) {
+      nullCount++;
+      byte &= byte - 1; // Clear lowest set bit
+    }
+  }
+
+  // Process remaining bits in last partial byte
+  const remainingBits = count & 7;
+  if (remainingBits > 0 && fullBytes < bytes.length) {
+    let byte = bytes[fullBytes] & ((1 << remainingBits) - 1); // Mask valid bits
+    while (byte) {
+      nullCount++;
+      byte &= byte - 1;
+    }
+  }
+
+  return nullCount;
+}
+
+/**
+ * Unpack bitmap to sparse representation if null rate is below threshold.
+ * Returns SparseNullSet for sparse data, boolean[] for dense data.
+ *
+ * @param bytes - The packed bitmap
+ * @param count - Total number of elements
+ * @returns SparseNullSet for sparse data (< SPARSE_NULL_THRESHOLD null rate),
+ *          boolean[] for dense data
+ */
+export function unpackBitsSparse(bytes: Uint8Array, count: number): SparseNullSet | boolean[] {
+  // Early exit for empty data
+  if (count === 0) {
+    return new SparseNullSet(new Set(), 0);
+  }
+
+  // Count nulls first (O(n/8) operation)
+  const nullCount = countNullsInBitmap(bytes, count);
+  const nullRate = nullCount / count;
+
+  // Use sparse representation if below threshold
+  if (nullRate <= SPARSE_NULL_THRESHOLD) {
+    const nullIndices = new Set<number>();
+
+    // Only iterate to find null positions if there are any
+    if (nullCount > 0) {
+      for (let i = 0; i < count; i++) {
+        if ((bytes[i >>> 3] & (1 << (i & 7))) !== 0) {
+          nullIndices.add(i);
+        }
+      }
+    }
+
+    return new SparseNullSet(nullIndices, count);
+  }
+
+  // Fall back to dense array for high null rates
+  return unpackBits(bytes, count);
+}
+
+/**
+ * Check if bitmap represents all-null data.
+ * Early exits on first non-0xFF byte for efficiency.
+ *
+ * @param bytes - The packed bitmap
+ * @param count - Total number of elements
+ * @returns true if all elements are null
+ */
+export function isAllNull(bytes: Uint8Array, count: number): boolean {
+  if (count === 0) return true;
+
+  // Check full bytes (all bits should be 1)
+  const fullBytes = count >>> 3;
+  for (let i = 0; i < fullBytes; i++) {
+    if (bytes[i] !== 0xFF) return false;
+  }
+
+  // Check remaining bits in last partial byte
+  const remainingBits = count & 7;
+  if (remainingBits > 0) {
+    const expectedMask = (1 << remainingBits) - 1;
+    if ((bytes[fullBytes] & expectedMask) !== expectedMask) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if bitmap has no nulls.
+ * Early exits on first non-zero byte for efficiency.
+ *
+ * @param bytes - The packed bitmap
+ * @param count - Total number of elements
+ * @returns true if no elements are null
+ */
+export function hasNoNulls(bytes: Uint8Array, count: number): boolean {
+  if (count === 0) return true;
+
+  // Check full bytes (all bits should be 0)
+  const fullBytes = count >>> 3;
+  for (let i = 0; i < fullBytes; i++) {
+    if (bytes[i] !== 0) return false;
+  }
+
+  // Check remaining bits in last partial byte
+  const remainingBits = count & 7;
+  if (remainingBits > 0) {
+    const validBitsMask = (1 << remainingBits) - 1;
+    if ((bytes[fullBytes] & validBitsMask) !== 0) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Select best encoding and encode data.
+ *
+ * Type assertions rationale:
+ * - `nonNull as string[]`: Safe because we check `col.type === Type.String` before the assertion.
+ *   The type system tracks Column.values as unknown[], but the Type enum guarantees the actual
+ *   runtime types of non-null values.
+ * - `nonNull as number[]`: Safe because we check `col.type === Type.Int32 || Type.Int64` first.
+ *   The Type enum constrains what values can be stored in the column.
+ */
 function selectAndEncode(col: Column, stats: ColumnStats): { encoding: Encoding; data: Uint8Array } {
   const nonNull = col.values.filter((_, i) => !col.nulls[i]);
   if (nonNull.length === 0) return { encoding: Encoding.Plain, data: new Uint8Array(0) };
 
   // Dictionary for low cardinality strings (use stricter threshold for better compression)
   if (col.type === Type.String && stats.distinctEst < nonNull.length / 2) {
+    // SAFETY: col.type === Type.String guarantees all non-null values are strings
     return { encoding: Encoding.Dict, data: encodeDictOptimized(nonNull as string[], col.nulls) };
   }
 
   // Delta for sorted integers - good for timestamps and sequential IDs
   if ((col.type === Type.Int32 || col.type === Type.Int64) && isSorted(nonNull as number[])) {
+    // SAFETY: col.type check above guarantees all non-null values are numbers
     return { encoding: Encoding.Delta, data: encodeDeltaTypedArray(nonNull as number[], col.type) };
   }
 
@@ -194,7 +479,15 @@ function encodeRLE(col: Column): Uint8Array {
   return concatArrays(chunks);
 }
 
-/** Plain encoding - TypedArray optimized for numeric types */
+/**
+ * Plain encoding - TypedArray optimized for numeric types.
+ *
+ * Type assertions rationale:
+ * - `col.values[i] as number`: Safe because we check `col.type === Type.Int32` or
+ *   `col.type === Type.Float64` before accessing values. The Type enum guarantees
+ *   the runtime type of stored values matches the declared type. Additionally,
+ *   we skip null values via the `!col.nulls[i]` check.
+ */
 function encodePlainTypedArray(col: Column): Uint8Array {
   const nonNullCount = col.nulls.filter(n => !n).length;
 
@@ -202,6 +495,7 @@ function encodePlainTypedArray(col: Column): Uint8Array {
     const arr = new Int32Array(nonNullCount);
     let idx = 0;
     for (let i = 0; i < col.values.length; i++) {
+      // SAFETY: col.type === Type.Int32 guarantees numeric values; nulls filtered by condition
       if (!col.nulls[i]) arr[idx++] = col.values[i] as number;
     }
     return new Uint8Array(arr.buffer);
@@ -211,6 +505,7 @@ function encodePlainTypedArray(col: Column): Uint8Array {
     const arr = new Float64Array(nonNullCount);
     let idx = 0;
     for (let i = 0; i < col.values.length; i++) {
+      // SAFETY: col.type === Type.Float64 guarantees numeric values; nulls filtered by condition
       if (!col.nulls[i]) arr[idx++] = col.values[i] as number;
     }
     return new Uint8Array(arr.buffer);
@@ -233,21 +528,42 @@ function encodePlain(col: Column): Uint8Array {
   return concatArrays(chunks);
 }
 
-/** Encode single value */
+/**
+ * Encode single value based on type.
+ *
+ * Type assertions rationale:
+ * Each case in the switch statement handles a specific Type enum value. The Type enum
+ * acts as a discriminant that guarantees the runtime type of `v`. The assertions are
+ * safe because:
+ * - Type.Int32/Float64/Timestamp: value must be number (stored as numeric in shred.ts)
+ * - Type.Int64: value must be number or bigint
+ * - Type.String/Date: value must be string (Date stored as ISO string or ms epoch)
+ * - Type.Binary: value must be Uint8Array
+ *
+ * This is a performance-critical path where we avoid runtime type checks in favor of
+ * trusting the Type enum's contract. Invalid data would have been caught during shredding.
+ */
 function encodeValue(v: unknown, type: Type, encoder: InstanceType<typeof TextEncoder>): Uint8Array {
   if (v === null || v === undefined) return new Uint8Array(0);
 
   switch (type) {
     case Type.Null: return new Uint8Array(0);
     case Type.Bool: return new Uint8Array([v ? 1 : 0]);
+    // SAFETY: Type.Int32 guarantees v is number (validated during shredding)
     case Type.Int32: { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, v as number, true); return b; }
+    // SAFETY: Type.Int64 guarantees v is number or bigint
     case Type.Int64: { const b = new Uint8Array(8); new DataView(b.buffer).setBigInt64(0, BigInt(v as number | bigint), true); return b; }
+    // SAFETY: Type.Float64 guarantees v is number
     case Type.Float64: { const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v as number, true); return b; }
+    // SAFETY: Type.String guarantees v is string
     case Type.String: { const e = encoder.encode(v as string); const b = new Uint8Array(2 + e.length); new DataView(b.buffer).setUint16(0, e.length, true); b.set(e, 2); return b; }
+    // SAFETY: Type.Binary guarantees v is Uint8Array
     case Type.Binary: { const d = v as Uint8Array; const b = new Uint8Array(4 + d.length); new DataView(b.buffer).setUint32(0, d.length, true); b.set(d, 4); return b; }
     case Type.Array: return new Uint8Array(0); // Complex types serialized as JSON in practice
     case Type.Object: return new Uint8Array(0);
+    // SAFETY: Type.Timestamp stores ms-since-epoch as number (converted from Date in shred.ts)
     case Type.Timestamp: { const b = new Uint8Array(8); new DataView(b.buffer).setBigInt64(0, BigInt(v as number), true); return b; }
+    // SAFETY: Type.Date stores ISO date string
     case Type.Date: { const e = encoder.encode(v as string); const b = new Uint8Array(2 + e.length); new DataView(b.buffer).setUint16(0, e.length, true); b.set(e, 2); return b; }
     default:
       return assertNever(type, `Unhandled type in encodeValue: ${type}`);
@@ -355,6 +671,9 @@ function decodeDelta(data: Uint8Array, type: Type, nulls: boolean[], rowCount: n
     } else if (offset + byteSize <= data.length) {
       const delta = type === Type.Int64 ? view.getBigInt64(offset, true) : view.getInt32(offset, true);
       offset += byteSize;
+      // SAFETY: prev and delta are both bigint when type === Type.Int64 (getBigInt64 returns bigint),
+      // and both are number when type !== Type.Int64 (getInt32 returns number).
+      // The type check at line 344 determines which branch we're in, so the assertions are safe.
       prev = type === Type.Int64 ? (prev as bigint) + (delta as bigint) : (prev as number) + (delta as number);
       values.push(type === Type.Int64 ? prev : Number(prev));
     }

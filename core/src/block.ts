@@ -3,10 +3,11 @@
 import { type BlockHeader, type BlockOptions, type EncodedColumn, FOOTER_SIZE, HEADER_SIZE, MAGIC, VERSION, type Column } from './types.js';
 import { decode } from './encode.js';
 import { CorruptedBlockError } from './errors.js';
+import { MAX_COLUMN_COUNT, MAX_ROW_COUNT, MAX_COLUMN_PATH_LENGTH, CRC_TABLE_SIZE } from './constants.js';
 
 /** CRC32 lookup table */
-const CRC_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
+const CRC_TABLE = new Uint32Array(CRC_TABLE_SIZE);
+for (let i = 0; i < CRC_TABLE_SIZE; i++) {
   let c = i;
   for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
   CRC_TABLE[i] = c;
@@ -100,12 +101,6 @@ export function writeBlock(columns: EncodedColumn[], opts: BlockOptions & { rowC
 
 /** Supported block versions */
 const SUPPORTED_VERSIONS = [VERSION];
-
-/** Maximum reasonable column count to prevent DoS from corrupted data */
-const MAX_COLUMN_COUNT = 10000;
-
-/** Maximum reasonable row count to prevent DoS from corrupted data */
-const MAX_ROW_COUNT = 100000000; // 100 million
 
 /**
  * Validate block data for corruption before parsing.
@@ -221,7 +216,7 @@ export function readBlock(data: Uint8Array): { header: BlockHeader; columns: Col
     const pathLen = view.getUint16(offset, true); offset += 2;
 
     // Validate path length is reasonable
-    if (pathLen > 1000) {
+    if (pathLen > MAX_COLUMN_PATH_LENGTH) {
       throw new CorruptedBlockError(
         `Invalid path length at column ${i}: ${pathLen} bytes exceeds maximum`,
         'INVALID_STRUCTURE',

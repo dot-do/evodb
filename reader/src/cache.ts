@@ -10,6 +10,7 @@
  */
 
 import type { CacheTierConfig, CacheStats, R2Bucket, R2Object } from './types.js';
+import { DEFAULT_CACHE_TTL_SECONDS, CACHE_API_MAX_ITEM_SIZE } from '@evodb/core';
 
 // ============================================================================
 // Cache Result Types - Discriminated Union
@@ -92,8 +93,8 @@ export interface CacheErrorStats {
  */
 const DEFAULT_CACHE_CONFIG: CacheTierConfig = {
   enableCacheApi: true,
-  cacheTtlSeconds: 3600, // 1 hour
-  maxCachedItemSize: 25 * 1024 * 1024, // 25MB (Cache API limit)
+  cacheTtlSeconds: DEFAULT_CACHE_TTL_SECONDS, // 1 hour
+  maxCachedItemSize: CACHE_API_MAX_ITEM_SIZE, // 25MB (Cache API limit)
   cacheKeyPrefix: 'evodb:',
 };
 
@@ -484,6 +485,6 @@ export function createCacheTierFromEnv(env: {
     cacheKeyPrefix: env.CACHE_PREFIX || 'evodb:',
     cacheTtlSeconds: env.CACHE_TTL_SECONDS
       ? parseInt(env.CACHE_TTL_SECONDS, 10)
-      : 3600,
+      : DEFAULT_CACHE_TTL_SECONDS,
   });
 }

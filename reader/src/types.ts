@@ -309,6 +309,12 @@ export interface ReaderConfig {
   maxConcurrentReads?: number;
   /** Enable query plan caching */
   enablePlanCache?: boolean;
+  /**
+   * Maximum allowed block size in bytes.
+   * Blocks exceeding this limit will be rejected to prevent memory exhaustion.
+   * Defaults to 128MB (134,217,728 bytes).
+   */
+  maxBlockSize?: number;
 }
 
 /**

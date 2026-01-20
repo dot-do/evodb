@@ -105,6 +105,18 @@ export interface ResultProcessor {
     limit<T>(rows: T[], limit: number, offset?: number): T[];
 }
 /**
+ * Validate a column name to prevent injection attacks.
+ *
+ * Valid column names:
+ * - Consist of alphanumeric characters, underscores, and dots
+ * - Each segment (separated by dots) must start with a letter or underscore,
+ *   or be a numeric index
+ * - Cannot be empty, start with a dot, or end with a dot
+ *
+ * @throws Error if column name is invalid
+ */
+export declare function validateColumnName(name: string): void;
+/**
  * Get nested value from object using dot notation
  */
 export declare function getNestedValue(obj: Record<string, unknown>, path: string): unknown;
@@ -183,5 +195,6 @@ export declare const queryOps: {
     getNestedValue: typeof getNestedValue;
     setNestedValue: typeof setNestedValue;
     likePatternToRegex: typeof likePatternToRegex;
+    validateColumnName: typeof validateColumnName;
 };
 //# sourceMappingURL=query-ops.d.ts.map

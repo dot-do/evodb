@@ -13,6 +13,11 @@ export {
   TimeoutError,
   ValidationError,
   StorageError,
+  StorageErrorCode,
+  isStorageErrorCode,
   CorruptedBlockError,
   type CorruptedBlockDetails,
 } from '../errors.js';
+
+// Stack trace utilities
+export { captureStackTrace } from '../stack-trace.js';

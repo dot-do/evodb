@@ -27,6 +27,11 @@
  */
 
 import type { Storage, StorageMetadata } from './storage.js';
+import {
+  DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+  DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+  DEFAULT_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS,
+} from './constants.js';
 
 // =============================================================================
 // Types and Constants
@@ -45,6 +50,32 @@ export enum CircuitState {
 }
 
 /**
+ * Time provider interface for monotonic time.
+ * This abstraction allows the circuit breaker to use monotonic time (performance.now())
+ * in production while being testable with fake timers.
+ *
+ * Monotonic time is essential for circuit breakers because:
+ * - It's immune to system clock changes (NTP sync, manual adjustment, etc.)
+ * - It prevents the circuit from staying OPEN forever if the clock jumps backward
+ * - It ensures consistent timeout behavior regardless of clock drift
+ */
+export interface MonotonicTimeProvider {
+  /** Returns monotonic time in milliseconds (like performance.now()) */
+  now(): number;
+}
+
+/**
+ * Default time provider using performance.now() for production use.
+ * performance.now() provides monotonic time that:
+ * - Is not affected by system clock adjustments
+ * - Has sub-millisecond precision
+ * - Is always non-decreasing
+ */
+export const defaultMonotonicTimeProvider: MonotonicTimeProvider = {
+  now: () => performance.now(),
+};
+
+/**
  * Circuit breaker configuration options
  */
 export interface CircuitBreakerOptions {
@@ -56,6 +87,12 @@ export interface CircuitBreakerOptions {
   halfOpenMaxAttempts?: number;
   /** Custom predicate to determine if an error should count as a failure */
   isFailure?: (error: unknown) => boolean;
+  /**
+   * Custom time provider for monotonic time.
+   * Defaults to performance.now() which is immune to system clock changes.
+   * Can be overridden for testing purposes.
+   */
+  timeProvider?: MonotonicTimeProvider;
 }
 
 /**
@@ -78,10 +115,10 @@ export interface CircuitBreakerStats {
   lastClosedAt?: number;
 }
 
-// Default configuration values
-const DEFAULT_FAILURE_THRESHOLD = 5;
-const DEFAULT_RESET_TIMEOUT_MS = 30000;
-const DEFAULT_HALF_OPEN_MAX_ATTEMPTS = 1;
+// Default configuration values (re-exported from constants.ts for backwards compatibility)
+const DEFAULT_FAILURE_THRESHOLD = DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD;
+const DEFAULT_RESET_TIMEOUT_MS = DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS;
+const DEFAULT_HALF_OPEN_MAX_ATTEMPTS = DEFAULT_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS;
 
 // =============================================================================
 // CircuitBreakerError
@@ -126,16 +163,26 @@ export class CircuitBreaker {
   private lastClosedAt?: number;
   private halfOpenAttempts = 0;
 
+  /**
+   * Monotonic timestamp when circuit was opened.
+   * Used for elapsed time calculations to avoid issues with system clock changes.
+   * The time is obtained from the configured timeProvider, which defaults to
+   * performance.now() - a monotonically increasing clock immune to adjustments.
+   */
+  private openedAtMonotonic?: number;
+
   private readonly failureThreshold: number;
   private readonly resetTimeoutMs: number;
   private readonly halfOpenMaxAttempts: number;
   private readonly isFailure: (error: unknown) => boolean;
+  private readonly timeProvider: MonotonicTimeProvider;
 
   constructor(options: CircuitBreakerOptions = {}) {
     this.failureThreshold = options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
     this.resetTimeoutMs = options.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS;
     this.halfOpenMaxAttempts = options.halfOpenMaxAttempts ?? DEFAULT_HALF_OPEN_MAX_ATTEMPTS;
     this.isFailure = options.isFailure ?? (() => true);
+    this.timeProvider = options.timeProvider ?? defaultMonotonicTimeProvider;
   }
 
   /**
@@ -201,6 +248,7 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.halfOpenAttempts = 0;
     this.lastClosedAt = Date.now();
+    this.openedAtMonotonic = undefined;
   }
 
   /**
@@ -209,6 +257,7 @@ export class CircuitBreaker {
   trip(): void {
     this.state = CircuitState.OPEN;
     this.lastOpenedAt = Date.now();
+    this.openedAtMonotonic = this.timeProvider.now();
   }
 
   // ===========================================================================
@@ -217,10 +266,36 @@ export class CircuitBreaker {
 
   /**
    * Update state based on time (OPEN -> HALF_OPEN transition)
+   *
+   * Uses monotonic time from the configured timeProvider for elapsed time
+   * calculation to ensure correct behavior even when the system clock changes
+   * (NTP sync, manual adjustment, etc.). This prevents the circuit from staying
+   * OPEN forever if the clock jumps backward, or transitioning prematurely if
+   * the clock jumps forward.
+   *
+   * Includes safeguards for edge cases:
+   * - Negative elapsed time: Treated as zero (shouldn't happen with monotonic time)
+   * - NaN/Infinity: Force transition to HALF_OPEN to prevent stuck circuit
    */
   private updateState(): void {
-    if (this.state === CircuitState.OPEN && this.lastOpenedAt) {
-      const elapsed = Date.now() - this.lastOpenedAt;
+    if (this.state === CircuitState.OPEN && this.openedAtMonotonic !== undefined) {
+      const now = this.timeProvider.now();
+      let elapsed = now - this.openedAtMonotonic;
+
+      // Safeguard: If elapsed is somehow negative (shouldn't happen with
+      // monotonic time, but defensive coding), treat as zero
+      if (elapsed < 0) {
+        elapsed = 0;
+      }
+
+      // Safeguard: If elapsed is NaN or Infinity (memory corruption, bugs),
+      // force transition to HALF_OPEN to prevent circuit from being stuck forever
+      if (!Number.isFinite(elapsed)) {
+        this.state = CircuitState.HALF_OPEN;
+        this.halfOpenAttempts = 0;
+        return;
+      }
+
       if (elapsed >= this.resetTimeoutMs) {
         this.state = CircuitState.HALF_OPEN;
         this.halfOpenAttempts = 0;
@@ -265,11 +340,13 @@ export class CircuitBreaker {
       // Failed probe - return to OPEN state
       this.state = CircuitState.OPEN;
       this.lastOpenedAt = Date.now();
+      this.openedAtMonotonic = this.timeProvider.now();
     } else if (this.state === CircuitState.CLOSED) {
       // Check if we should trip the circuit
       if (this.failureCount >= this.failureThreshold) {
         this.state = CircuitState.OPEN;
         this.lastOpenedAt = Date.now();
+        this.openedAtMonotonic = this.timeProvider.now();
       }
     }
   }

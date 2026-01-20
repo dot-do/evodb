@@ -4,6 +4,14 @@ import { type Column, type StorageAdapter } from './types.js';
 import { readBlock, writeBlock } from './block.js';
 import { encode } from './encode.js';
 import { makeBlockId, parseBlockId } from './storage.js';
+import {
+  DEFAULT_TARGET_ROWS_PER_BLOCK,
+  MIN_COMPACT_BLOCKS,
+  MAX_MERGE_BLOCKS,
+  MERGE_CHECK_INTERVAL_MS,
+  MERGE_RECHECK_DELAY_MS,
+  MERGE_SCHEDULE_DELAY_MS,
+} from './constants.js';
 
 /** Merge configuration */
 export interface MergeConfig {
@@ -18,9 +26,9 @@ export interface MergeConfig {
 }
 
 const DEFAULT_CONFIG: MergeConfig = {
-  targetRows: 10000,
-  maxMerge: 4,
-  minBlocks: 4,
+  targetRows: DEFAULT_TARGET_ROWS_PER_BLOCK,
+  maxMerge: MAX_MERGE_BLOCKS,
+  minBlocks: MIN_COMPACT_BLOCKS,
   prefix: 'blk',
 };
 
@@ -165,7 +173,6 @@ export function createMergeScheduler(
   scheduleNext: (setState: (alarm: number | null) => void) => Promise<void>;
 } {
   const cfg = { ...DEFAULT_CONFIG, ...config };
-  const MERGE_INTERVAL = 60000; // 1 minute between checks
 
   return {
     async onAlarm(): Promise<number | null> {
@@ -174,19 +181,19 @@ export function createMergeScheduler(
       if (blocks.length >= cfg.minBlocks) {
         await mergeBlocks(adapter, blocks, cfg);
         // Check again soon in case more merges needed
-        return Date.now() + 1000;
+        return Date.now() + MERGE_RECHECK_DELAY_MS;
       }
 
       // No merge needed, check again later
-      return Date.now() + MERGE_INTERVAL;
+      return Date.now() + MERGE_CHECK_INTERVAL_MS;
     },
 
     async scheduleNext(setState: (alarm: number | null) => void): Promise<void> {
       const needsMerge = await shouldMerge(adapter, cfg);
       if (needsMerge) {
-        setState(Date.now() + 100); // Soon
+        setState(Date.now() + MERGE_SCHEDULE_DELAY_MS); // Soon
       } else {
-        setState(Date.now() + MERGE_INTERVAL);
+        setState(Date.now() + MERGE_CHECK_INTERVAL_MS);
       }
     },
   };

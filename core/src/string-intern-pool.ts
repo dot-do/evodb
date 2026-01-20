@@ -18,6 +18,8 @@
  * @module string-intern-pool
  */
 
+import { DEFAULT_STRING_POOL_SIZE } from './constants.js';
+
 /**
  * Configuration options for memory leak prevention
  */
@@ -113,11 +115,11 @@ export class LRUStringPool {
 
   /**
    * Create a new LRU string pool
-   * @param maxSize Maximum number of strings to cache (default: 10000)
+   * @param maxSize Maximum number of strings to cache (default: DEFAULT_STRING_POOL_SIZE)
    * @param options Memory leak prevention options
    * @throws Error if maxSize is less than 1
    */
-  constructor(maxSize: number = 10000, options: StringPoolOptions = {}) {
+  constructor(maxSize: number = DEFAULT_STRING_POOL_SIZE, options: StringPoolOptions = {}) {
     if (maxSize < 1) {
       throw new Error('maxSize must be at least 1');
     }
@@ -326,9 +328,9 @@ export class LRUStringPool {
 
 /**
  * Global string intern pool used by encode.ts
- * Default size of 10K matches the original implementation's threshold
+ * Default size matches the original implementation's threshold
  */
-const globalStringPool = new LRUStringPool(10000);
+const globalStringPool = new LRUStringPool(DEFAULT_STRING_POOL_SIZE);
 
 /**
  * Intern a string using the global pool

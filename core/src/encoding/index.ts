@@ -22,6 +22,12 @@ export {
   iterateNonNullIndices,
   batchDecode,
   type FastDecodeOptions,
+  // Sparse null bitmap optimization (Issue: evodb-qp6)
+  SparseNullSet,
+  unpackBitsSparse,
+  isAllNull,
+  hasNoNulls,
+  SPARSE_NULL_THRESHOLD,
 } from '../encode.js';
 
 export {

@@ -126,16 +126,22 @@ export interface WriterOptions {
   maxRetries: number;
   /** Retry backoff base in milliseconds (default: 100) */
   retryBackoffMs: number;
+
+  // Buffer overflow protection
+  /** Hard limit on buffer size in bytes (default: 128MB) - throws BufferOverflowError when exceeded */
+  maxBufferSize?: number;
 }
 
 /**
  * Resolved writer options with partition mode applied
  */
-export interface ResolvedWriterOptions extends Omit<WriterOptions, 'partitionMode' | 'targetBlockSize' | 'maxBlockSize' | 'targetCompactSize'> {
+export interface ResolvedWriterOptions extends Omit<WriterOptions, 'partitionMode' | 'targetBlockSize' | 'maxBlockSize' | 'targetCompactSize' | 'maxBufferSize'> {
   targetBlockSize: number;
   maxBlockSize: number;
   targetCompactSize: number;
   partitionMode: PartitionMode;
+  /** Hard limit on buffer size in bytes (default: 128MB) */
+  maxBufferSize?: number;
 }
 
 /**

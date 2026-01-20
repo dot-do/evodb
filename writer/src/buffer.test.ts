@@ -586,6 +586,490 @@ describe('SizeBasedBuffer', () => {
   });
 });
 
+describe('CDCBuffer buffer overflow protection', () => {
+  // Helper to create mock WAL entries
+  function createMockEntry(lsn: number, data: string = 'test'): WalEntry {
+    const encoder = new TextEncoder();
+    return {
+      lsn: BigInt(lsn),
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: encoder.encode(data),
+      checksum: 12345,
+    };
+  }
+
+  describe('maxBufferSize configuration', () => {
+    it('should accept maxBufferSize option', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+        maxBufferSize: 50000, // 50KB hard limit
+      });
+
+      expect(buffer).toBeInstanceOf(CDCBuffer);
+    });
+
+    it('should throw error when maxBufferSize is negative', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+        maxBufferSize: -1,
+      })).toThrow('maxBufferSize must be positive');
+    });
+
+    it('should throw error when maxBufferSize is zero', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+        maxBufferSize: 0,
+      })).toThrow('maxBufferSize must be positive');
+    });
+
+    it('should throw error when maxBufferSize is NaN', () => {
+      expect(() => new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+        maxBufferSize: NaN,
+      })).toThrow('maxBufferSize must be positive');
+    });
+
+    it('should use default maxBufferSize when not specified', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 100,
+        bufferTimeout: 1000,
+        targetBlockSize: 10000,
+      });
+
+      // Default should be a reasonable value (e.g., 128MB)
+      // Buffer should work normally without explicit maxBufferSize
+      const entries = Array.from({ length: 10 }, (_, i) => createMockEntry(i));
+      buffer.add('source-1', entries);
+      expect(buffer.size()).toBe(10);
+    });
+  });
+
+  describe('BufferOverflowError', () => {
+    it('should throw BufferOverflowError when adding entries would exceed maxBufferSize', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 1000, // High entry count threshold
+        bufferTimeout: 10000, // Long timeout
+        targetBlockSize: 1000000, // Large block size
+        maxBufferSize: 500, // Very small max buffer (500 bytes)
+      });
+
+      // Each entry is approximately 24 + data.length + 4 = ~32 bytes for 'test' data
+      // So ~15 entries should exceed 500 bytes
+      const entries = Array.from({ length: 5 }, (_, i) => createMockEntry(i));
+      buffer.add('source-1', entries);
+
+      // Adding more entries should throw BufferOverflowError
+      const moreEntries = Array.from({ length: 15 }, (_, i) => createMockEntry(i + 5));
+
+      expect(() => buffer.add('source-1', moreEntries)).toThrow('BufferOverflowError');
+    });
+
+    it('should include buffer size details in BufferOverflowError message', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 500,
+      });
+
+      const entries = Array.from({ length: 20 }, (_, i) => createMockEntry(i));
+
+      try {
+        buffer.add('source-1', entries);
+        fail('Expected BufferOverflowError to be thrown');
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(Error);
+        const err = error as Error;
+        expect(err.message).toContain('BufferOverflowError');
+        expect(err.message).toContain('500'); // maxBufferSize
+      }
+    });
+
+    it('should export BufferOverflowError class for instanceof checks', async () => {
+      const { BufferOverflowError } = await import('./buffer.js');
+
+      expect(BufferOverflowError).toBeDefined();
+
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 500,
+      });
+
+      const entries = Array.from({ length: 20 }, (_, i) => createMockEntry(i));
+
+      try {
+        buffer.add('source-1', entries);
+        fail('Expected BufferOverflowError to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(BufferOverflowError);
+      }
+    });
+
+    it('should provide current size and max size in error', async () => {
+      const { BufferOverflowError } = await import('./buffer.js');
+
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 500,
+      });
+
+      const entries = Array.from({ length: 20 }, (_, i) => createMockEntry(i));
+
+      try {
+        buffer.add('source-1', entries);
+        fail('Expected BufferOverflowError to be thrown');
+      } catch (error) {
+        if (error instanceof BufferOverflowError) {
+          expect(error.currentSize).toBeGreaterThan(0);
+          expect(error.maxSize).toBe(500);
+        } else {
+          fail('Expected BufferOverflowError instance');
+        }
+      }
+    });
+  });
+
+  describe('buffer limit behavior', () => {
+    it('should allow adding entries up to but not exceeding maxBufferSize', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 1000, // 1KB limit
+      });
+
+      // Add entries that fit within limit
+      const smallEntries = Array.from({ length: 5 }, (_, i) => createMockEntry(i));
+      expect(() => buffer.add('source-1', smallEntries)).not.toThrow();
+
+      // More small additions should work
+      const moreSmallEntries = Array.from({ length: 5 }, (_, i) => createMockEntry(i + 5));
+      expect(() => buffer.add('source-1', moreSmallEntries)).not.toThrow();
+    });
+
+    it('should reset size tracking after drain', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 1000,
+      });
+
+      // Fill buffer close to limit
+      const entries = Array.from({ length: 15 }, (_, i) => createMockEntry(i));
+      buffer.add('source-1', entries);
+
+      // Drain the buffer
+      buffer.drain();
+
+      // Should be able to add entries again
+      const newEntries = Array.from({ length: 15 }, (_, i) => createMockEntry(i + 100));
+      expect(() => buffer.add('source-1', newEntries)).not.toThrow();
+    });
+
+    it('should track size correctly with large data payloads', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+        maxBufferSize: 1000,
+      });
+
+      // Create entry with large data payload (500+ bytes)
+      const largeDataEntry = createMockEntry(1, 'x'.repeat(600));
+      buffer.add('source-1', [largeDataEntry]);
+
+      // Next large entry should trigger overflow
+      const anotherLargeEntry = createMockEntry(2, 'y'.repeat(600));
+      expect(() => buffer.add('source-1', [anotherLargeEntry])).toThrow('BufferOverflowError');
+    });
+  });
+
+  describe('integration with fromWriterOptions', () => {
+    it('should support maxBufferSize in ResolvedWriterOptions', () => {
+      // This test verifies that maxBufferSize can be passed through writer options
+      const buffer = CDCBuffer.fromWriterOptions({
+        r2Bucket: {} as unknown as R2Bucket,
+        tableLocation: 'test',
+        partitionMode: 'do-sqlite',
+        bufferSize: 5000,
+        bufferTimeout: 2000,
+        targetBlockSize: 2 * 1024 * 1024,
+        maxBlockSize: 4 * 1024 * 1024,
+        minCompactBlocks: 4,
+        targetCompactSize: 16 * 1024 * 1024,
+        maxRetries: 3,
+        retryBackoffMs: 100,
+        maxBufferSize: 64 * 1024 * 1024, // 64MB
+      });
+
+      expect(buffer).toBeInstanceOf(CDCBuffer);
+    });
+  });
+});
+
+describe('CDCBuffer atomic LSN updates', () => {
+  // Tests for atomic compare-and-swap (CAS) LSN tracking
+  // Issue evodb-505: Ensure concurrent LSN updates don't cause race conditions
+
+  function createEntry(lsn: number, data: string = 'test'): WalEntry {
+    const encoder = new TextEncoder();
+    return {
+      lsn: BigInt(lsn),
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: encoder.encode(data),
+      checksum: 12345,
+    };
+  }
+
+  it('should atomically update cursor with compare-and-swap semantics', () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    const sourceId = 'source-1';
+
+    // First update should succeed (no existing cursor)
+    buffer.add(sourceId, [createEntry(100)]);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(100n);
+
+    // Update with higher LSN should succeed
+    buffer.add(sourceId, [createEntry(200)]);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n);
+
+    // Update with lower LSN should NOT change cursor (CAS semantics)
+    buffer.add(sourceId, [createEntry(150)]);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n);
+
+    // Update with equal LSN should NOT change cursor
+    buffer.add(sourceId, [createEntry(200)]);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n);
+  });
+
+  it('should track cursor update attempts via logging callback', () => {
+    const logEntries: Array<{
+      sourceDoId: string;
+      previousLsn: bigint | undefined;
+      newLsn: bigint;
+      updated: boolean;
+    }> = [];
+
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    // Set up logging callback
+    buffer.setLsnUpdateLogger((sourceDoId, previousLsn, newLsn, updated) => {
+      logEntries.push({ sourceDoId, previousLsn, newLsn, updated });
+    });
+
+    const sourceId = 'source-1';
+
+    // First add - should log update from undefined to 100
+    buffer.add(sourceId, [createEntry(100)]);
+    expect(logEntries.length).toBe(1);
+    expect(logEntries[0]).toEqual({
+      sourceDoId: sourceId,
+      previousLsn: undefined,
+      newLsn: 100n,
+      updated: true,
+    });
+
+    // Second add with higher LSN - should log update from 100 to 200
+    buffer.add(sourceId, [createEntry(200)]);
+    expect(logEntries.length).toBe(2);
+    expect(logEntries[1]).toEqual({
+      sourceDoId: sourceId,
+      previousLsn: 100n,
+      newLsn: 200n,
+      updated: true,
+    });
+
+    // Third add with lower LSN - should log rejected update
+    buffer.add(sourceId, [createEntry(150)]);
+    expect(logEntries.length).toBe(3);
+    expect(logEntries[2]).toEqual({
+      sourceDoId: sourceId,
+      previousLsn: 200n,
+      newLsn: 150n,
+      updated: false,
+    });
+  });
+
+  it('should provide getLastCursorUpdate for debugging', () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    // Initially no updates
+    expect(buffer.getLastCursorUpdate('source-1')).toBeUndefined();
+
+    buffer.add('source-1', [createEntry(100)]);
+
+    const lastUpdate = buffer.getLastCursorUpdate('source-1');
+    expect(lastUpdate).toBeDefined();
+    expect(lastUpdate!.previousLsn).toBeUndefined();
+    expect(lastUpdate!.newLsn).toBe(100n);
+    expect(lastUpdate!.updated).toBe(true);
+    expect(lastUpdate!.timestamp).toBeGreaterThan(0);
+
+    buffer.add('source-1', [createEntry(200)]);
+
+    const secondUpdate = buffer.getLastCursorUpdate('source-1');
+    expect(secondUpdate!.previousLsn).toBe(100n);
+    expect(secondUpdate!.newLsn).toBe(200n);
+    expect(secondUpdate!.updated).toBe(true);
+  });
+
+  it('should handle concurrent updates to same source with proper ordering', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 100000,
+      bufferTimeout: 10000,
+      targetBlockSize: 10000000,
+    });
+
+    const updateLog: Array<{ lsn: bigint; updated: boolean }> = [];
+
+    buffer.setLsnUpdateLogger((_sourceDoId, _previousLsn, newLsn, updated) => {
+      updateLog.push({ lsn: newLsn, updated });
+    });
+
+    const sourceId = 'source-1';
+
+    // Simulate rapid concurrent updates with varying LSNs
+    // In a race condition scenario, the final cursor might not be the max
+    const lsns = [100, 500, 200, 800, 300, 1000, 400, 900, 600, 700];
+
+    await Promise.all(
+      lsns.map(lsn =>
+        Promise.resolve().then(() => buffer.add(sourceId, [createEntry(lsn)]))
+      )
+    );
+
+    // Final cursor should be the maximum LSN (1000)
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(1000n);
+
+    // Verify logging captured all attempts
+    expect(updateLog.length).toBe(lsns.length);
+
+    // Count successful updates - only monotonically increasing LSNs should succeed
+    const successfulUpdates = updateLog.filter(u => u.updated);
+    expect(successfulUpdates.length).toBeGreaterThan(0);
+  });
+
+  it('should maintain cursor monotonicity under simulated async interleaving', async () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 100000,
+      bufferTimeout: 10000,
+      targetBlockSize: 10000000,
+    });
+
+    const sourceId = 'source-1';
+    const iterations = 100;
+    const maxLsn = 10000n;
+
+    // Generate random LSNs
+    const randomLsns = Array.from(
+      { length: iterations },
+      () => BigInt(Math.floor(Math.random() * Number(maxLsn)))
+    );
+
+    // Execute with simulated async interleaving
+    await Promise.all(
+      randomLsns.map((lsn) =>
+        new Promise<void>(resolve => {
+          // Random delay to simulate async behavior
+          setTimeout(() => {
+            buffer.add(sourceId, [createEntry(Number(lsn))]);
+            resolve();
+          }, Math.random() * 10);
+        })
+      )
+    );
+
+    // Cursor should be the maximum of all LSNs
+    const expectedMax = randomLsns.reduce((max, lsn) => lsn > max ? lsn : max, 0n);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(expectedMax);
+  });
+
+  it('should log warning when cursor update is rejected due to lower LSN', () => {
+    const warnings: string[] = [];
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    buffer.setLsnUpdateLogger((sourceDoId, previousLsn, newLsn, updated) => {
+      if (!updated && previousLsn !== undefined) {
+        warnings.push(
+          `Rejected cursor update for ${sourceDoId}: ${newLsn} <= ${previousLsn}`
+        );
+      }
+    });
+
+    buffer.add('source-1', [createEntry(100)]);
+    buffer.add('source-1', [createEntry(50)]); // Should be rejected
+
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('Rejected');
+    expect(warnings[0]).toContain('50');
+    expect(warnings[0]).toContain('100');
+  });
+
+  it('should provide atomic compareAndSetCursor for external use', () => {
+    const buffer = new CDCBuffer({
+      bufferSize: 10000,
+      bufferTimeout: 10000,
+      targetBlockSize: 1000000,
+    });
+
+    const sourceId = 'source-1';
+
+    // CAS on non-existent cursor (expected undefined)
+    const result1 = buffer.compareAndSetCursor(sourceId, undefined, 100n);
+    expect(result1).toBe(true);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(100n);
+
+    // CAS with correct expected value
+    const result2 = buffer.compareAndSetCursor(sourceId, 100n, 200n);
+    expect(result2).toBe(true);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n);
+
+    // CAS with incorrect expected value (should fail)
+    const result3 = buffer.compareAndSetCursor(sourceId, 100n, 300n);
+    expect(result3).toBe(false);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n); // Unchanged
+
+    // CAS with new value less than current (should fail even if expected matches)
+    const result4 = buffer.compareAndSetCursor(sourceId, 200n, 150n);
+    expect(result4).toBe(false);
+    expect(buffer.getSourceCursors().get(sourceId)).toBe(200n); // Unchanged
+  });
+});
+
 describe('CDCBuffer concurrent access', () => {
   // Helper to create mock WAL entries with specific LSN
   function createEntry(lsn: number, data: string = 'test'): WalEntry {

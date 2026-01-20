@@ -2,9 +2,13 @@
 
 import { type Column, Type } from './types.js';
 
+/** Default maximum recursion depth for walk() */
+const DEFAULT_MAX_DEPTH = 100;
+
 /** Shred options */
 export interface ShredOptions {
   columns?: string[];  // Column projection - only include these paths
+  maxDepth?: number;   // Maximum recursion depth (default: 100)
 }
 
 /** ISO date regex: YYYY-MM-DD */
@@ -32,10 +36,12 @@ export function shred(docs: unknown[], options?: ShredOptions): Column[] {
   const cols = new Map<string, Column>();
   const n = docs.length;
   const columnFilter = options?.columns ? new Set(options.columns) : null;
+  const maxDepth = options?.maxDepth ?? DEFAULT_MAX_DEPTH;
 
   // First pass: discover all paths and types
   for (let i = 0; i < n; i++) {
-    walk(docs[i], '', cols, i, n, columnFilter);
+    const seen = new WeakSet<object>();
+    walk(docs[i], '', cols, i, n, columnFilter, 0, maxDepth, seen);
   }
 
   // Second pass: fill nulls for missing values and set nullable flag
@@ -78,17 +84,34 @@ function walk(
   cols: Map<string, Column>,
   row: number,
   total: number,
-  filter: Set<string> | null
+  filter: Set<string> | null,
+  depth: number,
+  maxDepth: number,
+  seen: WeakSet<object>
 ): void {
+  // Check max depth
+  if (depth > maxDepth) {
+    throw new Error(`Maximum recursion depth exceeded (max depth: ${maxDepth}). Path: ${path}`);
+  }
+
   const type = inferType(val);
 
   // Array handling - shred to indexed paths like tags[0], tags[1]
   if (Array.isArray(val)) {
+    // Check for circular reference (only ancestors in current path)
+    if (seen.has(val)) {
+      throw new Error(`Circular reference detected at path: ${path}`);
+    }
+    seen.add(val);
+
     for (let i = 0; i < val.length; i++) {
       const indexPath = path ? `${path}[${i}]` : `[${i}]`;
       if (filter && !prefixMatchesFilter(indexPath, filter)) continue;
-      walk(val[i], indexPath, cols, row, total, filter);
+      walk(val[i], indexPath, cols, row, total, filter, depth + 1, maxDepth, seen);
     }
+
+    // Remove from seen when backtracking (allows same object in different branches)
+    seen.delete(val);
     return;
   }
 
@@ -115,13 +138,25 @@ function walk(
   }
 
   // Object - recurse into fields
+  // SAFETY: At this point, inferType returned Type.Object (line 97) and val is not null (checked in line 116).
+  // Type.Object is only returned for non-null, non-array objects (see inferType function), so this assertion is safe.
   const obj = val as Record<string, unknown>;
+
+  // Check for circular reference (only ancestors in current path)
+  if (seen.has(obj)) {
+    throw new Error(`Circular reference detected at path: ${path}`);
+  }
+  seen.add(obj);
+
   for (const key of Object.keys(obj)) {
     const childPath = path ? `${path}.${key}` : key;
     // Check if we should explore this path (for column projection)
     if (filter && !prefixMatchesFilter(childPath, filter)) continue;
-    walk(obj[key], childPath, cols, row, total, filter);
+    walk(obj[key], childPath, cols, row, total, filter, depth + 1, maxDepth, seen);
   }
+
+  // Remove from seen when backtracking (allows same object in different branches)
+  seen.delete(obj);
 }
 
 /** Type promotion rules */
@@ -150,6 +185,8 @@ export function unshred(columns: Column[], rowCount?: number): unknown[] {
   for (const col of columns) {
     for (let i = 0; i < n; i++) {
       if (!col.nulls[i]) {
+        // SAFETY: docs[i] is initialized as {} (empty object) above at line 174.
+        // Each element starts as a plain object, and setPath only adds nested properties.
         setPath(docs[i] as Record<string, unknown>, col.path, col.values[i]);
       }
     }
@@ -238,7 +275,15 @@ function parsePath(path: string): (string | number)[] {
 }
 
 /**
- * Helper to set a value in a container (array or object) by key
+ * Helper to set a value in a container (array or object) by key.
+ *
+ * Type assertions rationale:
+ * - `key as number`: Safe because when container is an array (isArray check passes),
+ *   the caller must provide a numeric key for valid array access. The function contract
+ *   expects callers to match key type with container type.
+ * - `key as string`: Safe because when container is not an array (plain object),
+ *   the caller must provide a string key. Object property access works with any key type
+ *   in JavaScript, but we assert string for type consistency.
  */
 function setContainerValue(
   container: Record<string, unknown> | unknown[],
@@ -246,22 +291,34 @@ function setContainerValue(
   value: unknown
 ): void {
   if (isArray(container)) {
+    // SAFETY: Array access requires numeric index; caller ensures key is number when container is array
     container[key as number] = value;
   } else {
+    // SAFETY: Object property access; caller ensures key is string when container is object
     container[key as string] = value;
   }
 }
 
 /**
- * Helper to get a value from a container (array or object) by key
+ * Helper to get a value from a container (array or object) by key.
+ *
+ * Type assertions rationale:
+ * - `key as number`: Safe because when container is an array (isArray check passes),
+ *   the caller provides a numeric key for valid array element access.
+ * - `key as string`: Safe because when container is not an array (plain object),
+ *   the caller provides a string key for property access.
+ *
+ * Same contract as setContainerValue: callers match key type to container type.
  */
 function getContainerValue(
   container: Record<string, unknown> | unknown[],
   key: string | number
 ): unknown {
   if (isArray(container)) {
+    // SAFETY: Array access requires numeric index; caller ensures key is number when container is array
     return container[key as number];
   }
+  // SAFETY: Object property access; caller ensures key is string when container is object
   return container[key as string];
 }
 
@@ -301,8 +358,10 @@ function ensureContainer(
     return newContainer;
   }
 
-  // At this point, existing is guaranteed to be the correct type
-  // because we've checked: needArray && isArray(existing) OR !needArray && isPlainObject(existing)
+  // SAFETY: At this point, existing is guaranteed to be the correct type because:
+  // - If needArray is true, we returned early at line 319 if !isArray(existing)
+  // - If needArray is false, we returned early at line 325 if !isPlainObject(existing)
+  // Therefore: needArray implies isArray(existing), and !needArray implies isPlainObject(existing)
   if (needArray) {
     return existing as unknown[];
   }
@@ -462,6 +521,9 @@ export function coerceToType(value: unknown, toType: Type): unknown {
       if (typeof value === 'string') return BigInt(value);
       if (typeof value === 'number') return BigInt(Math.trunc(value));
       if (typeof value === 'boolean') return BigInt(value ? 1 : 0);
+      // SAFETY: Fallback for unknown types. BigInt() accepts number | string | bigint | boolean.
+      // The above checks handle string, number, boolean explicitly. Remaining cases are bigint
+      // (which BigInt() handles) or other types that will throw at runtime - acceptable for coercion.
       return BigInt(value as number);
     case Type.Float64:
       if (typeof value === 'string') return parseFloat(value);

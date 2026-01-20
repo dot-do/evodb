@@ -11,6 +11,73 @@
 // Utilities
 // =============================================================================
 /**
+ * Type guard: check if value is a plain object (not null, not array)
+ */
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Regex pattern for valid column names.
+ * Allows: alphanumeric characters, underscores, and dots (for nested paths).
+ * Each segment (between dots) must:
+ * - Start with a letter, underscore, or digit
+ * - Contain only letters, digits, and underscores
+ * - Not be empty
+ */
+const VALID_COLUMN_SEGMENT = /^[a-zA-Z_][a-zA-Z0-9_]*$|^[0-9]+$/;
+/**
+ * Validate a column name to prevent injection attacks.
+ *
+ * Valid column names:
+ * - Consist of alphanumeric characters, underscores, and dots
+ * - Each segment (separated by dots) must start with a letter or underscore,
+ *   or be a numeric index
+ * - Cannot be empty, start with a dot, or end with a dot
+ *
+ * @throws Error if column name is invalid
+ */
+export function validateColumnName(name) {
+    // Check for empty or whitespace-only strings
+    if (!name || name.trim() !== name || name.trim().length === 0) {
+        throw new Error(`Invalid column name: "${name}" - column names cannot be empty or contain leading/trailing whitespace`);
+    }
+    // Check for whitespace within the name
+    if (/\s/.test(name)) {
+        throw new Error(`Invalid column name: "${name}" - column names cannot contain whitespace`);
+    }
+    // Check for control characters
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f\x7f]/.test(name)) {
+        throw new Error(`Invalid column name: "${name}" - column names cannot contain control characters`);
+    }
+    // Check for common SQL injection patterns and dangerous characters
+    const dangerousPatterns = [
+        /['"`;]/, // Quote characters and semicolons
+        /--/, // SQL comment
+        /\/\*/, // C-style comment start
+        /\*\//, // C-style comment end
+        /[()]/, // Parentheses (function calls)
+        /\\/, // Backslash (escape sequences, path traversal)
+    ];
+    for (const pattern of dangerousPatterns) {
+        if (pattern.test(name)) {
+            throw new Error(`Invalid column name: "${name}" - contains potentially dangerous characters`);
+        }
+    }
+    // Split by dots and validate each segment
+    const segments = name.split('.');
+    // Check for empty segments (consecutive dots, leading/trailing dots)
+    if (segments.some(s => s === '')) {
+        throw new Error(`Invalid column name: "${name}" - column names cannot have empty segments`);
+    }
+    // Validate each segment
+    for (const segment of segments) {
+        if (!VALID_COLUMN_SEGMENT.test(segment)) {
+            throw new Error(`Invalid column name: "${name}" - segment "${segment}" contains invalid characters`);
+        }
+    }
+}
+/**
  * Get nested value from object using dot notation
  */
 export function getNestedValue(obj, path) {
@@ -24,6 +91,8 @@ export function getNestedValue(obj, path) {
         let current = obj;
         for (const part of parts) {
             if (current === null || current === undefined)
+                return undefined;
+            if (!isRecord(current))
                 return undefined;
             current = current[part];
         }
@@ -155,6 +224,8 @@ export function evaluateFilters(row, filters) {
         return true;
     }
     for (const filter of filters) {
+        // Validate column name to prevent injection attacks
+        validateColumnName(filter.column);
         const value = getNestedValue(row, filter.column);
         if (!evaluateFilter(value, filter)) {
             return false;
@@ -400,7 +471,10 @@ export function computeAggregations(rows, aggregates, groupBy) {
             if (!groups.has(key)) {
                 groups.set(key, []);
             }
-            groups.get(key).push(row);
+            const group = groups.get(key);
+            if (group) {
+                group.push(row);
+            }
         }
     }
     else {
@@ -464,5 +538,6 @@ export const queryOps = {
     getNestedValue,
     setNestedValue,
     likePatternToRegex,
+    validateColumnName,
 };
 //# sourceMappingURL=query-ops.js.map

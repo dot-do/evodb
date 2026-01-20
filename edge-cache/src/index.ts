@@ -218,6 +218,29 @@ export function getCacheHeaders(
 }
 
 /**
+ * Generate versioned cache headers for a partition.
+ * Includes snapshot version to prevent stale reads.
+ *
+ * @param table - Table name
+ * @param partition - Partition identifier
+ * @param snapshotId - Snapshot version for cache key versioning
+ * @param ttl - Time-to-live in seconds (default: 86400)
+ * @returns Cache headers object with version info
+ */
+export function getVersionedCacheHeaders(
+  table: string,
+  partition: string,
+  snapshotId: string,
+  ttl: number = DEFAULT_TTL
+): Record<string, string> {
+  return {
+    'Cache-Control': `public, max-age=${ttl}`,
+    'CF-Cache-Tag': `evodb:${table}:${partition}`,
+    'X-EvoDB-Snapshot': snapshotId,
+  };
+}
+
+/**
  * Parse cache tags from header value
  *
  * @param cfCacheTag - CF-Cache-Tag header value

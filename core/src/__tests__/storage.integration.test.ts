@@ -26,6 +26,8 @@ import {
   // SQL injection prevention
   validateTableName,
   createDOAdapter,
+  // Path traversal prevention
+  validateStoragePath,
   // ==========================================================================
   // UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
   // ==========================================================================
@@ -358,6 +360,51 @@ describe('MemoryObjectStorageAdapter', () => {
 
     it('should throw for non-existent key', async () => {
       await expect(storage.getRange('nonexistent', 0, 10)).rejects.toThrow('Object not found');
+    });
+
+    // ==========================================================================
+    // Issue evodb-qpi: TDD bounds validation for getRange
+    // ==========================================================================
+
+    it('should throw for negative length', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      await storage.put('range-test.bin', data);
+
+      await expect(storage.getRange('range-test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+      await expect(storage.getRange('range-test.bin', 5, -5)).rejects.toThrow(/length.*negative|invalid.*length/i);
+    });
+
+    it('should throw for offset past end of data', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+      await storage.put('range-test.bin', data);
+
+      await expect(storage.getRange('range-test.bin', 10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      await expect(storage.getRange('range-test.bin', 5, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+    });
+
+    it('should throw for negative offset that resolves past start', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+      await storage.put('range-test.bin', data);
+
+      // -10 on a 5-byte array would resolve to -5 (invalid)
+      await expect(storage.getRange('range-test.bin', -10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+    });
+
+    it('should handle edge case: reading from exact end with zero length', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+      await storage.put('range-test.bin', data);
+
+      // Reading 0 bytes from offset 5 (end of data) should return empty array
+      const result = await storage.getRange('range-test.bin', 5, 0);
+      expect(result.length).toBe(0);
+    });
+
+    it('should handle zero length gracefully', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]);
+      await storage.put('range-test.bin', data);
+
+      const result = await storage.getRange('range-test.bin', 2, 0);
+      expect(result.length).toBe(0);
     });
   });
 
@@ -876,6 +923,51 @@ describe('Unified Storage Interface', () => {
       it('should throw for non-existent key', async () => {
         await expect(storage.readRange('nonexistent', 0, 10)).rejects.toThrow('Object not found');
       });
+
+      // ==========================================================================
+      // Issue evodb-qpi: TDD bounds validation for readRange
+      // ==========================================================================
+
+      it('should throw for negative length', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        await storage.write('range-test.bin', data);
+
+        await expect(storage.readRange('range-test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+        await expect(storage.readRange('range-test.bin', 5, -5)).rejects.toThrow(/length.*negative|invalid.*length/i);
+      });
+
+      it('should throw for offset past end of data', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        await expect(storage.readRange('range-test.bin', 10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+        await expect(storage.readRange('range-test.bin', 5, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+
+      it('should throw for negative offset that resolves past start', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        // -10 on a 5-byte array would resolve to -5 (invalid)
+        await expect(storage.readRange('range-test.bin', -10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+
+      it('should handle edge case: reading from exact end with zero length', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        // Reading 0 bytes from offset 5 (end of data) should return empty array
+        const result = await storage.readRange('range-test.bin', 5, 0);
+        expect(result.length).toBe(0);
+      });
+
+      it('should handle zero length gracefully', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]);
+        await storage.write('range-test.bin', data);
+
+        const result = await storage.readRange('range-test.bin', 2, 0);
+        expect(result.length).toBe(0);
+      });
     });
 
     describe('utility methods', () => {
@@ -1025,6 +1117,547 @@ describe('Storage Adapter Conversion', () => {
       await converted.write('new.bin', new Uint8Array([4, 5, 6]));
       const result2 = await original.read('new.bin');
       expect(result2).toEqual(new Uint8Array([4, 5, 6]));
+    });
+  });
+});
+
+// =============================================================================
+// ArrayBuffer Offset Calculation Tests
+// Issue: evodb-r00 - TDD: Fix ArrayBuffer offset calculations in storage
+//
+// When a Uint8Array is a view into a larger ArrayBuffer (has non-zero byteOffset),
+// using `data.buffer` directly gives the entire underlying buffer, not just the
+// viewed portion. We must use:
+//   data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+// =============================================================================
+
+describe('ArrayBuffer offset calculations', () => {
+  describe('R2ObjectStorageAdapter.put with non-zero byteOffset', () => {
+    // Create a mock R2Bucket that captures what was written (as raw value, not transformed)
+    function createCapturingMockBucket(): { bucket: R2BucketLike; getCapturedData: () => ArrayBuffer | Uint8Array | string | null } {
+      let capturedData: ArrayBuffer | Uint8Array | string | null = null;
+      const bucket: R2BucketLike = {
+        async get() { return null; },
+        async put(_key: string, value: ArrayBuffer | Uint8Array | string) {
+          // Capture the raw value passed to put() without transformation
+          capturedData = value;
+          return { key: _key, size: 0, etag: '', uploaded: new Date(), async arrayBuffer() { return new ArrayBuffer(0); }, async text() { return ''; } };
+        },
+        async delete() {},
+        async list() { return { objects: [], truncated: false }; },
+        async head() { return null; },
+      };
+      return { bucket, getCapturedData: () => capturedData };
+    }
+
+    it('should correctly handle Uint8Array with zero byteOffset', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const adapter = new R2ObjectStorageAdapter(bucket);
+
+      const data = new Uint8Array([1, 2, 3, 4, 5]);
+      await adapter.put('test.bin', data);
+
+      // R2ObjectStorageAdapter converts Uint8Array to ArrayBuffer via slice
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    it('should correctly handle Uint8Array view with non-zero byteOffset', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const adapter = new R2ObjectStorageAdapter(bucket);
+
+      // Create a larger buffer and create a view into the middle of it
+      const largeBuffer = new ArrayBuffer(20);
+      const fullView = new Uint8Array(largeBuffer);
+      fullView.set([0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+      // Create a view with non-zero byteOffset (starts at byte 5, length 5)
+      const viewWithOffset = new Uint8Array(largeBuffer, 5, 5);
+      expect(viewWithOffset.byteOffset).toBe(5);
+      expect(viewWithOffset.byteLength).toBe(5);
+      expect([...viewWithOffset]).toEqual([1, 2, 3, 4, 5]);
+
+      await adapter.put('test.bin', viewWithOffset);
+
+      // BUG: If we just use `data.buffer as ArrayBuffer`, we get the ENTIRE 20-byte buffer
+      // We should only get the 5 bytes we intended to write: [1, 2, 3, 4, 5]
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect((captured as ArrayBuffer).byteLength).toBe(5);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    it('should correctly handle subarray() views', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const adapter = new R2ObjectStorageAdapter(bucket);
+
+      // subarray() creates a view with non-zero byteOffset
+      const original = new Uint8Array([0, 0, 1, 2, 3, 4, 5, 0, 0, 0]);
+      const subview = original.subarray(2, 7);
+
+      expect(subview.byteOffset).toBe(2);
+      expect(subview.byteLength).toBe(5);
+      expect([...subview]).toEqual([1, 2, 3, 4, 5]);
+
+      await adapter.put('test.bin', subview);
+
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect((captured as ArrayBuffer).byteLength).toBe(5);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+  });
+
+  describe('R2Storage.write with non-zero byteOffset', () => {
+    // Create a mock R2Bucket that captures what was written (as raw value, not transformed)
+    function createCapturingMockBucket(): { bucket: R2BucketLike; getCapturedData: () => ArrayBuffer | Uint8Array | string | null } {
+      let capturedData: ArrayBuffer | Uint8Array | string | null = null;
+      const bucket: R2BucketLike = {
+        async get() { return null; },
+        async put(_key: string, value: ArrayBuffer | Uint8Array | string) {
+          // Capture the raw value passed to put() without transformation
+          capturedData = value;
+          return { key: _key, size: 0, etag: '', uploaded: new Date(), async arrayBuffer() { return new ArrayBuffer(0); }, async text() { return ''; } };
+        },
+        async delete() {},
+        async list() { return { objects: [], truncated: false }; },
+        async head() { return null; },
+      };
+      return { bucket, getCapturedData: () => capturedData };
+    }
+
+    it('should correctly handle Uint8Array with zero byteOffset', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const storage = new R2Storage(bucket);
+
+      const data = new Uint8Array([1, 2, 3, 4, 5]);
+      await storage.write('test.bin', data);
+
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    it('should correctly handle Uint8Array view with non-zero byteOffset', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const storage = new R2Storage(bucket);
+
+      // Create a larger buffer and create a view into the middle of it
+      const largeBuffer = new ArrayBuffer(20);
+      const fullView = new Uint8Array(largeBuffer);
+      fullView.set([0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+      // Create a view with non-zero byteOffset
+      const viewWithOffset = new Uint8Array(largeBuffer, 5, 5);
+
+      await storage.write('test.bin', viewWithOffset);
+
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect((captured as ArrayBuffer).byteLength).toBe(5);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+
+    it('should correctly handle subarray() views', async () => {
+      const { bucket, getCapturedData } = createCapturingMockBucket();
+      const storage = new R2Storage(bucket);
+
+      const original = new Uint8Array([0, 0, 1, 2, 3, 4, 5, 0, 0, 0]);
+      const subview = original.subarray(2, 7);
+
+      await storage.write('test.bin', subview);
+
+      const captured = getCapturedData();
+      expect(captured).toBeInstanceOf(ArrayBuffer);
+      expect((captured as ArrayBuffer).byteLength).toBe(5);
+      expect(new Uint8Array(captured as ArrayBuffer)).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    });
+  });
+});
+
+// =============================================================================
+// Key Prefix Path Traversal Prevention Tests
+// Issue: evodb-409 - TDD: Add key prefix path traversal validation
+// =============================================================================
+
+describe('Key prefix path traversal prevention', () => {
+  describe('validateStoragePath', () => {
+    describe('should allow safe paths', () => {
+      it('should allow simple file names', () => {
+        expect(() => validateStoragePath('file.bin')).not.toThrow();
+        expect(() => validateStoragePath('data.json')).not.toThrow();
+        expect(() => validateStoragePath('manifest')).not.toThrow();
+      });
+
+      it('should allow nested paths with forward slashes', () => {
+        expect(() => validateStoragePath('data/file.bin')).not.toThrow();
+        expect(() => validateStoragePath('a/b/c/d/file.txt')).not.toThrow();
+        expect(() => validateStoragePath('tables/users/v1/snapshot.parquet')).not.toThrow();
+      });
+
+      it('should allow paths with dashes and underscores', () => {
+        expect(() => validateStoragePath('my-file_name.bin')).not.toThrow();
+        expect(() => validateStoragePath('table_v2/data-001.parquet')).not.toThrow();
+      });
+
+      it('should allow paths with dots in file names', () => {
+        expect(() => validateStoragePath('file.backup.bin')).not.toThrow();
+        expect(() => validateStoragePath('v1.0.0/data.bin')).not.toThrow();
+      });
+
+      it('should allow alphanumeric paths', () => {
+        expect(() => validateStoragePath('abc123/file456.bin')).not.toThrow();
+      });
+    });
+
+    describe('should reject path traversal attacks', () => {
+      it('should reject ../ path traversal', () => {
+        expect(() => validateStoragePath('../secret.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('data/../../../etc/passwd')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('foo/bar/../../../baz')).toThrow(/path traversal/i);
+      });
+
+      it('should reject ../ at various positions', () => {
+        expect(() => validateStoragePath('../file.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('data/../file.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('a/b/../c')).toThrow(/path traversal/i);
+      });
+
+      it('should reject URL-encoded ../ sequences', () => {
+        expect(() => validateStoragePath('%2e%2e/secret.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('%2e%2e%2fsecret.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('data/%2e%2e/secret')).toThrow(/path traversal/i);
+      });
+
+      it('should reject double-URL-encoded ../ sequences', () => {
+        expect(() => validateStoragePath('%252e%252e/secret.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('%252e%252e%252fsecret.bin')).toThrow(/path traversal/i);
+      });
+
+      it('should reject backslash path traversal', () => {
+        expect(() => validateStoragePath('..\\secret.bin')).toThrow(/path traversal/i);
+        expect(() => validateStoragePath('data\\..\\..\\etc\\passwd')).toThrow(/path traversal/i);
+      });
+    });
+
+    describe('should reject absolute paths', () => {
+      it('should reject Unix absolute paths', () => {
+        expect(() => validateStoragePath('/etc/passwd')).toThrow(/absolute path/i);
+        expect(() => validateStoragePath('/var/log/secrets')).toThrow(/absolute path/i);
+        expect(() => validateStoragePath('/')).toThrow(/absolute path/i);
+      });
+
+      it('should reject Windows absolute paths', () => {
+        expect(() => validateStoragePath('C:\\Windows\\System32')).toThrow(/absolute path/i);
+        expect(() => validateStoragePath('D:\\secret.bin')).toThrow(/absolute path/i);
+        expect(() => validateStoragePath('c:/windows/system32')).toThrow(/absolute path/i);
+      });
+
+      it('should reject UNC paths', () => {
+        expect(() => validateStoragePath('\\\\server\\share\\file')).toThrow(/absolute path/i);
+        expect(() => validateStoragePath('//server/share/file')).toThrow(/absolute path/i);
+      });
+    });
+
+    describe('should reject dangerous patterns', () => {
+      it('should reject null bytes', () => {
+        expect(() => validateStoragePath('file\x00.bin')).toThrow(/null byte/i);
+        expect(() => validateStoragePath('data\x00/hidden')).toThrow(/null byte/i);
+      });
+
+      it('should reject empty paths', () => {
+        expect(() => validateStoragePath('')).toThrow(/empty/i);
+      });
+
+      it('should reject whitespace-only paths', () => {
+        expect(() => validateStoragePath('   ')).toThrow(/empty|whitespace/i);
+        expect(() => validateStoragePath('\t\n')).toThrow(/empty|whitespace/i);
+      });
+
+      it('should reject paths with control characters', () => {
+        expect(() => validateStoragePath('file\x01.bin')).toThrow(/control character/i);
+        expect(() => validateStoragePath('data\x1f/file')).toThrow(/control character/i);
+      });
+    });
+  });
+
+  describe('R2ObjectStorageAdapter with path validation', () => {
+    // Create a mock R2Bucket for testing
+    function createMockR2Bucket(): R2BucketLike {
+      const store = new Map<string, { data: ArrayBuffer; metadata: { size: number; etag: string; uploaded: Date } }>();
+      return {
+        async get(key: string) {
+          const entry = store.get(key);
+          if (!entry) return null;
+          return {
+            key,
+            size: entry.metadata.size,
+            etag: entry.metadata.etag,
+            uploaded: entry.metadata.uploaded,
+            async arrayBuffer() { return entry.data.slice(0); },
+            async text() { return new TextDecoder().decode(entry.data); },
+          };
+        },
+        async put(key: string, value: ArrayBuffer | Uint8Array | string) {
+          let buffer: ArrayBuffer;
+          if (typeof value === 'string') {
+            buffer = new TextEncoder().encode(value).buffer;
+          } else if (value instanceof ArrayBuffer) {
+            buffer = value.slice(0);
+          } else {
+            buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+          }
+          const metadata = { size: buffer.byteLength, etag: `"mock-etag"`, uploaded: new Date() };
+          store.set(key, { data: buffer, metadata });
+          return { key, size: metadata.size, etag: metadata.etag, uploaded: metadata.uploaded, async arrayBuffer() { return buffer; } };
+        },
+        async delete(key: string) { store.delete(key); },
+        async list(options?: { prefix?: string }) {
+          const prefix = options?.prefix || '';
+          const objects = [...store.entries()]
+            .filter(([key]) => key.startsWith(prefix))
+            .map(([key, entry]) => ({
+              key,
+              size: entry.metadata.size,
+              etag: entry.metadata.etag,
+              uploaded: entry.metadata.uploaded,
+              async arrayBuffer() { return entry.data; },
+            }));
+          return { objects, truncated: false };
+        },
+        async head(key: string) {
+          const entry = store.get(key);
+          if (!entry) return null;
+          return {
+            key,
+            size: entry.metadata.size,
+            etag: entry.metadata.etag,
+            uploaded: entry.metadata.uploaded,
+            async arrayBuffer() { return entry.data; },
+          };
+        },
+      };
+    }
+
+    it('should reject path traversal in put()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.put('../secret.bin', new Uint8Array([1]))).rejects.toThrow(/path traversal/i);
+      await expect(adapter.put('../../etc/passwd', new Uint8Array([1]))).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject path traversal in get()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.get('../secret.bin')).rejects.toThrow(/path traversal/i);
+      await expect(adapter.get('foo/../../etc/passwd')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject absolute paths in put()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.put('/etc/passwd', new Uint8Array([1]))).rejects.toThrow(/absolute path/i);
+      await expect(adapter.put('C:\\Windows\\System32', new Uint8Array([1]))).rejects.toThrow(/absolute path/i);
+    });
+
+    it('should reject absolute paths in get()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.get('/etc/passwd')).rejects.toThrow(/absolute path/i);
+    });
+
+    it('should reject path traversal in delete()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.delete('../secret.bin')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject path traversal in head()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.head('../secret.bin')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject path traversal in list()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      await expect(adapter.list('../')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should allow safe paths after validation', async () => {
+      const mockBucket = createMockR2Bucket();
+      const adapter = new R2ObjectStorageAdapter(mockBucket, 'data');
+
+      // These should all succeed
+      await adapter.put('file.bin', new Uint8Array([1, 2, 3]));
+      const result = await adapter.get('file.bin');
+      expect(result).toEqual(new Uint8Array([1, 2, 3]));
+
+      await adapter.put('nested/path/file.bin', new Uint8Array([4, 5, 6]));
+      const result2 = await adapter.get('nested/path/file.bin');
+      expect(result2).toEqual(new Uint8Array([4, 5, 6]));
+    });
+  });
+
+  describe('R2Storage with path validation', () => {
+    function createMockR2Bucket(): R2BucketLike {
+      const store = new Map<string, { data: ArrayBuffer; metadata: { size: number; etag: string; uploaded: Date } }>();
+      return {
+        async get(key: string) {
+          const entry = store.get(key);
+          if (!entry) return null;
+          return {
+            key,
+            size: entry.metadata.size,
+            etag: entry.metadata.etag,
+            uploaded: entry.metadata.uploaded,
+            async arrayBuffer() { return entry.data.slice(0); },
+            async text() { return new TextDecoder().decode(entry.data); },
+          };
+        },
+        async put(key: string, value: ArrayBuffer | Uint8Array | string) {
+          let buffer: ArrayBuffer;
+          if (typeof value === 'string') {
+            buffer = new TextEncoder().encode(value).buffer;
+          } else if (value instanceof ArrayBuffer) {
+            buffer = value.slice(0);
+          } else {
+            buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+          }
+          const metadata = { size: buffer.byteLength, etag: `"mock-etag"`, uploaded: new Date() };
+          store.set(key, { data: buffer, metadata });
+          return { key, size: metadata.size, etag: metadata.etag, uploaded: metadata.uploaded, async arrayBuffer() { return buffer; } };
+        },
+        async delete(key: string) { store.delete(key); },
+        async list(options?: { prefix?: string }) {
+          const prefix = options?.prefix || '';
+          const objects = [...store.entries()]
+            .filter(([key]) => key.startsWith(prefix))
+            .map(([key, entry]) => ({
+              key,
+              size: entry.metadata.size,
+              etag: entry.metadata.etag,
+              uploaded: entry.metadata.uploaded,
+              async arrayBuffer() { return entry.data; },
+            }));
+          return { objects, truncated: false };
+        },
+        async head(key: string) {
+          const entry = store.get(key);
+          if (!entry) return null;
+          return {
+            key,
+            size: entry.metadata.size,
+            etag: entry.metadata.etag,
+            uploaded: entry.metadata.uploaded,
+            async arrayBuffer() { return entry.data; },
+          };
+        },
+      };
+    }
+
+    it('should reject path traversal in write()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await expect(storage.write('../secret.bin', new Uint8Array([1]))).rejects.toThrow(/path traversal/i);
+      await expect(storage.write('../../etc/passwd', new Uint8Array([1]))).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject path traversal in read()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await expect(storage.read('../secret.bin')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject absolute paths in write()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await expect(storage.write('/etc/passwd', new Uint8Array([1]))).rejects.toThrow(/absolute path/i);
+    });
+
+    it('should reject path traversal in delete()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await expect(storage.delete('../secret.bin')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should reject path traversal in list()', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await expect(storage.list('../')).rejects.toThrow(/path traversal/i);
+    });
+
+    it('should allow safe paths after validation', async () => {
+      const mockBucket = createMockR2Bucket();
+      const storage = new R2Storage(mockBucket, 'data');
+
+      await storage.write('file.bin', new Uint8Array([1, 2, 3]));
+      const result = await storage.read('file.bin');
+      expect(result).toEqual(new Uint8Array([1, 2, 3]));
+    });
+  });
+
+  describe('keyPrefix validation in constructor', () => {
+    function createMockR2Bucket(): R2BucketLike {
+      return {
+        async get() { return null; },
+        async put(key) { return { key, size: 0, etag: '', uploaded: new Date(), async arrayBuffer() { return new ArrayBuffer(0); } }; },
+        async delete() {},
+        async list() { return { objects: [], truncated: false }; },
+        async head() { return null; },
+      };
+    }
+
+    it('should reject path traversal in keyPrefix for R2ObjectStorageAdapter', () => {
+      const mockBucket = createMockR2Bucket();
+
+      expect(() => new R2ObjectStorageAdapter(mockBucket, '../secrets')).toThrow(/path traversal/i);
+      expect(() => new R2ObjectStorageAdapter(mockBucket, 'data/../secrets')).toThrow(/path traversal/i);
+    });
+
+    it('should reject absolute paths in keyPrefix for R2ObjectStorageAdapter', () => {
+      const mockBucket = createMockR2Bucket();
+
+      expect(() => new R2ObjectStorageAdapter(mockBucket, '/etc/passwd')).toThrow(/absolute path/i);
+      expect(() => new R2ObjectStorageAdapter(mockBucket, 'C:\\Windows')).toThrow(/absolute path/i);
+    });
+
+    it('should reject path traversal in keyPrefix for R2Storage', () => {
+      const mockBucket = createMockR2Bucket();
+
+      expect(() => new R2Storage(mockBucket, '../secrets')).toThrow(/path traversal/i);
+      expect(() => new R2Storage(mockBucket, 'data/../secrets')).toThrow(/path traversal/i);
+    });
+
+    it('should reject absolute paths in keyPrefix for R2Storage', () => {
+      const mockBucket = createMockR2Bucket();
+
+      expect(() => new R2Storage(mockBucket, '/etc/passwd')).toThrow(/absolute path/i);
+    });
+
+    it('should allow safe keyPrefix values', () => {
+      const mockBucket = createMockR2Bucket();
+
+      expect(() => new R2ObjectStorageAdapter(mockBucket, 'data')).not.toThrow();
+      expect(() => new R2ObjectStorageAdapter(mockBucket, 'my-prefix/nested')).not.toThrow();
+      expect(() => new R2ObjectStorageAdapter(mockBucket, '')).not.toThrow();
+
+      expect(() => new R2Storage(mockBucket, 'data')).not.toThrow();
+      expect(() => new R2Storage(mockBucket, 'my-prefix/nested')).not.toThrow();
+      expect(() => new R2Storage(mockBucket, '')).not.toThrow();
     });
   });
 });

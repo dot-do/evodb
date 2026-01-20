@@ -154,6 +154,113 @@ describe('StorageError', () => {
   });
 });
 
+describe('StorageErrorCode enum', () => {
+  it('should be exported from errors module', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode).toBeDefined();
+  });
+
+  it('should have NOT_FOUND code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.NOT_FOUND).toBe('NOT_FOUND');
+  });
+
+  it('should have PERMISSION_DENIED code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.PERMISSION_DENIED).toBe('PERMISSION_DENIED');
+  });
+
+  it('should have TIMEOUT code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.TIMEOUT).toBe('TIMEOUT');
+  });
+
+  it('should have QUOTA_EXCEEDED code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.QUOTA_EXCEEDED).toBe('QUOTA_EXCEEDED');
+  });
+
+  it('should have NETWORK_ERROR code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.NETWORK_ERROR).toBe('NETWORK_ERROR');
+  });
+
+  it('should have CORRUPTED_DATA code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.CORRUPTED_DATA).toBe('CORRUPTED_DATA');
+  });
+
+  it('should have INVALID_PATH code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.INVALID_PATH).toBe('INVALID_PATH');
+  });
+
+  it('should have CONCURRENT_MODIFICATION code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.CONCURRENT_MODIFICATION).toBe('CONCURRENT_MODIFICATION');
+  });
+
+  it('should have UNKNOWN code', async () => {
+    const { StorageErrorCode } = await import('../errors.js');
+    expect(StorageErrorCode.UNKNOWN).toBe('UNKNOWN');
+  });
+});
+
+describe('StorageError with StorageErrorCode', () => {
+  it('should accept StorageErrorCode enum values', async () => {
+    const { StorageError, StorageErrorCode } = await import('../errors.js');
+    const error = new StorageError('Object not found', StorageErrorCode.NOT_FOUND);
+    expect(error.code).toBe('NOT_FOUND');
+  });
+
+  it('should allow programmatic error code matching', async () => {
+    const { StorageError, StorageErrorCode } = await import('../errors.js');
+    const error = new StorageError('Permission denied', StorageErrorCode.PERMISSION_DENIED);
+
+    // Programmatic matching - the main use case for error codes
+    expect(error.code === StorageErrorCode.PERMISSION_DENIED).toBe(true);
+    expect(error.code === StorageErrorCode.NOT_FOUND).toBe(false);
+  });
+
+  it('should support switch statement matching on error codes', async () => {
+    const { StorageError, StorageErrorCode } = await import('../errors.js');
+    const error = new StorageError('Quota exceeded', StorageErrorCode.QUOTA_EXCEEDED);
+
+    let matchedCode = '';
+    switch (error.code) {
+      case StorageErrorCode.NOT_FOUND:
+        matchedCode = 'not_found';
+        break;
+      case StorageErrorCode.PERMISSION_DENIED:
+        matchedCode = 'permission_denied';
+        break;
+      case StorageErrorCode.QUOTA_EXCEEDED:
+        matchedCode = 'quota_exceeded';
+        break;
+      default:
+        matchedCode = 'other';
+    }
+
+    expect(matchedCode).toBe('quota_exceeded');
+  });
+
+  it('should maintain backward compatibility with string codes', async () => {
+    const { StorageError } = await import('../errors.js');
+    // Old code using string codes should still work
+    const error = new StorageError('Custom error', 'MY_CUSTOM_CODE');
+    expect(error.code).toBe('MY_CUSTOM_CODE');
+  });
+
+  it('should allow isStorageErrorCode type guard', async () => {
+    const { StorageErrorCode, isStorageErrorCode } = await import('../errors.js');
+
+    expect(isStorageErrorCode(StorageErrorCode.NOT_FOUND)).toBe(true);
+    expect(isStorageErrorCode(StorageErrorCode.TIMEOUT)).toBe(true);
+    expect(isStorageErrorCode('RANDOM_STRING')).toBe(false);
+    expect(isStorageErrorCode('NOT_FOUND')).toBe(true); // String value matching enum
+  });
+});
+
 describe('Error type checking', () => {
   it('should allow catching specific error types', () => {
     const queryError = new QueryError('Query failed');

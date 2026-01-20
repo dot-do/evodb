@@ -67,6 +67,70 @@ export type R2PutOptions = R2PutOptionsLike;
 export type R2ListOptions = R2ListOptionsLike;
 
 // =============================================================================
+// JSON Parse Error
+// =============================================================================
+
+/**
+ * Custom error class thrown when JSON parsing fails during storage operations.
+ * Provides context including:
+ * - The file path that failed to parse
+ * - The position in the JSON where the error occurred (if available)
+ * - The original error from JSON.parse
+ */
+export class JsonParseError extends Error {
+  public readonly name = 'JsonParseError';
+
+  constructor(
+    message: string,
+    public readonly path: string,
+    public readonly position?: number,
+    public readonly cause?: Error
+  ) {
+    super(message);
+    // Maintain proper prototype chain for instanceof checks
+    Object.setPrototypeOf(this, JsonParseError.prototype);
+  }
+}
+
+/**
+ * Parse JSON with error handling, wrapping SyntaxError in JsonParseError
+ * @param text - The JSON string to parse
+ * @param path - The file path (for error context)
+ * @returns The parsed JSON value
+ * @throws JsonParseError if parsing fails
+ */
+function parseJsonWithContext<T>(text: string, path: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    const syntaxError = err instanceof SyntaxError ? err : undefined;
+
+    // Extract position from the error message if available
+    // Node/V8 format: "... at position 21 (line 1 column 22)"
+    let position: number | undefined;
+    if (syntaxError?.message) {
+      const posMatch = syntaxError.message.match(/at position (\d+)/);
+      if (posMatch) {
+        position = parseInt(posMatch[1], 10);
+      }
+    }
+
+    // Create a snippet of the content for debugging (truncated for large content)
+    const maxSnippetLength = 100;
+    const snippet =
+      text.length > maxSnippetLength ? text.slice(0, maxSnippetLength) + '...' : text;
+
+    // Build descriptive error message
+    const posInfo = position !== undefined ? ` at position ${position}` : '';
+    const message = `Failed to parse JSON from "${path}"${posInfo}: ${
+      syntaxError?.message || 'Invalid JSON'
+    }. Content preview: "${snippet}"`;
+
+    throw new JsonParseError(message, path, position, syntaxError);
+  }
+}
+
+// =============================================================================
 // R2 Storage Adapter Implementation (High-Level with JSON support)
 // =============================================================================
 
@@ -80,7 +144,7 @@ export function createR2Adapter(bucket: R2BucketLike): R2StorageAdapter {
       const obj = await bucket.get(path);
       if (!obj) return null;
       const text = await obj.text();
-      return JSON.parse(text) as T;
+      return parseJsonWithContext<T>(text, path);
     },
 
     async writeJson(path: string, data: unknown): Promise<void> {
@@ -162,7 +226,7 @@ export function createR2AdapterFromObjectStorage(storage: ObjectStorageAdapter):
       const data = await storage.get(path);
       if (!data) return null;
       const text = textDecoder.decode(data);
-      return JSON.parse(text) as T;
+      return parseJsonWithContext<T>(text, path);
     },
 
     async writeJson(path: string, data: unknown): Promise<void> {

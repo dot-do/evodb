@@ -21,6 +21,8 @@
  * ```
  */
 
+import { captureStackTrace } from './stack-trace.js';
+
 /**
  * Base error class for all EvoDB errors
  *
@@ -53,11 +55,7 @@ export class EvoDBError extends Error {
     this.code = code;
 
     // Maintains proper stack trace for where our error was thrown (only available on V8)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((Error as any).captureStackTrace) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (Error as any).captureStackTrace(this, this.constructor);
-    }
+    captureStackTrace(this, EvoDBError);
   }
 }
 
@@ -85,6 +83,7 @@ export class QueryError extends EvoDBError {
   constructor(message: string, code: string = 'QUERY_ERROR') {
     super(message, code);
     this.name = 'QueryError';
+    captureStackTrace(this, QueryError);
   }
 }
 
@@ -112,6 +111,7 @@ export class TimeoutError extends EvoDBError {
   constructor(message: string, code: string = 'TIMEOUT_ERROR') {
     super(message, code);
     this.name = 'TimeoutError';
+    captureStackTrace(this, TimeoutError);
   }
 }
 
@@ -140,7 +140,74 @@ export class ValidationError extends EvoDBError {
   constructor(message: string, code: string = 'VALIDATION_ERROR') {
     super(message, code);
     this.name = 'ValidationError';
+    captureStackTrace(this, ValidationError);
   }
+}
+
+/**
+ * Error codes for storage operations.
+ * Use these codes for programmatic error identification and handling.
+ *
+ * @example
+ * ```typescript
+ * import { StorageError, StorageErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   await storage.read('nonexistent');
+ * } catch (error) {
+ *   if (error instanceof StorageError) {
+ *     switch (error.code) {
+ *       case StorageErrorCode.NOT_FOUND:
+ *         console.log('Object does not exist');
+ *         break;
+ *       case StorageErrorCode.PERMISSION_DENIED:
+ *         console.log('Access denied');
+ *         break;
+ *       default:
+ *         console.log('Storage error:', error.message);
+ *     }
+ *   }
+ * }
+ * ```
+ */
+export enum StorageErrorCode {
+  /** Object or resource not found in storage */
+  NOT_FOUND = 'NOT_FOUND',
+  /** Permission denied to access the resource */
+  PERMISSION_DENIED = 'PERMISSION_DENIED',
+  /** Operation timed out */
+  TIMEOUT = 'TIMEOUT',
+  /** Storage quota exceeded */
+  QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
+  /** Network error during storage operation */
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  /** Data corruption detected (checksum mismatch, invalid format, etc.) */
+  CORRUPTED_DATA = 'CORRUPTED_DATA',
+  /** Invalid storage path or key */
+  INVALID_PATH = 'INVALID_PATH',
+  /** Concurrent modification conflict (optimistic locking failure) */
+  CONCURRENT_MODIFICATION = 'CONCURRENT_MODIFICATION',
+  /** Unknown or unclassified storage error */
+  UNKNOWN = 'UNKNOWN',
+}
+
+/**
+ * Type guard to check if a string is a valid StorageErrorCode.
+ * Useful for validating error codes from external sources.
+ *
+ * @param code - The string to check
+ * @returns true if the code is a valid StorageErrorCode value
+ *
+ * @example
+ * ```typescript
+ * if (isStorageErrorCode(error.code)) {
+ *   // TypeScript knows error.code is StorageErrorCode here
+ *   handleKnownError(error.code);
+ * }
+ * ```
+ */
+export function isStorageErrorCode(code: string): code is StorageErrorCode {
+  return Object.values(StorageErrorCode).includes(code as StorageErrorCode);
 }
 
 /**
@@ -155,7 +222,8 @@ export class ValidationError extends EvoDBError {
  * @example
  * ```typescript
  * throw new StorageError('Failed to write block to R2');
- * throw new StorageError('Storage quota exceeded', 'QUOTA_EXCEEDED');
+ * throw new StorageError('Storage quota exceeded', StorageErrorCode.QUOTA_EXCEEDED);
+ * throw new StorageError('Custom error', 'CUSTOM_CODE'); // backward compatible
  * ```
  */
 export class StorageError extends EvoDBError {
@@ -163,11 +231,12 @@ export class StorageError extends EvoDBError {
    * Create a new StorageError
    *
    * @param message - Human-readable error message
-   * @param code - Error code (default: 'STORAGE_ERROR')
+   * @param code - Error code (default: 'STORAGE_ERROR'). Can be a StorageErrorCode enum value or a custom string.
    */
-  constructor(message: string, code: string = 'STORAGE_ERROR') {
+  constructor(message: string, code: string | StorageErrorCode = 'STORAGE_ERROR') {
     super(message, code);
     this.name = 'StorageError';
+    captureStackTrace(this, StorageError);
   }
 }
 
@@ -235,5 +304,6 @@ export class CorruptedBlockError extends StorageError {
     super(message, code);
     this.name = 'CorruptedBlockError';
     this.details = details;
+    captureStackTrace(this, CorruptedBlockError);
   }
 }

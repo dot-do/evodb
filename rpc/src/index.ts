@@ -170,6 +170,8 @@ export {
   createRpcClient,
   type ClientState,
   type ClientStats,
+  type OnHandlerErrorCallback,
+  type EventEmitterConfig,
 } from './client.js';
 
 // =============================================================================

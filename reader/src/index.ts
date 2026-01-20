@@ -83,10 +83,17 @@ import {
   ManifestValidationError,
   ManifestValidationErrorCode,
   isValidManifest,
+  validateBlockSize,
+  BlockSizeValidationError,
+  BlockSizeValidationErrorCode,
+  isBlockSizeValidationError,
+  DEFAULT_MAX_BLOCK_SIZE,
   type BlockData,
   type BlockDataValidationResult,
   type ValidatedManifest,
   type ValidatedTableMetadata,
+  type BlockSizeValidationOptions,
+  type BlockSizeValidationErrorDetails,
 } from './validation.js';
 
 // Re-export cache utilities and types
@@ -114,8 +121,21 @@ export {
   validateManifest,
   validateTableMetadata,
   isValidManifest,
+  // Block size validation (DoS protection)
+  validateBlockSize,
+  BlockSizeValidationError,
+  BlockSizeValidationErrorCode,
+  isBlockSizeValidationError,
+  DEFAULT_MAX_BLOCK_SIZE,
 };
-export type { BlockData, BlockDataValidationResult, ValidatedManifest, ValidatedTableMetadata };
+export type {
+  BlockData,
+  BlockDataValidationResult,
+  ValidatedManifest,
+  ValidatedTableMetadata,
+  BlockSizeValidationOptions,
+  BlockSizeValidationErrorDetails,
+};
 
 /**
  * Manifest structure - uses ValidatedManifest from validation module
@@ -130,11 +150,13 @@ export class QueryEngine {
   private readonly cache: CacheTier;
   private manifest: Manifest | null = null;
   private readonly maxConcurrentReads: number;
+  private readonly maxBlockSize: number;
 
   constructor(config: ReaderConfig) {
     this.config = config;
     this.cache = new CacheTier(config.cache);
     this.maxConcurrentReads = config.maxConcurrentReads ?? 4;
+    this.maxBlockSize = config.maxBlockSize ?? DEFAULT_MAX_BLOCK_SIZE;
   }
 
   /**
@@ -193,10 +215,11 @@ export class QueryEngine {
       request.blockPath
     );
 
-    // Parse and validate block data
+    // Parse and validate block data (with DoS protection via maxBlockSize)
     const { data: blockData, rowCount: totalRows } = parseAndValidateBlockData(
       buffer,
-      request.blockPath
+      request.blockPath,
+      { maxBlockSize: this.maxBlockSize }
     );
 
     // Determine which rows to include based on filters
@@ -320,10 +343,11 @@ export class QueryEngine {
             blockPath
           );
 
-          // Parse and validate block data
+          // Parse and validate block data (with DoS protection via maxBlockSize)
           const { data: blockData, rowCount } = parseAndValidateBlockData(
             buffer,
-            blockPath
+            blockPath,
+            { maxBlockSize: this.maxBlockSize }
           );
 
           return { blockData, rowCount, bytesRead: buffer.byteLength, fromCache };

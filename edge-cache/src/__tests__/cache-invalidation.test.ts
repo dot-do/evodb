@@ -874,4 +874,211 @@ describe('Cache Invalidation Hooks', () => {
       expect(manager.getStats().totalCommits).toBe(0);
     });
   });
+
+  describe('Versioned Cache Keys (Stale Data Prevention)', () => {
+    /**
+     * TDD: Red phase - These tests expose the stale cache problem
+     *
+     * The gap: When Writer DO flushes new blocks, Cache API may serve stale data
+     * for 1-5 minutes. We need explicit invalidation or versioned cache keys.
+     */
+
+    it('should generate versioned cache keys that include snapshot ID', () => {
+      const manager = createCacheInvalidationManager();
+
+      // Generate versioned cache key for a block
+      const path = 'data/users/year=2024/block_001.parquet';
+      const snapshotId = 'snap_001';
+
+      const versionedKey = manager.generateVersionedCacheKey(path, snapshotId);
+
+      // Key should include snapshot version to prevent stale reads
+      expect(versionedKey).toContain(snapshotId);
+      expect(versionedKey).toContain(path);
+      // Should be in format: path?v=snapshotId or similar
+      expect(versionedKey).toMatch(/[?&]v=snap_001/);
+    });
+
+    it('should generate different keys for different snapshot versions', () => {
+      const manager = createCacheInvalidationManager();
+
+      const path = 'data/users/year=2024/block_001.parquet';
+
+      const key1 = manager.generateVersionedCacheKey(path, 'snap_001');
+      const key2 = manager.generateVersionedCacheKey(path, 'snap_002');
+
+      // Different snapshots should produce different cache keys
+      expect(key1).not.toBe(key2);
+    });
+
+    it('should track current snapshot version per table/partition', () => {
+      const manager = createCacheInvalidationManager();
+
+      // Initially no snapshot version
+      expect(manager.getCurrentSnapshotVersion('users', 'year=2024')).toBeUndefined();
+
+      // After commit, should track the new snapshot version
+      manager.updateSnapshotVersion('users', 'year=2024', 'snap_001');
+      expect(manager.getCurrentSnapshotVersion('users', 'year=2024')).toBe('snap_001');
+
+      // Update to new version
+      manager.updateSnapshotVersion('users', 'year=2024', 'snap_002');
+      expect(manager.getCurrentSnapshotVersion('users', 'year=2024')).toBe('snap_002');
+    });
+
+    it('should automatically update snapshot version on commit', async () => {
+      const manager = createCacheInvalidationManager();
+
+      await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_001',
+        affectedPaths: ['data/users/year=2024/block_001.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      expect(manager.getCurrentSnapshotVersion('users', 'year=2024')).toBe('snap_001');
+
+      // Second commit updates version
+      await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_002',
+        affectedPaths: ['data/users/year=2024/block_002.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      expect(manager.getCurrentSnapshotVersion('users', 'year=2024')).toBe('snap_002');
+    });
+
+    it('should provide cache key factory that uses current snapshot version', () => {
+      const manager = createCacheInvalidationManager();
+
+      // Set current snapshot version
+      manager.updateSnapshotVersion('users', 'year=2024', 'snap_001');
+
+      // Factory should generate keys with current version
+      const factory = manager.createCacheKeyFactory('users', 'year=2024');
+      const key = factory('data/users/year=2024/block_001.parquet');
+
+      expect(key).toContain('snap_001');
+    });
+
+    it('should return invalidation result with new cache key hints', async () => {
+      const manager = createCacheInvalidationManager();
+
+      manager.registerHook({
+        name: 'test-hook',
+        onCommit: async (event) => ({
+          success: true,
+          invalidatedPaths: event.affectedPaths,
+        }),
+      });
+
+      const result = await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_001',
+        affectedPaths: ['data/users/year=2024/block_001.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      // Result should include the new versioned cache keys for callers to use
+      expect(result.versionedCacheKeys).toBeDefined();
+      expect(result.versionedCacheKeys!['data/users/year=2024/block_001.parquet']).toContain('snap_001');
+    });
+
+    it('should support getting all versioned keys for a commit event', () => {
+      const manager = createCacheInvalidationManager();
+
+      const event: CDCCommitEvent = {
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_001',
+        affectedPaths: [
+          'data/users/year=2024/block_001.parquet',
+          'data/users/year=2024/block_002.parquet',
+        ],
+        timestamp: Date.now(),
+        operation: 'write',
+      };
+
+      const versionedKeys = manager.getVersionedCacheKeysForEvent(event);
+
+      expect(Object.keys(versionedKeys)).toHaveLength(2);
+      expect(versionedKeys['data/users/year=2024/block_001.parquet']).toContain('snap_001');
+      expect(versionedKeys['data/users/year=2024/block_002.parquet']).toContain('snap_001');
+    });
+
+    it('should prevent stale reads by invalidating old keys on new writes', async () => {
+      const invalidatedPaths: string[] = [];
+      const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (init?.method === 'PURGE') {
+          invalidatedPaths.push(url);
+        }
+        return new Response(null, { status: 200 });
+      };
+      setFetchFunction(mockFetch);
+
+      const manager = createCacheInvalidationManager();
+      manager.registerDefaultInvalidationHook();
+
+      // First write
+      await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_001',
+        affectedPaths: ['data/users/year=2024/block_001.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      // Clear tracking
+      invalidatedPaths.length = 0;
+
+      // Second write to same block (update scenario)
+      await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_002',
+        affectedPaths: ['data/users/year=2024/block_001.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      // Should invalidate both old versioned key and new path
+      // This ensures readers using old snapshot version get cache miss
+      expect(invalidatedPaths.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should export snapshot version in commit event result for reader coordination', async () => {
+      const manager = createCacheInvalidationManager();
+
+      manager.registerHook({
+        name: 'test-hook',
+        onCommit: async (event) => ({
+          success: true,
+          invalidatedPaths: event.affectedPaths,
+        }),
+      });
+
+      const result = await manager.onCommit({
+        table: 'users',
+        partition: 'year=2024',
+        snapshotId: 'snap_001',
+        affectedPaths: ['data/users/year=2024/block_001.parquet'],
+        timestamp: Date.now(),
+        operation: 'write',
+      });
+
+      // Result should include snapshot info for readers to update their cache keys
+      expect(result.snapshotVersion).toBe('snap_001');
+      expect(result.table).toBe('users');
+      expect(result.partition).toBe('year=2024');
+    });
+  });
 });

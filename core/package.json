@@ -73,6 +73,10 @@
     "./logging": {
       "types": "./dist/logging/index.d.ts",
       "import": "./dist/logging/index.js"
+    },
+    "./tracing": {
+      "types": "./dist/tracing/index.d.ts",
+      "import": "./dist/tracing/index.js"
     }
   },
   "files": [

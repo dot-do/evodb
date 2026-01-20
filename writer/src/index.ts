@@ -79,6 +79,8 @@ export {
   MultiTableBuffer,
   BackpressureController,
   SizeBasedBuffer,
+  BufferOverflowError,
+  DEFAULT_MAX_BUFFER_SIZE,
   type BufferOptions,
 } from './buffer.js';
 

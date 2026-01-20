@@ -10,9 +10,180 @@
  * - Use `isValidBlockData` for fast boolean checks without error details
  * - Use `validateBlockData` when you need detailed error information
  * - TextDecoder is reused to avoid allocation overhead
+ * - Block size validation happens BEFORE JSON parsing to prevent DoS
  */
 
 import type { ColumnType } from './types.js';
+
+// =============================================================================
+// Block Size Validation Constants and Types
+// =============================================================================
+
+/**
+ * Default maximum block size in bytes (128MB).
+ *
+ * This limit protects against memory exhaustion from oversized blocks.
+ * Can be overridden via BlockSizeValidationOptions.maxBlockSize.
+ */
+export const DEFAULT_MAX_BLOCK_SIZE = 128 * 1024 * 1024; // 128MB
+
+/**
+ * Error codes for block size validation failures.
+ */
+export enum BlockSizeValidationErrorCode {
+  /** Block size exceeds the configured maximum */
+  BLOCK_TOO_LARGE = 'BLOCK_TOO_LARGE',
+  /** Block size is negative (invalid) */
+  NEGATIVE_SIZE = 'NEGATIVE_SIZE',
+  /** Block is empty and rejectEmpty option is true */
+  EMPTY_BLOCK = 'EMPTY_BLOCK',
+}
+
+/**
+ * Error details for block size validation failures.
+ */
+export interface BlockSizeValidationErrorDetails {
+  /** The actual size of the block in bytes */
+  actualSize?: number;
+  /** The maximum allowed size in bytes */
+  maxSize?: number;
+}
+
+/**
+ * Error thrown when block size validation fails.
+ *
+ * Provides detailed information about the validation failure including:
+ * - Human-readable error message with sizes in appropriate units
+ * - Block path for identifying the problematic file
+ * - Error code for programmatic handling
+ * - Size details for debugging
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   validateBlockSize(buffer.byteLength, 'blocks/001.json');
+ * } catch (error) {
+ *   if (error instanceof BlockSizeValidationError) {
+ *     console.error(`Block too large: ${error.details?.actualSize} bytes`);
+ *     console.error(`Max allowed: ${error.details?.maxSize} bytes`);
+ *   }
+ * }
+ * ```
+ */
+export class BlockSizeValidationError extends Error {
+  public readonly code: BlockSizeValidationErrorCode;
+
+  constructor(
+    message: string,
+    public readonly blockPath: string,
+    code: BlockSizeValidationErrorCode,
+    public readonly details?: BlockSizeValidationErrorDetails
+  ) {
+    super(message);
+    this.name = 'BlockSizeValidationError';
+    this.code = code;
+  }
+}
+
+/**
+ * Type guard to check if an error is a BlockSizeValidationError.
+ */
+export function isBlockSizeValidationError(error: unknown): error is BlockSizeValidationError {
+  return error instanceof BlockSizeValidationError;
+}
+
+/**
+ * Options for block size validation.
+ */
+export interface BlockSizeValidationOptions {
+  /** Maximum allowed block size in bytes. Defaults to DEFAULT_MAX_BLOCK_SIZE. */
+  maxBlockSize?: number;
+  /** Whether to reject empty (0-byte) blocks. Defaults to false. */
+  rejectEmpty?: boolean;
+}
+
+/**
+ * Format bytes into a human-readable string (e.g., "128 MB", "1.5 GB").
+ */
+function formatBytes(bytes: number): string {
+  if (bytes < 0) return `${bytes} bytes`;
+  if (bytes === 0) return '0 bytes';
+
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+  const base = 1024;
+
+  // Find the appropriate unit
+  let unitIndex = 0;
+  let value = bytes;
+  while (value >= base && unitIndex < units.length - 1) {
+    value /= base;
+    unitIndex++;
+  }
+
+  // Format with appropriate precision
+  if (unitIndex === 0) {
+    return `${value} ${units[unitIndex]}`;
+  }
+  return `${value.toFixed(2)} ${units[unitIndex]}`;
+}
+
+/**
+ * Validates that a block size is within acceptable limits.
+ *
+ * This function should be called BEFORE attempting to parse JSON content
+ * to prevent memory exhaustion from oversized blocks.
+ *
+ * @param size - The size of the block in bytes
+ * @param blockPath - Path to the block file (for error messages)
+ * @param options - Optional validation options
+ * @throws BlockSizeValidationError if the size exceeds limits
+ *
+ * @example
+ * ```typescript
+ * const buffer = await r2Object.arrayBuffer();
+ * validateBlockSize(buffer.byteLength, 'blocks/001.json');
+ * // Now safe to parse JSON
+ * const data = JSON.parse(decoder.decode(buffer));
+ * ```
+ */
+export function validateBlockSize(
+  size: number,
+  blockPath: string,
+  options?: BlockSizeValidationOptions
+): void {
+  const maxSize = options?.maxBlockSize ?? DEFAULT_MAX_BLOCK_SIZE;
+  const rejectEmpty = options?.rejectEmpty ?? false;
+
+  // Check for negative size (invalid)
+  if (size < 0) {
+    throw new BlockSizeValidationError(
+      `Invalid block size in '${blockPath}': size cannot be negative (${size} bytes)`,
+      blockPath,
+      BlockSizeValidationErrorCode.NEGATIVE_SIZE,
+      { actualSize: size, maxSize }
+    );
+  }
+
+  // Check for empty blocks if configured
+  if (size === 0 && rejectEmpty) {
+    throw new BlockSizeValidationError(
+      `Empty block '${blockPath}': block has 0 bytes`,
+      blockPath,
+      BlockSizeValidationErrorCode.EMPTY_BLOCK,
+      { actualSize: 0, maxSize }
+    );
+  }
+
+  // Check if size exceeds maximum
+  if (size > maxSize) {
+    throw new BlockSizeValidationError(
+      `Block size exceeds limit in '${blockPath}': ${formatBytes(size)} exceeds maximum of ${formatBytes(maxSize)}`,
+      blockPath,
+      BlockSizeValidationErrorCode.BLOCK_TOO_LARGE,
+      { actualSize: size, maxSize }
+    );
+  }
+}
 
 // =============================================================================
 // Validation Error Details Types
@@ -306,21 +477,38 @@ export function validateBlockData(data: unknown, blockPath: string): BlockDataVa
  * It provides descriptive error messages for both JSON syntax errors and
  * structure validation errors.
  *
+ * **DoS Protection**: When maxBlockSize is provided, the buffer size is checked
+ * BEFORE attempting to parse JSON. This prevents memory exhaustion from
+ * attackers providing oversized blocks.
+ *
  * @param buffer - Raw bytes to parse (from R2 or cache)
  * @param blockPath - Path to the block file (for error messages)
+ * @param options - Optional validation options including maxBlockSize
  * @returns Validated BlockData with row count
+ * @throws BlockSizeValidationError if block exceeds size limits
  * @throws BlockDataValidationError if parsing or validation fails
  *
  * @example
  * ```typescript
  * const buffer = await r2Object.arrayBuffer();
- * const { data, rowCount } = parseAndValidateBlockData(buffer, 'blocks/001.json');
+ * const { data, rowCount } = parseAndValidateBlockData(
+ *   buffer,
+ *   'blocks/001.json',
+ *   { maxBlockSize: 100 * 1024 * 1024 } // 100MB limit
+ * );
  * ```
  */
 export function parseAndValidateBlockData(
   buffer: ArrayBuffer,
-  blockPath: string
+  blockPath: string,
+  options?: BlockSizeValidationOptions
 ): BlockDataValidationResult {
+  // CRITICAL: Check block size BEFORE attempting JSON parse to prevent DoS
+  // This must happen first to avoid memory exhaustion from large blocks
+  if (options?.maxBlockSize !== undefined) {
+    validateBlockSize(buffer.byteLength, blockPath, options);
+  }
+
   const text = sharedDecoder.decode(buffer);
 
   // Parse JSON with descriptive error wrapping

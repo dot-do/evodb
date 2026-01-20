@@ -4,7 +4,7 @@
  * Verifies shared filter, sort, and aggregation logic.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   evaluateFilter,
   evaluateFilters,
@@ -17,6 +17,7 @@ import {
   likePatternToRegex,
   getNestedValue,
   setNestedValue,
+  validateColumnName,
   type FilterPredicate,
   type SortSpec,
   type AggregateSpec,
@@ -388,5 +389,117 @@ describe('setNestedValue', () => {
     const obj: Record<string, unknown> = {};
     setNestedValue(obj, 'a.b', 5);
     expect(obj['a.b']).toBe(5);
+  });
+});
+
+// =============================================================================
+// Column Name Validation Tests (Security)
+// =============================================================================
+
+describe('validateColumnName', () => {
+  describe('valid column names', () => {
+    it('should accept simple alphanumeric names', () => {
+      expect(() => validateColumnName('name')).not.toThrow();
+      expect(() => validateColumnName('user_id')).not.toThrow();
+      expect(() => validateColumnName('Column1')).not.toThrow();
+      expect(() => validateColumnName('a')).not.toThrow();
+    });
+
+    it('should accept underscores', () => {
+      expect(() => validateColumnName('first_name')).not.toThrow();
+      expect(() => validateColumnName('_private')).not.toThrow();
+      expect(() => validateColumnName('some__double')).not.toThrow();
+    });
+
+    it('should accept dots for nested paths', () => {
+      expect(() => validateColumnName('user.name')).not.toThrow();
+      expect(() => validateColumnName('address.city.zip')).not.toThrow();
+      expect(() => validateColumnName('data.items.0.value')).not.toThrow();
+    });
+
+    it('should accept numeric characters (not at start)', () => {
+      expect(() => validateColumnName('column1')).not.toThrow();
+      expect(() => validateColumnName('item_2')).not.toThrow();
+      expect(() => validateColumnName('data.items.123')).not.toThrow();
+    });
+  });
+
+  describe('malicious column names (injection prevention)', () => {
+    it('should reject SQL injection attempts', () => {
+      expect(() => validateColumnName("'; DROP TABLE users; --")).toThrow();
+      expect(() => validateColumnName('column; DELETE FROM')).toThrow();
+      expect(() => validateColumnName("name' OR '1'='1")).toThrow();
+      expect(() => validateColumnName('id UNION SELECT * FROM passwords')).toThrow();
+    });
+
+    it('should reject special characters used in injection', () => {
+      expect(() => validateColumnName("column'")).toThrow();
+      expect(() => validateColumnName('column"')).toThrow();
+      expect(() => validateColumnName('column;')).toThrow();
+      expect(() => validateColumnName('column--')).toThrow();
+      expect(() => validateColumnName('column/*')).toThrow();
+      expect(() => validateColumnName('column*/')).toThrow();
+    });
+
+    it('should reject parentheses (function injection)', () => {
+      expect(() => validateColumnName('COUNT(*)')).toThrow();
+      expect(() => validateColumnName('column()')).toThrow();
+      expect(() => validateColumnName('SLEEP(5)')).toThrow();
+    });
+
+    it('should reject whitespace', () => {
+      expect(() => validateColumnName('col umn')).toThrow();
+      expect(() => validateColumnName(' column')).toThrow();
+      expect(() => validateColumnName('column ')).toThrow();
+      expect(() => validateColumnName('col\tumn')).toThrow();
+      expect(() => validateColumnName('col\numn')).toThrow();
+    });
+
+    it('should reject empty or invalid strings', () => {
+      expect(() => validateColumnName('')).toThrow();
+      expect(() => validateColumnName('.')).toThrow();
+      expect(() => validateColumnName('..')).toThrow();
+      expect(() => validateColumnName('.column')).toThrow();
+      expect(() => validateColumnName('column.')).toThrow();
+    });
+
+    it('should reject path traversal attempts', () => {
+      expect(() => validateColumnName('../etc/passwd')).toThrow();
+      expect(() => validateColumnName('..\\windows')).toThrow();
+    });
+
+    it('should reject control characters', () => {
+      expect(() => validateColumnName('col\x00umn')).toThrow();
+      expect(() => validateColumnName('col\x1fumn')).toThrow();
+    });
+  });
+});
+
+describe('evaluateFilters with column validation', () => {
+  it('should throw on malicious column names in filters', () => {
+    const maliciousFilter: FilterPredicate = {
+      column: "'; DROP TABLE users; --",
+      operator: 'eq',
+      value: 'test',
+    };
+    expect(() => evaluateFilters({ name: 'test' }, [maliciousFilter])).toThrow();
+  });
+
+  it('should throw on injection attempts via nested path', () => {
+    const maliciousFilter: FilterPredicate = {
+      column: 'user.name; DELETE FROM',
+      operator: 'eq',
+      value: 'test',
+    };
+    expect(() => evaluateFilters({ user: { name: 'test' } }, [maliciousFilter])).toThrow();
+  });
+
+  it('should allow valid column names in filters', () => {
+    const validFilter: FilterPredicate = {
+      column: 'user.first_name',
+      operator: 'eq',
+      value: 'Alice',
+    };
+    expect(() => evaluateFilters({ 'user.first_name': 'Alice' }, [validFilter])).not.toThrow();
   });
 });

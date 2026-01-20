@@ -34,7 +34,9 @@
   "dependencies": {
     "@evodb/core": "workspace:*",
     "@evodb/lakehouse": "workspace:*",
+    "@evodb/query": "workspace:*",
     "@evodb/reader": "workspace:*",
+    "@evodb/rpc": "workspace:*",
     "@evodb/writer": "workspace:*"
   },
   "devDependencies": {

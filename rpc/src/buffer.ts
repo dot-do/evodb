@@ -21,6 +21,15 @@ import {
   BufferOverflowError,
   generateBatchId,
 } from './types.js';
+import {
+  BUFFER_CRITICAL_THRESHOLD,
+  BUFFER_TARGET_UTILIZATION,
+  WAL_ENTRY_BASE_OVERHEAD_BYTES,
+  BINARY_OVERHEAD_MULTIPLIER,
+  DEFAULT_DEDUP_WINDOW_MS,
+  DEFAULT_DEDUP_MAX_ENTRIES_PER_SOURCE,
+  DEFAULT_DEDUP_MAX_SOURCES,
+} from '@evodb/core';
 
 // =============================================================================
 // Backpressure Controller
@@ -133,9 +142,9 @@ export interface DedupConfig {
  * Default deduplication configuration
  */
 export const DEFAULT_DEDUP_CONFIG: DedupConfig = {
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  maxEntriesPerSource: 10000,
-  maxSources: 1000,
+  windowMs: DEFAULT_DEDUP_WINDOW_MS, // 5 minutes
+  maxEntriesPerSource: DEFAULT_DEDUP_MAX_ENTRIES_PER_SOURCE,
+  maxSources: DEFAULT_DEDUP_MAX_SOURCES,
 };
 
 /**
@@ -981,11 +990,8 @@ export class CDCBufferManager {
    * @returns Number of entries dropped
    */
   dropOldestOnCritical(): number {
-    const criticalThreshold = 0.95;
-    const targetUtilization = 0.8;
-
     const currentUtilization = this.totalSizeBytes / this.config.maxBufferSize;
-    if (currentUtilization < criticalThreshold) {
+    if (currentUtilization < BUFFER_CRITICAL_THRESHOLD) {
       return 0;
     }
 
@@ -995,7 +1001,7 @@ export class CDCBufferManager {
       .sort((a, b) => a.receivedAt - b.receivedAt);
 
     let dropped = 0;
-    const targetBytes = this.config.maxBufferSize * targetUtilization;
+    const targetBytes = this.config.maxBufferSize * BUFFER_TARGET_UTILIZATION;
 
     for (const batch of sortedBatches) {
       if (this.totalSizeBytes <= targetBytes) {
@@ -1111,10 +1117,10 @@ export class CDCBufferManager {
    * Estimate the size of a batch in bytes
    */
   private estimateBatchSize(entries: WalEntry[]): number {
-    // Rough estimate: JSON size * 1.1 for binary overhead
+    // Rough estimate: JSON size * BINARY_OVERHEAD_MULTIPLIER for binary overhead
     let size = 0;
     for (const entry of entries) {
-      size += 100; // Base overhead per entry
+      size += WAL_ENTRY_BASE_OVERHEAD_BYTES; // Base overhead per entry
       size += entry.table.length * 2;
       size += entry.rowId.length * 2;
       if (entry.before) {
@@ -1124,7 +1130,7 @@ export class CDCBufferManager {
         size += JSON.stringify(entry.after).length;
       }
     }
-    return Math.ceil(size * 1.1);
+    return Math.ceil(size * BINARY_OVERHEAD_MULTIPLIER);
   }
 
   /**

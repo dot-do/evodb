@@ -78,8 +78,30 @@ interface PendingBatch {
 
 type EventHandler<T = unknown> = (data: T) => void;
 
+/**
+ * Callback for handling errors thrown by event handlers.
+ * Receives the event name and the error that was thrown.
+ */
+export type OnHandlerErrorCallback = (event: string, error: Error) => void;
+
+/**
+ * Configuration for EventEmitter
+ */
+export interface EventEmitterConfig {
+  /**
+   * Optional callback for custom error handling when event handlers throw.
+   * If not provided, errors are only logged to console.error.
+   */
+  onHandlerError?: OnHandlerErrorCallback;
+}
+
 class EventEmitter {
   private handlers: Map<string, Set<EventHandler>> = new Map();
+  protected onHandlerError?: OnHandlerErrorCallback;
+
+  constructor(config?: EventEmitterConfig) {
+    this.onHandlerError = config?.onHandlerError;
+  }
 
   on<T>(event: string, handler: EventHandler<T>): void {
     let set = this.handlers.get(event);
@@ -103,8 +125,20 @@ class EventEmitter {
       for (const handler of set) {
         try {
           handler(data);
-        } catch {
-          // Ignore handler errors
+        } catch (error) {
+          // Log the error with context about which event handler failed
+          const err = error instanceof Error ? error : new Error(String(error));
+          console.error(`EventEmitter: error in '${event}' event handler`, err);
+
+          // Call custom error handler if provided
+          if (this.onHandlerError) {
+            try {
+              this.onHandlerError(event, err);
+            } catch {
+              // Prevent infinite loops if error handler also throws
+              console.error('EventEmitter: error in onHandlerError callback');
+            }
+          }
         }
       }
     }
@@ -144,7 +178,7 @@ export class LakehouseRpcClient extends EventEmitter {
     config: Partial<ChildConfig> = {},
     sourceShardName?: string
   ) {
-    super();
+    super({ onHandlerError: config.onHandlerError });
     this.sourceDoId = sourceDoId;
     this.sourceShardName = sourceShardName;
     this.config = { ...DEFAULT_CHILD_CONFIG, ...config };
@@ -753,6 +787,27 @@ export function createRpcClient(
 // =============================================================================
 
 /**
+ * Pending batch expiration event
+ */
+export interface PendingBatchExpiredEvent {
+  sequenceNumber: number;
+  reason: 'ttl_expired' | 'max_pending_exceeded';
+  entries: WalEntry[];
+  sentAt: number;
+}
+
+/**
+ * Pending batches statistics
+ */
+export interface PendingBatchesStats {
+  count: number;
+  totalEntries: number;
+  oldestAgeMs: number;
+  ttlMs: number;
+  maxBatches: number;
+}
+
+/**
  * Configuration for EvoDBRpcClient
  */
 export interface EvoDBRpcClientConfig {
@@ -767,10 +822,20 @@ export interface EvoDBRpcClientConfig {
   maxReconnectAttempts?: number;
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
+  /** Maximum number of pending batches (prevents unbounded growth) */
+  maxPendingBatches?: number;
+  /** TTL for pending batches in milliseconds */
+  pendingBatchTtlMs?: number;
+  /** Interval for automatic pending batch cleanup in milliseconds */
+  pendingBatchCleanupIntervalMs?: number;
   connect?: () => Promise<void>;
   send?: (data: { batch: WalEntry[]; sequenceNumber: number; isRetry: boolean }) => void;
   onDisconnect?: (event: { code: number; reason?: string }) => void;
   onReconnectFailed?: (event: { attempts: number }) => void;
+  /** Callback when a pending batch expires due to TTL */
+  onPendingBatchExpired?: (event: PendingBatchExpiredEvent) => void;
+  /** Callback when a pending batch is evicted due to max limit */
+  onPendingBatchEvicted?: (event: PendingBatchExpiredEvent) => void;
 }
 
 /**
@@ -780,6 +845,10 @@ interface EvoDBPendingBatch {
   entries: WalEntry[];
   sequenceNumber: number;
   sentAt: number;
+  /** Promise resolve callback (optional, for promise-based tracking) */
+  resolve?: (value: unknown) => void;
+  /** Promise reject callback (optional, for promise-based tracking) */
+  reject?: (error: Error) => void;
 }
 
 /**
@@ -802,6 +871,9 @@ export class EvoDBRpcClient {
   private disconnectReasonValue: string | undefined;
   private handshakeResolver: ((status: unknown) => void) | null = null;
   private handshakeRejecter: ((error: Error) => void) | null = null;
+  private handshakeTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  private handshakePromise: Promise<unknown> | null = null;
+  private pendingBatchCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: EvoDBRpcClientConfig) {
     this.config = {
@@ -815,6 +887,9 @@ export class EvoDBRpcClient {
       maxReconnectAttempts: 10,
       heartbeatIntervalMs: 30000,
       heartbeatTimeoutMs: 10000,
+      maxPendingBatches: 100, // Prevent unbounded growth
+      pendingBatchTtlMs: 30000, // 30 second TTL
+      pendingBatchCleanupIntervalMs: 5000, // Cleanup every 5 seconds
       ...config,
     };
   }
@@ -884,12 +959,29 @@ export class EvoDBRpcClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    // Stop pending batch cleanup timer
+    this.stopPendingBatchCleanup();
+    // Reject all pending batches on disconnect and clear the map
+    for (const batch of this.pendingBatchesMap.values()) {
+      if (batch.reject) {
+        batch.reject(new Error('Client disconnected'));
+      }
+    }
+    this.pendingBatchesMap.clear();
   }
 
   /**
    * Initiate handshake with server
+   *
+   * Guards against WebSocket being in invalid state (CLOSING or CLOSED).
    */
   async initiateHandshake(ws: { send: (data: string) => void; readyState: number }): Promise<void> {
+    // Guard: Check WebSocket is in OPEN state (readyState === 1)
+    if (ws.readyState !== 1) {
+      // WebSocket not open, skip handshake silently
+      return;
+    }
+
     const connectMessage = {
       type: 'connect',
       protocolVersion: 1,
@@ -901,26 +993,75 @@ export class EvoDBRpcClient {
         batching: true,
       },
     };
-    ws.send(JSON.stringify(connectMessage));
+
+    try {
+      ws.send(JSON.stringify(connectMessage));
+    } catch {
+      // Guard: WebSocket may have closed between readyState check and send
+      // Silently ignore - the close handler will deal with reconnection
+    }
   }
 
   /**
    * Wait for handshake response
+   *
+   * Stores timeout timer reference for cleanup on close.
+   * The promise is stored internally with a no-op catch handler to prevent
+   * Node.js from detecting unhandled rejections when clearHandshakeState
+   * rejects the promise.
    */
   waitForHandshakeResponse(): Promise<unknown> {
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       this.handshakeResolver = resolve;
       this.handshakeRejecter = reject;
 
-      // Set timeout
-      setTimeout(() => {
+      // Set timeout (store reference for cleanup)
+      this.handshakeTimeoutTimer = setTimeout(() => {
         if (this.handshakeRejecter) {
           this.handshakeRejecter(new Error('Handshake timeout'));
           this.handshakeResolver = null;
           this.handshakeRejecter = null;
+          this.handshakeTimeoutTimer = null;
+          this.handshakePromise = null;
         }
       }, this.config.handshakeTimeoutMs);
     });
+
+    // Store the promise and add a no-op catch handler to prevent
+    // "unhandled rejection" warnings. The actual error will still
+    // propagate to callers who await this promise.
+    this.handshakePromise = promise;
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    promise.catch(() => {});
+
+    return promise;
+  }
+
+  /**
+   * Clear pending handshake state
+   *
+   * Called on close to prevent unhandled rejections from timeout firing
+   * after connection is already closed.
+   *
+   * The handshake promise has a no-op catch handler attached (see waitForHandshakeResponse),
+   * so we can safely reject it synchronously without triggering unhandled rejection warnings.
+   */
+  private clearHandshakeState(): void {
+    if (this.handshakeTimeoutTimer) {
+      clearTimeout(this.handshakeTimeoutTimer);
+      this.handshakeTimeoutTimer = null;
+    }
+    // Capture and clear rejecter reference before invoking to prevent double-handling
+    const rejecter = this.handshakeRejecter;
+    this.handshakeResolver = null;
+    this.handshakeRejecter = null;
+    this.handshakePromise = null;
+
+    if (rejecter) {
+      // Safe to reject synchronously because waitForHandshakeResponse attaches
+      // a no-op catch handler to prevent unhandled rejection warnings
+      rejecter(new Error('Connection closed during handshake'));
+    }
   }
 
   /**
@@ -992,6 +1133,8 @@ export class EvoDBRpcClient {
 
   /**
    * Handle WebSocket close
+   *
+   * Cleans up all pending state to prevent race conditions and unhandled rejections.
    */
   handleClose(event: { code: number; reason?: string }): void {
     this.state = 'disconnected';
@@ -1001,6 +1144,9 @@ export class EvoDBRpcClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+
+    // Clear any pending handshake to prevent unhandled rejections
+    this.clearHandshakeState();
 
     // Call disconnect callback
     if (this.config.onDisconnect) {
@@ -1070,13 +1216,86 @@ export class EvoDBRpcClient {
 
   /**
    * Queue a pending batch for tracking
+   *
+   * Enforces maxPendingBatches limit by evicting oldest batch when limit is reached.
+   * Also cleans up expired batches on each queue operation to prevent unbounded growth.
    */
   queuePendingBatch(entries: WalEntry[], sequenceNumber: number): void {
+    // Clean up expired batches first to prevent unbounded growth
+    this.cleanupExpiredPendingBatches();
+
+    // Enforce maxPendingBatches limit with eviction
+    const maxPending = this.config.maxPendingBatches ?? 100;
+    if (this.pendingBatchesMap.size >= maxPending) {
+      // Evict the oldest batch (lowest sentAt time)
+      this.evictOldestPendingBatch();
+    }
+
     this.pendingBatchesMap.set(sequenceNumber, {
       entries,
       sequenceNumber,
       sentAt: Date.now(),
     });
+  }
+
+  /**
+   * Queue a pending batch with promise tracking
+   *
+   * Returns a promise that resolves when the batch is acknowledged,
+   * or rejects if the batch is evicted or expires due to TTL.
+   */
+  queuePendingBatchWithPromise(entries: WalEntry[], sequenceNumber: number): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      // Enforce maxPendingBatches limit with eviction
+      const maxPending = this.config.maxPendingBatches ?? 100;
+      if (this.pendingBatchesMap.size >= maxPending) {
+        // Evict the oldest batch (lowest sentAt time)
+        this.evictOldestPendingBatch();
+      }
+
+      this.pendingBatchesMap.set(sequenceNumber, {
+        entries,
+        sequenceNumber,
+        sentAt: Date.now(),
+        resolve,
+        reject,
+      });
+    });
+  }
+
+  /**
+   * Evict the oldest pending batch (called when maxPendingBatches limit is reached)
+   */
+  private evictOldestPendingBatch(): void {
+    let oldestSeq: number | null = null;
+    let oldestTime = Infinity;
+
+    for (const [seq, batch] of this.pendingBatchesMap) {
+      if (batch.sentAt < oldestTime) {
+        oldestTime = batch.sentAt;
+        oldestSeq = seq;
+      }
+    }
+
+    if (oldestSeq !== null) {
+      const batch = this.pendingBatchesMap.get(oldestSeq);
+      if (batch) {
+        // Call eviction callback
+        if (this.config.onPendingBatchEvicted) {
+          this.config.onPendingBatchEvicted({
+            sequenceNumber: batch.sequenceNumber,
+            reason: 'max_pending_exceeded',
+            entries: batch.entries,
+            sentAt: batch.sentAt,
+          });
+        }
+        // Reject promise if tracked
+        if (batch.reject) {
+          batch.reject(new Error('Pending batch evicted due to max limit'));
+        }
+        this.pendingBatchesMap.delete(oldestSeq);
+      }
+    }
   }
 
   /**
@@ -1088,15 +1307,24 @@ export class EvoDBRpcClient {
 
   /**
    * Resend all pending batches
+   *
+   * Guards against errors during send (e.g., WebSocket closed).
+   * Individual batch send failures are logged but do not stop the resend loop.
    */
   async resendPendingBatches(): Promise<void> {
     if (this.config.send) {
       for (const [seqNum, batch] of this.pendingBatchesMap) {
-        this.config.send({
-          batch: batch.entries,
-          sequenceNumber: seqNum,
-          isRetry: true,
-        });
+        try {
+          this.config.send({
+            batch: batch.entries,
+            sequenceNumber: seqNum,
+            isRetry: true,
+          });
+        } catch {
+          // Guard: send function may throw if WebSocket is closed
+          // Continue attempting to send other batches - they may succeed
+          // after a reconnection or the pending batches can be retried later
+        }
       }
     }
   }
@@ -1121,9 +1349,109 @@ export class EvoDBRpcClient {
 
   /**
    * Send a batch of entries
+   *
+   * Guards against null WebSocket state - rejects if not connected.
    */
   async sendBatch(_entries: WalEntry[]): Promise<{ status: string }> {
+    // Guard: Check connection state before attempting to send
+    if (!this.isConnected()) {
+      throw new Error('Not connected');
+    }
+
     // Simplified implementation for integration tests
     return { status: 'ok' };
+  }
+
+  /**
+   * Stop the pending batch cleanup timer
+   *
+   * Called during disconnect to prevent cleanup operations on disconnected state.
+   */
+  stopPendingBatchCleanup(): void {
+    if (this.pendingBatchCleanupTimer) {
+      clearInterval(this.pendingBatchCleanupTimer);
+      this.pendingBatchCleanupTimer = null;
+    }
+  }
+
+  /**
+   * Clean up pending batches that have exceeded the TTL
+   *
+   * This method removes batches older than pendingBatchTtlMs, calling
+   * the onPendingBatchExpired callback and rejecting any tracked promises.
+   */
+  cleanupExpiredPendingBatches(): void {
+    const now = Date.now();
+    const ttlMs = this.config.pendingBatchTtlMs ?? 30000;
+
+    const expiredSeqs: number[] = [];
+
+    for (const [seq, batch] of this.pendingBatchesMap) {
+      const age = now - batch.sentAt;
+      if (age >= ttlMs) {
+        expiredSeqs.push(seq);
+      }
+    }
+
+    for (const seq of expiredSeqs) {
+      const batch = this.pendingBatchesMap.get(seq);
+      if (batch) {
+        // Call expiration callback
+        if (this.config.onPendingBatchExpired) {
+          this.config.onPendingBatchExpired({
+            sequenceNumber: batch.sequenceNumber,
+            reason: 'ttl_expired',
+            entries: batch.entries,
+            sentAt: batch.sentAt,
+          });
+        }
+        // Reject promise if tracked
+        if (batch.reject) {
+          batch.reject(new Error('Pending batch expired due to TTL'));
+        }
+        this.pendingBatchesMap.delete(seq);
+      }
+    }
+  }
+
+  /**
+   * Start automatic pending batch cleanup on an interval
+   *
+   * This starts a timer that periodically calls cleanupExpiredPendingBatches.
+   */
+  startPendingBatchCleanup(): void {
+    this.stopPendingBatchCleanup();
+
+    const intervalMs = this.config.pendingBatchCleanupIntervalMs ?? 5000;
+    this.pendingBatchCleanupTimer = setInterval(() => {
+      this.cleanupExpiredPendingBatches();
+    }, intervalMs);
+  }
+
+  /**
+   * Get statistics about pending batches
+   *
+   * Returns count, total entries, oldest age, TTL, and max batches configuration.
+   */
+  getPendingBatchesStats(): PendingBatchesStats {
+    const now = Date.now();
+    let totalEntries = 0;
+    let oldestAgeMs = 0;
+
+    for (const batch of this.pendingBatchesMap.values()) {
+      totalEntries += batch.entries.length;
+      const age = now - batch.sentAt;
+      if (age > oldestAgeMs) {
+        oldestAgeMs = age;
+      }
+    }
+
+    return {
+      count: this.pendingBatchesMap.size,
+      totalEntries,
+      oldestAgeMs,
+      ttlMs: this.config.pendingBatchTtlMs ?? 30000,
+      maxBatches: this.config.maxPendingBatches ?? 100,
+    };
   }
 }

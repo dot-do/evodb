@@ -534,6 +534,18 @@ export interface ChildConfig {
 
   /** Heartbeat interval (ms) */
   heartbeatIntervalMs: number;
+
+  /** Maximum number of pending batches awaiting acknowledgment (prevents unbounded growth) */
+  maxPendingBatches: number;
+
+  /** TTL for pending batches in milliseconds (batches older than this are cleaned up) */
+  pendingBatchTtlMs: number;
+
+  /** Interval for automatic pending batch cleanup in milliseconds */
+  pendingBatchCleanupIntervalMs: number;
+
+  /** Optional callback for custom error handling when event handlers throw */
+  onHandlerError?: (event: string, error: Error) => void;
 }
 
 /**
@@ -552,6 +564,9 @@ export const DEFAULT_CHILD_CONFIG: ChildConfig = {
   reconnectDelayMs: 1000,
   maxReconnectAttempts: 10,
   heartbeatIntervalMs: 30_000, // 30 seconds
+  maxPendingBatches: 100, // Prevent unbounded growth
+  pendingBatchTtlMs: 30_000, // 30 seconds TTL for pending batches
+  pendingBatchCleanupIntervalMs: 5_000, // Cleanup every 5 seconds
 };
 
 // =============================================================================

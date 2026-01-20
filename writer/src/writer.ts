@@ -15,6 +15,11 @@
  */
 
 import type { WalEntry } from '@evodb/core';
+import {
+  PENDING_BLOCK_RETRY_INTERVAL_MS,
+  COMPACTION_CHECK_INTERVAL_MS,
+  MAX_DURATION_HISTORY,
+} from '@evodb/core';
 import type {
   WriterOptions,
   FlushResult,
@@ -310,7 +315,7 @@ export class LakehouseWriter {
       this.flushDurations.push(durationMs);
 
       // Keep only last 100 durations for average calculation
-      if (this.flushDurations.length > 100) {
+      if (this.flushDurations.length > MAX_DURATION_HISTORY) {
         this.flushDurations.shift();
       }
 
@@ -470,7 +475,7 @@ export class LakehouseWriter {
       this.lastCompactTime = Date.now();
       this.compactDurations.push(durationMs);
 
-      if (this.compactDurations.length > 100) {
+      if (this.compactDurations.length > MAX_DURATION_HISTORY) {
         this.compactDurations.shift();
       }
 
@@ -618,14 +623,14 @@ export class LakehouseWriter {
       return Date.now() + timeToFlush;
     }
 
-    // If pending blocks exist, retry every 30 seconds
+    // If pending blocks exist, retry periodically
     if (this.pendingBlocks.length > 0) {
-      return Date.now() + 30000;
+      return Date.now() + PENDING_BLOCK_RETRY_INTERVAL_MS;
     }
 
-    // If compaction might be needed, check every minute
+    // If compaction might be needed, check periodically
     if (this.blockIndex.length >= this.options.minCompactBlocks) {
-      return Date.now() + 60000;
+      return Date.now() + COMPACTION_CHECK_INTERVAL_MS;
     }
 
     // Default: no alarm needed

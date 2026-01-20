@@ -106,6 +106,8 @@ export {
   AggregationEngine,
   CacheManager,
   ResultProcessor,
+  // Error classes
+  MemoryLimitExceededError,
 } from './engine.js';
 
 // =============================================================================

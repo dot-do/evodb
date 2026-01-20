@@ -11,6 +11,56 @@ declare function encodeDeltaTypedArray(values: number[], type: Type): Uint8Array
 export { encodeDeltaTypedArray as encodeDelta };
 /** Decode column data */
 export declare function decode(encoded: EncodedColumn, rowCount: number): Column;
+
+// =============================================================================
+// SPARSE NULL BITMAP OPTIMIZATION (Issue: evodb-qp6)
+// =============================================================================
+
+/**
+ * Threshold for using sparse representation.
+ * If null rate is below this threshold, use SparseNullSet instead of full array.
+ */
+export declare const SPARSE_NULL_THRESHOLD: number;
+
+/**
+ * Sparse representation of null indices for columns with few nulls.
+ * Uses a Set internally for O(1) null checks with dramatically less memory for sparse data.
+ */
+export declare class SparseNullSet implements Iterable<boolean> {
+    constructor(nullIndices: Set<number>, totalCount: number);
+    /** Check if a specific index is null */
+    isNull(index: number): boolean;
+    /** Number of null values */
+    get nullCount(): number;
+    /** Total number of elements (including non-null) */
+    get totalCount(): number;
+    /** Alias for totalCount for array-like interface */
+    get length(): number;
+    /** Iterate over null indices only (efficient for sparse data) */
+    nullIndices(): Generator<number>;
+    /** Convert to full boolean array for compatibility */
+    toArray(): boolean[];
+    /** Iterable implementation for for...of loops */
+    [Symbol.iterator](): Generator<boolean>;
+}
+
+/**
+ * Unpack bitmap to sparse representation if null rate is below threshold.
+ * Returns SparseNullSet for sparse data, boolean[] for dense data.
+ */
+export declare function unpackBitsSparse(bytes: Uint8Array, count: number): SparseNullSet | boolean[];
+
+/**
+ * Check if bitmap represents all-null data.
+ * Early exits on first non-0xFF byte for efficiency.
+ */
+export declare function isAllNull(bytes: Uint8Array, count: number): boolean;
+
+/**
+ * Check if bitmap has no nulls.
+ * Early exits on first non-zero byte for efficiency.
+ */
+export declare function hasNoNulls(bytes: Uint8Array, count: number): boolean;
 /**
  * Fast decode options for snippet constraints
  */

@@ -154,6 +154,51 @@ describe('Unified Storage Interface', () => {
       it('should throw for non-existent key', async () => {
         await expect(storage.readRange('nonexistent', 0, 10)).rejects.toThrow('Object not found');
       });
+
+      // ==========================================================================
+      // Issue evodb-qpi: TDD bounds validation for readRange
+      // ==========================================================================
+
+      it('should throw for negative length', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        await storage.write('range-test.bin', data);
+
+        await expect(storage.readRange('range-test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+        await expect(storage.readRange('range-test.bin', 5, -5)).rejects.toThrow(/length.*negative|invalid.*length/i);
+      });
+
+      it('should throw for offset past end of data', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        await expect(storage.readRange('range-test.bin', 10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+        await expect(storage.readRange('range-test.bin', 5, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+
+      it('should throw for negative offset that resolves past start', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        // -10 on a 5-byte array would resolve to -5 (invalid)
+        await expect(storage.readRange('range-test.bin', -10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+
+      it('should handle edge case: reading from exact end with zero length', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+        await storage.write('range-test.bin', data);
+
+        // Reading 0 bytes from offset 5 (end of data) should return empty array
+        const result = await storage.readRange('range-test.bin', 5, 0);
+        expect(result.length).toBe(0);
+      });
+
+      it('should handle zero length gracefully', async () => {
+        const data = new Uint8Array([0, 1, 2, 3, 4]);
+        await storage.write('range-test.bin', data);
+
+        const result = await storage.readRange('range-test.bin', 2, 0);
+        expect(result.length).toBe(0);
+      });
     });
 
     describe('utility methods', () => {
@@ -281,6 +326,66 @@ describe('Storage Adapter Conversion', () => {
       // Unified Storage returns { paths: string[] }
       const result = await storage.list('data/');
       expect(result.paths).toEqual(['data/a.bin', 'data/b.bin']);
+    });
+
+    // ==========================================================================
+    // Issue evodb-qpi: TDD bounds validation for objectAdapterToStorage.readRange
+    // ==========================================================================
+
+    describe('readRange bounds validation', () => {
+      it('should throw for negative length', async () => {
+        const adapter = new MemoryObjectStorageAdapter();
+        await adapter.put('range-test.bin', new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        const storage = objectAdapterToStorage(adapter);
+
+        await expect(storage.readRange!('range-test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+      });
+
+      it('should throw for offset past end of data', async () => {
+        const adapter = new MemoryObjectStorageAdapter();
+        await adapter.put('range-test.bin', new Uint8Array([0, 1, 2, 3, 4]));
+        const storage = objectAdapterToStorage(adapter);
+
+        await expect(storage.readRange!('range-test.bin', 10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+
+      it('should throw for negative offset that resolves past start', async () => {
+        const adapter = new MemoryObjectStorageAdapter();
+        await adapter.put('range-test.bin', new Uint8Array([0, 1, 2, 3, 4]));
+        const storage = objectAdapterToStorage(adapter);
+
+        await expect(storage.readRange!('range-test.bin', -10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+      });
+    });
+  });
+
+  describe('storageToObjectAdapter getRange bounds validation', () => {
+    // ==========================================================================
+    // Issue evodb-qpi: TDD bounds validation for storageToObjectAdapter.getRange
+    // ==========================================================================
+
+    it('should throw for negative length', async () => {
+      const storage = new MemoryStorage();
+      await storage.write('range-test.bin', new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+      const adapter = storageToObjectAdapter(storage);
+
+      await expect(adapter.getRange!('range-test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+    });
+
+    it('should throw for offset past end of data', async () => {
+      const storage = new MemoryStorage();
+      await storage.write('range-test.bin', new Uint8Array([0, 1, 2, 3, 4]));
+      const adapter = storageToObjectAdapter(storage);
+
+      await expect(adapter.getRange!('range-test.bin', 10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
+    });
+
+    it('should throw for negative offset that resolves past start', async () => {
+      const storage = new MemoryStorage();
+      await storage.write('range-test.bin', new Uint8Array([0, 1, 2, 3, 4]));
+      const adapter = storageToObjectAdapter(storage);
+
+      await expect(adapter.getRange!('range-test.bin', -10, 1)).rejects.toThrow(/offset.*bounds|out of range/i);
     });
   });
 

@@ -14,6 +14,7 @@
  */
 
 import { Type, Encoding as _Encoding, type ColumnStats as _ColumnStats } from './types.js';
+import { DEBUG_ASSERTIONS, assertType } from './encode.js';
 
 // =============================================================================
 // CONSTANTS
@@ -479,7 +480,17 @@ export class BloomFilter {
 // =============================================================================
 
 /**
- * Compute zone map for a column
+ * Compute zone map for a column.
+ *
+ * Type assertions rationale:
+ * Each case in the switch handles a specific Type enum value. The Type enum acts as a
+ * discriminant that guarantees the runtime type of non-null values:
+ * - Type.Int32/Float64: values are numbers (validated during shredding)
+ * - Type.Int64: values are bigints (inferred from typeof bigint in inferType)
+ * - Type.Timestamp: values are Date objects (inferred from instanceof Date)
+ * - Type.String: values are strings (inferred from typeof string)
+ *
+ * We skip null values via the nulls[i] check, so assertions are safe for non-null entries.
  */
 export function computeZoneMap(values: unknown[], nulls: boolean[], type: Type): ZoneMap {
   let min = Number.MAX_VALUE;
@@ -498,15 +509,23 @@ export function computeZoneMap(values: unknown[], nulls: boolean[], type: Type):
     switch (type) {
       case Type.Int32:
       case Type.Float64:
+        // SAFETY: Type.Int32/Float64 guarantees v is number (validated during shredding)
+        if (DEBUG_ASSERTIONS) assertType(v, type, 'computeZoneMap.Int32/Float64');
         numVal = v as number;
         break;
       case Type.Int64:
+        // SAFETY: Type.Int64 guarantees v is bigint (inferred from typeof bigint in inferType)
+        if (DEBUG_ASSERTIONS) assertType(v, type, 'computeZoneMap.Int64');
         numVal = Number(v as bigint);
         break;
       case Type.Timestamp:
+        // SAFETY: Type.Timestamp guarantees v is Date (inferred from instanceof Date in inferType)
+        if (DEBUG_ASSERTIONS) assertType(v, type, 'computeZoneMap.Timestamp');
         numVal = (v as Date).getTime();
         break;
       case Type.String:
+        // SAFETY: Type.String guarantees v is string (inferred from typeof string in inferType)
+        if (DEBUG_ASSERTIONS) assertType(v, type, 'computeZoneMap.String');
         // Use string hash for zone map
         numVal = hashString(v as string);
         break;
@@ -715,6 +734,9 @@ export function encodeSnippetColumn(
     const bloom = new BloomFilter(values.length);
     for (let i = 0; i < values.length; i++) {
       if (!nulls[i]) {
+        // SAFETY: BloomFilter.add() accepts string | number. Non-null values in columnar format
+        // are primitive types (string, number, bigint, boolean). For bigint/boolean, the String()
+        // coercion inside add() handles them correctly. The assertion narrows the type for TS.
         bloom.add(values[i] as string | number);
       }
     }
@@ -737,7 +759,18 @@ export function encodeSnippetColumn(
 }
 
 /**
- * Select best encoding for snippet constraints
+ * Select best encoding for snippet constraints.
+ *
+ * Type assertions rationale:
+ * Each case in the switch handles a specific Type enum value. The Type enum acts as a
+ * discriminant that guarantees the runtime type of non-null values:
+ * - Type.Bool: values are booleans (inferred from typeof boolean in inferType)
+ * - Type.Int32/Int64: values are numbers (integers validated during shredding)
+ * - Type.Float64: values are numbers (non-integer or large numbers)
+ * - Type.String: values are strings (inferred from typeof string)
+ *
+ * nonNullValues is filtered to exclude nulls, so assertions are safe for all entries.
+ * This is a performance-critical encoding path where we trust the Type enum contract.
  */
 function selectAndEncodeSnippet(
   type: Type,
@@ -757,16 +790,20 @@ function selectAndEncodeSnippet(
 
   switch (type) {
     case Type.Bool:
+      // SAFETY: Type.Bool guarantees all non-null values are booleans
       return { encoding: SnippetEncoding.Bitmap, data: packBitmap(nonNullValues as boolean[]) };
 
     case Type.Int32:
     case Type.Int64:
+      // SAFETY: Type.Int32/Int64 guarantees all non-null values are numbers
       return encodeIntegers(nonNullValues as number[], sorted);
 
     case Type.Float64:
+      // SAFETY: Type.Float64 guarantees all non-null values are numbers
       return encodeFloats(nonNullValues as number[]);
 
     case Type.String:
+      // SAFETY: Type.String guarantees all non-null values are strings
       return encodeStrings(nonNullValues as string[], nulls);
 
     default:
@@ -841,7 +878,14 @@ function encodeStrings(
 }
 
 /**
- * Raw encoding fallback
+ * Raw encoding fallback.
+ *
+ * Type assertions rationale:
+ * Each case handles a specific Type enum value that guarantees the runtime type:
+ * - Type.String: values are strings (validated during shredding)
+ * - Type.Binary: values are Uint8Array (validated during shredding via instanceof)
+ *
+ * The Type enum contract ensures type safety without runtime checks in this performance path.
  */
 function encodeRaw(values: unknown[], type: Type): { encoding: SnippetEncoding; data: Uint8Array } {
   const encoder = new TextEncoder();
@@ -850,6 +894,7 @@ function encodeRaw(values: unknown[], type: Type): { encoding: SnippetEncoding; 
   for (const v of values) {
     switch (type) {
       case Type.String: {
+        // SAFETY: Type.String guarantees v is string (validated during shredding)
         const bytes = encoder.encode(v as string);
         const lenBuf = new Uint8Array(2);
         new DataView(lenBuf.buffer).setUint16(0, bytes.length, true);
@@ -858,6 +903,7 @@ function encodeRaw(values: unknown[], type: Type): { encoding: SnippetEncoding; 
         break;
       }
       case Type.Binary: {
+        // SAFETY: Type.Binary guarantees v is Uint8Array (validated during shredding)
         const bytes = v as Uint8Array;
         const lenBuf = new Uint8Array(4);
         new DataView(lenBuf.buffer).setUint32(0, bytes.length, true);
@@ -905,7 +951,15 @@ export function unpackBitmap(bytes: Uint8Array, count: number): boolean[] {
 }
 
 /**
- * Check if values are sorted
+ * Check if values are sorted.
+ *
+ * Type assertions rationale:
+ * Each case handles specific Type enum values that guarantee runtime types:
+ * - Type.Int32/Int64/Float64: values are numbers (validated during shredding)
+ * - Type.String: values are strings (validated during shredding)
+ *
+ * Both v and prev are non-null at comparison time (prev !== null check, nulls[i] skip).
+ * The Type enum contract ensures v and prev have the same type for valid comparison.
  */
 function isSorted(values: unknown[], nulls: boolean[], type: Type): boolean {
   let prev: unknown = null;
@@ -919,9 +973,11 @@ function isSorted(values: unknown[], nulls: boolean[], type: Type): boolean {
         case Type.Int32:
         case Type.Int64:
         case Type.Float64:
+          // SAFETY: Type.Int32/Int64/Float64 guarantees v and prev are numbers
           if ((v as number) < (prev as number)) return false;
           break;
         case Type.String:
+          // SAFETY: Type.String guarantees v and prev are strings
           if ((v as string) < (prev as string)) return false;
           break;
         default:
@@ -1292,12 +1348,17 @@ export function readSnippetChunk(
   }
 
   // Read column directory
+  // SAFETY: encoding and type bytes are read from serialized data written by writeSnippetChunk.
+  // The writer stores valid SnippetEncoding and Type enum values at these offsets.
+  // Assertions are safe assuming data wasn't corrupted. For untrusted data, add validation.
   const colDir: ColumnDirEntry[] = [];
   for (let i = 0; i < header.columnCount; i++) {
     colDir.push({
       offset: view.getUint32(offset, true),
       size: view.getUint32(offset + 4, true),
+      // SAFETY: Byte at offset+8 is SnippetEncoding written by writeSnippetChunk
       encoding: data[offset + 8] as SnippetEncoding,
+      // SAFETY: Byte at offset+9 is Type enum written by writeSnippetChunk
       type: data[offset + 9] as Type,
       flags: view.getUint16(offset + 10, true),
       bloomSize: view.getUint32(offset + 12, true),

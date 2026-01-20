@@ -54,6 +54,136 @@ export function unpackBits(bytes, count) {
     }
     return bits;
 }
+// =============================================================================
+// SPARSE NULL BITMAP OPTIMIZATION (Issue: evodb-qp6)
+// =============================================================================
+/**
+ * Threshold for using sparse representation.
+ * If null rate is below this threshold, use SparseNullSet instead of full array.
+ */
+export const SPARSE_NULL_THRESHOLD = 0.1;
+/**
+ * Sparse representation of null indices for columns with few nulls.
+ */
+export class SparseNullSet {
+    constructor(nullIndices, totalCount) {
+        this._nullIndices = nullIndices;
+        this._totalCount = totalCount;
+    }
+    /** Check if a specific index is null */
+    isNull(index) {
+        return this._nullIndices.has(index);
+    }
+    /** Number of null values */
+    get nullCount() {
+        return this._nullIndices.size;
+    }
+    /** Total number of elements (including non-null) */
+    get totalCount() {
+        return this._totalCount;
+    }
+    /** Alias for totalCount for array-like interface */
+    get length() {
+        return this._totalCount;
+    }
+    /** Iterate over null indices only (efficient for sparse data) */
+    *nullIndices() {
+        for (const idx of this._nullIndices) {
+            yield idx;
+        }
+    }
+    /** Convert to full boolean array for compatibility */
+    toArray() {
+        const result = new Array(this._totalCount).fill(false);
+        for (const idx of this._nullIndices) {
+            result[idx] = true;
+        }
+        return result;
+    }
+    /** Iterable implementation for for...of loops */
+    *[Symbol.iterator]() {
+        for (let i = 0; i < this._totalCount; i++) {
+            yield this._nullIndices.has(i);
+        }
+    }
+}
+/**
+ * Count nulls in bitmap efficiently (O(n/8) byte operations)
+ */
+function countNullsInBitmap(bytes, count) {
+    let nullCount = 0;
+    const fullBytes = count >>> 3;
+    for (let i = 0; i < fullBytes; i++) {
+        let byte = bytes[i];
+        while (byte) {
+            nullCount++;
+            byte &= byte - 1;
+        }
+    }
+    const remainingBits = count & 7;
+    if (remainingBits > 0 && fullBytes < bytes.length) {
+        let byte = bytes[fullBytes] & ((1 << remainingBits) - 1);
+        while (byte) {
+            nullCount++;
+            byte &= byte - 1;
+        }
+    }
+    return nullCount;
+}
+/**
+ * Unpack bitmap to sparse representation if null rate is below threshold.
+ */
+export function unpackBitsSparse(bytes, count) {
+    if (count === 0) {
+        return new SparseNullSet(new Set(), 0);
+    }
+    const nullCount = countNullsInBitmap(bytes, count);
+    const nullRate = nullCount / count;
+    if (nullRate <= SPARSE_NULL_THRESHOLD) {
+        const nullIndices = new Set();
+        if (nullCount > 0) {
+            for (let i = 0; i < count; i++) {
+                if ((bytes[i >>> 3] & (1 << (i & 7))) !== 0) {
+                    nullIndices.add(i);
+                }
+            }
+        }
+        return new SparseNullSet(nullIndices, count);
+    }
+    return unpackBits(bytes, count);
+}
+/**
+ * Check if bitmap represents all-null data.
+ */
+export function isAllNull(bytes, count) {
+    if (count === 0) return true;
+    const fullBytes = count >>> 3;
+    for (let i = 0; i < fullBytes; i++) {
+        if (bytes[i] !== 0xFF) return false;
+    }
+    const remainingBits = count & 7;
+    if (remainingBits > 0) {
+        const expectedMask = (1 << remainingBits) - 1;
+        if ((bytes[fullBytes] & expectedMask) !== expectedMask) return false;
+    }
+    return true;
+}
+/**
+ * Check if bitmap has no nulls.
+ */
+export function hasNoNulls(bytes, count) {
+    if (count === 0) return true;
+    const fullBytes = count >>> 3;
+    for (let i = 0; i < fullBytes; i++) {
+        if (bytes[i] !== 0) return false;
+    }
+    const remainingBits = count & 7;
+    if (remainingBits > 0) {
+        const validBitsMask = (1 << remainingBits) - 1;
+        if ((bytes[fullBytes] & validBitsMask) !== 0) return false;
+    }
+    return true;
+}
 /** Select best encoding and encode data */
 function selectAndEncode(col, stats) {
     const nonNull = col.values.filter((_, i) => !col.nulls[i]);

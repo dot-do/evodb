@@ -30,7 +30,146 @@ import type {
   TableDataSource,
   TableDataSourceMetadata,
   QueryExecutionOptions,
+  SubrequestContext,
 } from './types.js';
+
+import { SUBREQUEST_BUDGETS } from './types.js';
+
+// =============================================================================
+// Subrequest Budget Tracking
+// =============================================================================
+
+/**
+ * Error thrown when a query would exceed the subrequest budget.
+ *
+ * Cloudflare Workers have strict subrequest limits:
+ * - Workers: 1000 subrequests per invocation
+ * - Snippets: 5 subrequests per invocation
+ *
+ * This error provides clear messaging about the limit exceeded,
+ * rather than cryptic platform errors.
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   await engine.execute(query);
+ * } catch (e) {
+ *   if (e instanceof SubrequestBudgetExceededError) {
+ *     console.log(`Budget: ${e.budget}, Used: ${e.count}, Context: ${e.context}`);
+ *   }
+ * }
+ * ```
+ */
+export class SubrequestBudgetExceededError extends Error {
+  public readonly budget: number;
+  public readonly count: number;
+  public readonly context: SubrequestContext;
+
+  constructor(budget: number, count: number, context: SubrequestContext) {
+    const contextLabel = context === 'snippet' ? 'Snippet' : 'Worker';
+    super(
+      `Subrequest budget exceeded: ${contextLabel} limit is ${budget} subrequests, ` +
+      `but query requires ${count}. Consider reducing partition count or using pagination.`
+    );
+    this.name = 'SubrequestBudgetExceededError';
+    this.budget = budget;
+    this.count = count;
+    this.context = context;
+
+    // Maintains proper stack trace for V8 engines
+    captureStackTrace(this, SubrequestBudgetExceededError);
+  }
+}
+
+/**
+ * Tracks subrequest usage and enforces budget limits.
+ *
+ * Each partition read, manifest fetch, or external call counts as a subrequest.
+ * The tracker prevents exceeding platform limits by throwing
+ * SubrequestBudgetExceededError before hitting cryptic platform errors.
+ *
+ * @example
+ * ```typescript
+ * const tracker = new SubrequestTracker('worker');
+ *
+ * // Check before starting work
+ * tracker.checkBudget(partitions.length);
+ *
+ * // Track as work proceeds
+ * for (const partition of partitions) {
+ *   tracker.increment();
+ *   await readPartition(partition);
+ * }
+ *
+ * console.log(`Used ${tracker.getCount()} of ${tracker.getBudget()} subrequests`);
+ * ```
+ */
+export class SubrequestTracker {
+  private readonly budget: number;
+  private readonly context: SubrequestContext;
+  private count: number = 0;
+
+  constructor(context: SubrequestContext, customBudget?: number) {
+    this.context = context;
+    this.budget = customBudget ?? SUBREQUEST_BUDGETS[context];
+  }
+
+  /**
+   * Get the total budget for this context.
+   */
+  getBudget(): number {
+    return this.budget;
+  }
+
+  /**
+   * Get the current subrequest count.
+   */
+  getCount(): number {
+    return this.count;
+  }
+
+  /**
+   * Get the remaining budget.
+   */
+  getRemaining(): number {
+    return this.budget - this.count;
+  }
+
+  /**
+   * Increment the subrequest count.
+   * @param amount - Amount to increment (default: 1)
+   * @throws {SubrequestBudgetExceededError} If incrementing would exceed budget
+   */
+  increment(amount: number = 1): void {
+    const newCount = this.count + amount;
+    if (newCount > this.budget) {
+      throw new SubrequestBudgetExceededError(this.budget, newCount, this.context);
+    }
+    this.count = newCount;
+  }
+
+  /**
+   * Check if a number of subrequests would fit within budget.
+   * @param amount - Amount to check
+   * @throws {SubrequestBudgetExceededError} If amount would exceed remaining budget
+   */
+  checkBudget(amount: number): void {
+    if (this.count + amount > this.budget) {
+      throw new SubrequestBudgetExceededError(
+        this.budget,
+        this.count + amount,
+        this.context
+      );
+    }
+  }
+
+  /**
+   * Reset the counter to zero.
+   */
+  reset(): void {
+    this.count = 0;
+  }
+}
 
 // Import shared query operations from @evodb/core
 import {
@@ -40,6 +179,7 @@ import {
   compareForSort,
   evaluateFilter as coreEvaluateFilter,
   isNumberTuple,
+  captureStackTrace,
   type FilterPredicate,
 } from '@evodb/core';
 
@@ -199,6 +339,184 @@ function createAbortPromise(signal?: AbortSignal): Promise<never> | null {
  * Maximum column name length
  */
 const MAX_COLUMN_NAME_LENGTH = 256;
+
+// =============================================================================
+// Memory Tracking
+// =============================================================================
+
+/**
+ * Error thrown when query execution exceeds the configured memory limit.
+ * This allows callers to catch specifically for memory issues.
+ */
+export class MemoryLimitExceededError extends Error {
+  readonly currentBytes: number;
+  readonly limitBytes: number;
+
+  constructor(currentBytes: number, limitBytes: number) {
+    const currentMB = (currentBytes / (1024 * 1024)).toFixed(2);
+    const limitMB = (limitBytes / (1024 * 1024)).toFixed(2);
+    super(
+      `Memory limit exceeded: current usage ${currentMB}MB exceeds limit of ${limitMB}MB. ` +
+      `Consider adding filters, using LIMIT, or increasing memoryLimitBytes.`
+    );
+    this.name = 'MemoryLimitExceededError';
+    this.currentBytes = currentBytes;
+    this.limitBytes = limitBytes;
+  }
+}
+
+/**
+ * Estimate the memory size of a value in bytes.
+ * This is a rough approximation for memory tracking purposes.
+ */
+function estimateMemorySize(value: unknown): number {
+  if (value === null || value === undefined) {
+    return 8; // Pointer size
+  }
+
+  if (typeof value === 'boolean') {
+    return 4;
+  }
+
+  if (typeof value === 'number') {
+    return 8;
+  }
+
+  if (typeof value === 'string') {
+    // Strings in V8 use 2 bytes per character + overhead
+    return 40 + value.length * 2;
+  }
+
+  if (typeof value === 'bigint') {
+    return 16;
+  }
+
+  if (value instanceof Date) {
+    return 40;
+  }
+
+  if (Array.isArray(value)) {
+    let size = 40; // Array overhead
+    for (const item of value) {
+      size += estimateMemorySize(item);
+    }
+    return size;
+  }
+
+  if (typeof value === 'object') {
+    let size = 40; // Object overhead
+    for (const key of Object.keys(value)) {
+      size += estimateMemorySize(key); // Key
+      size += estimateMemorySize((value as Record<string, unknown>)[key]); // Value
+    }
+    return size;
+  }
+
+  return 8; // Default for unknown types
+}
+
+/**
+ * Estimate memory size of a row (record).
+ */
+function estimateRowMemorySize(row: Record<string, unknown>): number {
+  return estimateMemorySize(row);
+}
+
+/**
+ * Memory tracker for monitoring memory usage during query execution.
+ * Tracks peak memory and throws MemoryLimitExceededError when limit is exceeded.
+ */
+class MemoryTracker {
+  private currentBytes: number = 0;
+  private peakBytes: number = 0;
+  private readonly limitBytes: number;
+
+  constructor(limitBytes: number) {
+    this.limitBytes = limitBytes;
+  }
+
+  /**
+   * Add bytes to current memory usage and check limit.
+   * @throws {MemoryLimitExceededError} If limit is exceeded
+   */
+  add(bytes: number): void {
+    this.currentBytes += bytes;
+    if (this.currentBytes > this.peakBytes) {
+      this.peakBytes = this.currentBytes;
+    }
+    this.checkLimit();
+  }
+
+  /**
+   * Track memory for a row and check limit.
+   * @throws {MemoryLimitExceededError} If limit is exceeded
+   */
+  trackRow(row: Record<string, unknown>): void {
+    const rowSize = estimateRowMemorySize(row);
+    this.add(rowSize);
+  }
+
+  /**
+   * Track memory for multiple rows.
+   * Checks limit periodically for efficiency.
+   * @throws {MemoryLimitExceededError} If limit is exceeded
+   */
+  trackRows(rows: Record<string, unknown>[], checkInterval: number = 100): void {
+    let accumulatedBytes = 0;
+    for (let i = 0; i < rows.length; i++) {
+      accumulatedBytes += estimateRowMemorySize(rows[i]);
+
+      // Check limit periodically
+      if ((i + 1) % checkInterval === 0) {
+        this.add(accumulatedBytes);
+        accumulatedBytes = 0;
+      }
+    }
+    // Add any remaining bytes
+    if (accumulatedBytes > 0) {
+      this.add(accumulatedBytes);
+    }
+  }
+
+  /**
+   * Release bytes from current memory usage.
+   */
+  release(bytes: number): void {
+    this.currentBytes = Math.max(0, this.currentBytes - bytes);
+  }
+
+  /**
+   * Check if current memory exceeds limit.
+   * @throws {MemoryLimitExceededError} If limit is exceeded
+   */
+  checkLimit(): void {
+    if (this.limitBytes !== Infinity && this.currentBytes > this.limitBytes) {
+      throw new MemoryLimitExceededError(this.currentBytes, this.limitBytes);
+    }
+  }
+
+  /**
+   * Get current memory usage in bytes.
+   */
+  getCurrentBytes(): number {
+    return this.currentBytes;
+  }
+
+  /**
+   * Get peak memory usage in bytes.
+   */
+  getPeakBytes(): number {
+    return this.peakBytes;
+  }
+
+  /**
+   * Reset the tracker.
+   */
+  reset(): void {
+    this.currentBytes = 0;
+    // Note: peak is not reset as it represents the max during the query
+  }
+}
 
 /**
  * Validate a column name to prevent injection attacks.
@@ -1389,6 +1707,8 @@ export class QueryPlanner {
       cpuCost,
       ioCost,
       totalCost: effectiveCost,
+      // Each partition read is a subrequest
+      estimatedSubrequests: partitions.length,
     };
   }
 
@@ -1500,6 +1820,17 @@ export class QueryEngine {
    */
   private readonly dataSource: TableDataSource;
 
+  /**
+   * Subrequest context for budget tracking.
+   * Defaults to 'worker' (1000 subrequest limit).
+   */
+  private readonly subrequestContext: SubrequestContext;
+
+  /**
+   * Custom subrequest budget override.
+   */
+  private readonly subrequestBudget?: number;
+
   constructor(config: QueryEngineConfig) {
     this.config = config;
     this.planner = new QueryPlanner(config);
@@ -1507,6 +1838,8 @@ export class QueryEngine {
     this.bloomFilterManager = new BloomFilterManager();
     this.cacheManager = new CacheManager(config);
     this.resultProcessor = new ResultProcessor();
+    this.subrequestContext = config.subrequestContext ?? 'worker';
+    this.subrequestBudget = config.subrequestBudget;
 
     // Data source is required - use R2DataSource for production or MockDataSource for testing
     if (!config.dataSource) {
@@ -1523,6 +1856,13 @@ export class QueryEngine {
     } else {
       this.dataSource = config.dataSource;
     }
+  }
+
+  /**
+   * Create a new subrequest tracker for the current execution context.
+   */
+  private createSubrequestTracker(): SubrequestTracker {
+    return new SubrequestTracker(this.subrequestContext, this.subrequestBudget);
   }
 
   /**
@@ -1565,6 +1905,12 @@ export class QueryEngine {
     const timeoutMs = query.hints?.timeoutMs || this.config.defaultTimeoutMs || 30000;
     const memoryLimit = query.hints?.memoryLimitBytes || this.config.memoryLimitBytes || Infinity;
 
+    // Initialize memory tracker
+    const memoryTracker = new MemoryTracker(memoryLimit);
+
+    // Initialize subrequest tracker
+    const subrequestTracker = this.createSubrequestTracker();
+
     // Get table data from data source
     const tableMetadata = await this.dataSource.getTableMetadata(query.table);
 
@@ -1575,6 +1921,10 @@ export class QueryEngine {
     if (!tableMetadata) {
       throw new Error(`Table not found: ${query.table}`);
     }
+
+    // Check subrequest budget before reading partitions
+    // Each partition read counts as a subrequest
+    subrequestTracker.checkBudget(tableMetadata.partitions.length);
 
     // Handle huge table cases (timeout/memory errors) for test data sources
     // Use duck typing to check for optional isHugeTable method
@@ -1588,20 +1938,28 @@ export class QueryEngine {
       }
     }
 
-    // Get rows from data source
+    // Get rows from data source with memory tracking
     // Use duck typing to check for optional getTableRows method (optimization for test data sources)
     const dataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
     let rows: Record<string, unknown>[];
     if (dataSourceWithRows.getTableRows) {
       // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
       rows = dataSourceWithRows.getTableRows(query.table) ?? [];
+      // Track memory for loaded rows (check every 100 rows for efficiency)
+      memoryTracker.trackRows(rows, 100);
+      // Track subrequests for partitions
+      subrequestTracker.increment(tableMetadata.partitions.length);
     } else {
-      // Standard path: read from all partitions
+      // Standard path: read from all partitions with memory tracking
       rows = [];
       for (const partition of tableMetadata.partitions) {
         // Check for abort between partition reads
         checkAbortSignal(signal);
+        // Track subrequest for this partition read
+        subrequestTracker.increment();
         const partitionRows = await this.dataSource.readPartition(partition);
+        // Track memory for partition rows
+        memoryTracker.trackRows(partitionRows, 100);
         rows.push(...partitionRows);
       }
     }
@@ -1792,12 +2150,14 @@ export class QueryEngine {
       zoneMapEffectiveness,
       bloomFilterChecks,
       bloomFilterHits,
-      peakMemoryBytes: bytesRead * 0.1,
+      peakMemoryBytes: memoryTracker.getPeakBytes(),
       // Block-level pruning metrics
       totalBlocks,
       blocksScanned,
       blocksPruned,
       blockPruneRatio,
+      // Subrequest tracking
+      subrequestCount: subrequestTracker.getCount(),
     };
 
     return {
@@ -2061,6 +2421,9 @@ export class QueryEngine {
     // Validate column names to prevent injection attacks
     validateQueryColumns(query);
 
+    // Initialize subrequest tracker
+    const subrequestTracker = this.createSubrequestTracker();
+
     // Get table data from data source
     const tableMetadata = await this.dataSource.getTableMetadata(query.table);
 
@@ -2071,6 +2434,9 @@ export class QueryEngine {
       throw new Error(`Table not found: ${query.table}`);
     }
 
+    // Check subrequest budget before reading partitions
+    subrequestTracker.checkBudget(tableMetadata.partitions.length);
+
     // Get rows from data source
     // Use duck typing to check for optional getTableRows method (optimization for test data sources)
     const streamDataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
@@ -2078,11 +2444,15 @@ export class QueryEngine {
     if (streamDataSourceWithRows.getTableRows) {
       // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
       rows = streamDataSourceWithRows.getTableRows(query.table) ?? [];
+      // Track subrequests for partitions
+      subrequestTracker.increment(tableMetadata.partitions.length);
     } else {
       // Standard path: read from all partitions
       rows = [];
       for (const partition of tableMetadata.partitions) {
         checkAbortSignal(signal);
+        // Track subrequest for this partition read
+        subrequestTracker.increment();
         const partitionRows = await this.dataSource.readPartition(partition);
         rows.push(...partitionRows);
       }
@@ -2146,6 +2516,7 @@ export class QueryEngine {
     // Capture metadata for stats closure
     const partitionsForStats = tableMetadata.partitions;
     const totalBlocksForStats = tableMetadata.partitions.length;
+    const subrequestCountForStats = subrequestTracker.getCount();
 
     return {
       rows: rowIterator,
@@ -2173,6 +2544,8 @@ export class QueryEngine {
           blocksScanned: partitionsForStats.length,
           blocksPruned: 0,
           blockPruneRatio: 0,
+          // Subrequest tracking
+          subrequestCount: subrequestCountForStats,
         };
       },
       async cancel(): Promise<void> {

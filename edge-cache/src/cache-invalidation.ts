@@ -6,6 +6,26 @@
  * - Partition-level invalidation (using cache tags)
  * - Table-level invalidation (wildcard tags)
  * - Integration with writer flush and compaction events
+ * - Versioned cache keys to prevent stale reads
+ *
+ * ## Versioned Cache Keys (Stale Data Prevention)
+ *
+ * When Writer DO flushes new blocks, the Cache API may serve stale data
+ * for 1-5 minutes due to cache TTL. To prevent this, we support versioned
+ * cache keys that include the snapshot ID:
+ *
+ * ```typescript
+ * const manager = createCacheInvalidationManager();
+ *
+ * // After a write, get the versioned cache key
+ * const result = await manager.onCommit(event);
+ * const versionedKey = result.versionedCacheKeys['data/users/block.parquet'];
+ * // -> 'data/users/block.parquet?v=snap_001'
+ *
+ * // Reader can use the versioned key for cache lookups
+ * const factory = manager.createCacheKeyFactory('users', 'year=2024');
+ * const cacheKey = factory('data/users/year=2024/block.parquet');
+ * ```
  */
 
 import type { EdgeCacheConfig } from './index.js';
@@ -148,6 +168,14 @@ export interface InvalidationResult {
   }>;
   /** Duration in milliseconds */
   durationMs?: number;
+  /** Versioned cache keys for invalidated paths (path -> versioned key) */
+  versionedCacheKeys?: Record<string, string>;
+  /** Snapshot version that was applied */
+  snapshotVersion?: string;
+  /** Table name from the commit event */
+  table?: string;
+  /** Partition from the commit event */
+  partition?: string;
 }
 
 /**
@@ -260,6 +288,8 @@ export class CacheInvalidationManager {
   };
   private totalDurationMs = 0;
   private batchTimer?: ReturnType<typeof setTimeout>;
+  /** Tracks current snapshot version per table/partition for versioned cache keys */
+  private snapshotVersions: Map<string, string> = new Map();
 
   constructor(options: InvalidationManagerConfig = {}) {
     this.config = {
@@ -269,6 +299,89 @@ export class CacheInvalidationManager {
     this.strategy = options.strategy ?? 'eager';
     this.batchWindow = options.batchWindow ?? 1000;
     this.maxBatchSize = options.maxBatchSize ?? 100;
+  }
+
+  // ============================================================================
+  // Versioned Cache Key Methods (Stale Data Prevention)
+  // ============================================================================
+
+  /**
+   * Generate a versioned cache key that includes the snapshot ID.
+   * This ensures that new data is always fetched after a write,
+   * preventing stale reads from the Cache API.
+   *
+   * @param path - The original path (e.g., data/users/block.parquet)
+   * @param snapshotId - The snapshot ID to include in the key
+   * @returns Versioned cache key with snapshot ID as query parameter
+   */
+  generateVersionedCacheKey(path: string, snapshotId: string): string {
+    // Use query parameter format for versioning
+    // This is compatible with standard URL-based cache keys
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}v=${snapshotId}`;
+  }
+
+  /**
+   * Get the current snapshot version for a table/partition combination.
+   *
+   * @param table - Table name
+   * @param partition - Partition identifier
+   * @returns Current snapshot version or undefined if not tracked
+   */
+  getCurrentSnapshotVersion(table: string, partition: string): string | undefined {
+    const key = this.buildSnapshotKey(table, partition);
+    return this.snapshotVersions.get(key);
+  }
+
+  /**
+   * Update the snapshot version for a table/partition combination.
+   *
+   * @param table - Table name
+   * @param partition - Partition identifier
+   * @param snapshotId - New snapshot ID
+   */
+  updateSnapshotVersion(table: string, partition: string, snapshotId: string): void {
+    const key = this.buildSnapshotKey(table, partition);
+    this.snapshotVersions.set(key, snapshotId);
+  }
+
+  /**
+   * Create a cache key factory function that uses the current snapshot version.
+   * This is useful for readers that need to generate versioned cache keys.
+   *
+   * @param table - Table name
+   * @param partition - Partition identifier
+   * @returns Factory function that generates versioned cache keys
+   */
+  createCacheKeyFactory(table: string, partition: string): (path: string) => string {
+    const snapshotId = this.getCurrentSnapshotVersion(table, partition);
+    return (path: string) => {
+      if (snapshotId) {
+        return this.generateVersionedCacheKey(path, snapshotId);
+      }
+      return path;
+    };
+  }
+
+  /**
+   * Get versioned cache keys for all paths in a commit event.
+   *
+   * @param event - CDC commit event
+   * @returns Map of original path to versioned cache key
+   */
+  getVersionedCacheKeysForEvent(event: CDCCommitEvent): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const path of event.affectedPaths) {
+      result[path] = this.generateVersionedCacheKey(path, event.snapshotId);
+    }
+    return result;
+  }
+
+  /**
+   * Build internal key for snapshot version tracking.
+   */
+  private buildSnapshotKey(table: string, partition: string): string {
+    return `${table}:${partition}`;
   }
 
   /**
@@ -396,6 +509,12 @@ export class CacheInvalidationManager {
     const startTime = Date.now();
     this.stats.totalCommits++;
 
+    // Update snapshot version for this table/partition
+    this.updateSnapshotVersion(event.table, event.partition, event.snapshotId);
+
+    // Generate versioned cache keys for the affected paths
+    const versionedCacheKeys = this.getVersionedCacheKeysForEvent(event);
+
     // For lazy strategy, queue the event
     if (this.strategy === 'lazy') {
       this.queueEvent(event);
@@ -407,6 +526,10 @@ export class CacheInvalidationManager {
           table: event.table,
           paths: event.affectedPaths,
         },
+        versionedCacheKeys,
+        snapshotVersion: event.snapshotId,
+        table: event.table,
+        partition: event.partition,
       };
     }
 
@@ -473,6 +596,10 @@ export class CacheInvalidationManager {
       hookResults: results.length > 0 ? results : undefined,
       errors: errors.length > 0 ? errors : undefined,
       durationMs,
+      versionedCacheKeys,
+      snapshotVersion: event.snapshotId,
+      table: event.table,
+      partition: event.partition,
     };
   }
 

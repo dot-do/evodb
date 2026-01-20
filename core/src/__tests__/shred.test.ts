@@ -14,7 +14,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { shred, unshred } from '../index.js';
+// Import directly from shred.ts to avoid any module resolution issues
+import { shred, unshred } from '../shred.js';
 
 // =============================================================================
 // SETPATH SAFETY TESTS - evodb-2nr
@@ -245,14 +246,15 @@ describe('setPath Safety - evodb-2nr', () => {
     });
 
     it('should handle very long paths (100+ parts)', () => {
-      // Create a deeply nested object
+      // Create a deeply nested object (101 levels)
       let obj: Record<string, unknown> = { value: 'deep' };
       for (let i = 99; i >= 0; i--) {
         obj = { [`level${i}`]: obj };
       }
       const docs = [obj];
 
-      const columns = shred(docs);
+      // Use higher maxDepth to allow 101 levels (this test is about path parsing, not depth limits)
+      const columns = shred(docs, { maxDepth: 150 });
       expect(() => unshred(columns)).not.toThrow();
 
       const result = unshred(columns);
@@ -368,6 +370,141 @@ describe('setPath Safety - evodb-2nr', () => {
       const result = unshred(columns);
 
       expect(result[0]).toEqual(docs[0]);
+    });
+  });
+});
+
+// =============================================================================
+// INTEGRATION TESTS - Full shred/unshred cycle
+// =============================================================================
+
+// =============================================================================
+// MAX DEPTH AND CIRCULAR REFERENCE TESTS - evodb-woi
+// =============================================================================
+
+describe('walk() Max Depth Protection - evodb-woi', () => {
+  describe('Deeply Nested Objects', () => {
+    it('should throw error when depth exceeds default max (100 levels)', () => {
+      // Create object nested 101 levels deep
+      // We want: { l0: { l1: { ... { l99: { value: 'too-deep' } } } } }
+      // That's l0 through l99 (100 wrappings) + value = 101 levels total
+      let obj: Record<string, unknown> = { value: 'too-deep' };
+      for (let i = 99; i >= 0; i--) {
+        obj = { [`level${i}`]: obj };
+      }
+      const docs = [obj];
+
+      expect(() => shred(docs)).toThrow(/max.*depth/i);
+    });
+
+    it('should not throw when depth is exactly at max (100 levels)', () => {
+      // Create object nested exactly 100 levels deep
+      // We want: { l0: { l1: { ... { l98: { value: 'at-limit' } } } } }
+      // That's l0 through l98 (99 wrappings) + value = 100 levels total
+      let obj: Record<string, unknown> = { value: 'at-limit' };
+      for (let i = 98; i >= 0; i--) {
+        obj = { [`level${i}`]: obj };
+      }
+      const docs = [obj];
+
+      expect(() => shred(docs)).not.toThrow();
+    });
+
+    it('should throw error for deeply nested arrays exceeding max depth', () => {
+      // Create array nested 101 levels deep from root
+      // { data: [[[[...['too-deep']...]]]] }
+      // data is at depth 0, each array wrapper adds 1 depth
+      // We need 101 total to exceed maxDepth=100
+      let arr: unknown = 'too-deep';
+      for (let i = 0; i < 100; i++) {
+        arr = [arr];
+      }
+      const docs = [{ data: arr }];
+
+      expect(() => shred(docs)).toThrow(/max.*depth/i);
+    });
+
+    it('should allow custom maxDepth via options', () => {
+      // Create object nested 12 levels deep
+      // { l0: { l1: { ... { l10: { value: 'nested' } } } } }
+      // That's 11 wrappings + value = 12 levels
+      let obj: Record<string, unknown> = { value: 'nested' };
+      for (let i = 10; i >= 0; i--) {
+        obj = { [`level${i}`]: obj };
+      }
+      const docs = [obj];
+
+      // Should throw with maxDepth of 11 (12 levels > 11)
+      expect(() => shred(docs, { maxDepth: 11 })).toThrow(/max.*depth/i);
+
+      // Should not throw with maxDepth of 12 (12 levels <= 12)
+      expect(() => shred(docs, { maxDepth: 12 })).not.toThrow();
+    });
+
+    it('should include depth info in error message', () => {
+      // Create object nested 7 levels deep
+      // { l0: { l1: { ... { l5: { value: 'nested' } } } } }
+      // That's 6 wrappings + value = 7 levels
+      let obj: Record<string, unknown> = { value: 'nested' };
+      for (let i = 5; i >= 0; i--) {
+        obj = { [`level${i}`]: obj };
+      }
+      const docs = [obj];
+
+      // With maxDepth=5, should throw and mention "5" in error
+      expect(() => shred(docs, { maxDepth: 5 })).toThrow(/depth.*5/i);
+    });
+  });
+
+  describe('Circular Reference Detection', () => {
+    it('should throw error on circular object reference', () => {
+      const obj: Record<string, unknown> = { name: 'circular' };
+      obj.self = obj; // Create circular reference
+      const docs = [obj];
+
+      expect(() => shred(docs)).toThrow(/circular/i);
+    });
+
+    it('should throw error on indirect circular reference', () => {
+      const a: Record<string, unknown> = { name: 'a' };
+      const b: Record<string, unknown> = { name: 'b', ref: a };
+      a.ref = b; // Create indirect circular reference
+      const docs = [a];
+
+      expect(() => shred(docs)).toThrow(/circular/i);
+    });
+
+    it('should throw error on circular array reference', () => {
+      const arr: unknown[] = [1, 2, 3];
+      arr.push(arr); // Create circular reference in array
+      const docs = [{ data: arr }];
+
+      expect(() => shred(docs)).toThrow(/circular/i);
+    });
+
+    it('should throw error on deeply nested circular reference', () => {
+      const root: Record<string, unknown> = { name: 'root' };
+      const child: Record<string, unknown> = { name: 'child' };
+      const grandchild: Record<string, unknown> = { name: 'grandchild' };
+      root.child = child;
+      child.grandchild = grandchild;
+      grandchild.backToRoot = root; // Circular back to root
+      const docs = [root];
+
+      expect(() => shred(docs)).toThrow(/circular/i);
+    });
+
+    it('should NOT throw for same object in different branches (not circular)', () => {
+      const shared = { value: 'shared' };
+      const obj = {
+        branch1: { ref: shared },
+        branch2: { ref: shared },
+      };
+      const docs = [obj];
+
+      // Same object referenced in different places is NOT circular
+      // (though it results in duplicate data)
+      expect(() => shred(docs)).not.toThrow();
     });
   });
 });

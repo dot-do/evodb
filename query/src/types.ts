@@ -968,6 +968,9 @@ export interface QueryCost {
 
   /** Total cost (weighted combination) */
   totalCost: number;
+
+  /** Estimated subrequests needed for this query */
+  estimatedSubrequests?: number;
 }
 
 // =============================================================================
@@ -1118,6 +1121,9 @@ export interface EngineQueryStats {
 
   /** Ratio of blocks pruned to total blocks (0.0 to 1.0) */
   blockPruneRatio: number;
+
+  /** Number of subrequests used during query execution */
+  subrequestCount?: number;
 }
 
 /**
@@ -1297,6 +1303,25 @@ export interface QueryEngineConfig {
    * For production, use R2DataSource or integrate with @evodb/reader.
    */
   dataSource?: TableDataSource;
+
+  /**
+   * Subrequest context for budget tracking.
+   *
+   * Cloudflare Workers have different subrequest limits:
+   * - 'worker': 1000 subrequests per invocation
+   * - 'snippet': 5 subrequests per invocation
+   *
+   * Defaults to 'worker' if not specified.
+   */
+  subrequestContext?: SubrequestContext;
+
+  /**
+   * Custom subrequest budget override.
+   *
+   * If specified, overrides the default budget for the context.
+   * Useful for testing or custom environments.
+   */
+  subrequestBudget?: number;
 }
 
 /**
@@ -1477,3 +1502,28 @@ export interface R2ListOptions {
   limit?: number;
   delimiter?: string;
 }
+
+// =============================================================================
+// Subrequest Budget Types
+// =============================================================================
+
+/**
+ * Subrequest execution context.
+ *
+ * Different Cloudflare execution environments have different subrequest limits:
+ * - 'worker': Standard Cloudflare Worker with 1000 subrequest limit
+ * - 'snippet': Cloudflare Snippet with 5 subrequest limit
+ */
+export type SubrequestContext = 'worker' | 'snippet';
+
+/**
+ * Default subrequest budgets per context.
+ *
+ * These match Cloudflare's documented limits:
+ * - Workers: 1000 subrequests per invocation
+ * - Snippets: 5 subrequests per invocation
+ */
+export const SUBREQUEST_BUDGETS: Record<SubrequestContext, number> = {
+  worker: 1000,
+  snippet: 5,
+};

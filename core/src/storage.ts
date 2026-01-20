@@ -1,6 +1,7 @@
 // DO Storage Adapter (~1KB budget)
 
 import { type StorageAdapter, type BlockId, type WalId, unsafeBlockId, unsafeWalId } from './types.js';
+import { STORAGE_LIST_PAGE_SIZE } from './constants.js';
 
 // =============================================================================
 // UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
@@ -182,7 +183,10 @@ export interface R2ListOptionsLike {
  * Wraps an R2Bucket binding to implement ObjectStorageAdapter
  */
 export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
-  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {}
+  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {
+    // Validate keyPrefix to prevent path traversal attacks
+    validateKeyPrefix(keyPrefix);
+  }
 
   private getFullKey(key: string): string {
     if (this.keyPrefix) {
@@ -192,6 +196,7 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
   }
 
   async put(path: string, data: Uint8Array | ArrayBuffer): Promise<void> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     // Ensure data is an ArrayBuffer for R2
     const buffer = data instanceof ArrayBuffer ? data : (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength);
@@ -199,6 +204,7 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
   }
 
   async get(path: string): Promise<Uint8Array | null> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     const obj = await this.bucket.get(fullKey);
     if (!obj) return null;
@@ -207,17 +213,19 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
   }
 
   async delete(path: string): Promise<void> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     await this.bucket.delete(fullKey);
   }
 
   async list(prefix: string): Promise<string[]> {
+    validateStoragePath(prefix);
     const fullPrefix = this.getFullKey(prefix);
     const keys: string[] = [];
     let cursor: string | undefined;
 
     do {
-      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: 1000 });
+      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: STORAGE_LIST_PAGE_SIZE });
       for (const obj of result.objects) {
         let key = obj.key;
         if (this.keyPrefix && key.startsWith(this.keyPrefix)) {
@@ -232,6 +240,7 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
   }
 
   async head(path: string): Promise<ObjectMetadata | null> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     const obj = await this.bucket.head(fullKey);
     if (!obj) return null;
@@ -300,10 +309,7 @@ export class MemoryObjectStorageAdapter implements ObjectStorageAdapter {
     if (!entry) {
       throw new Error(`Object not found: ${path}`);
     }
-    let start = offset;
-    if (start < 0) {
-      start = entry.data.length + offset;
-    }
+    const start = validateRangeBounds(entry.data.length, offset, length);
     return entry.data.slice(start, start + length);
   }
 
@@ -391,10 +397,7 @@ export class MemoryStorage implements Storage {
     if (!entry) {
       throw new Error(`Object not found: ${path}`);
     }
-    let start = offset;
-    if (start < 0) {
-      start = entry.bytes.length + offset;
-    }
+    const start = validateRangeBounds(entry.bytes.length, offset, length);
     return entry.bytes.slice(start, start + length);
   }
 
@@ -434,7 +437,10 @@ export class MemoryStorage implements Storage {
  * ```
  */
 export class R2Storage implements Storage {
-  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {}
+  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {
+    // Validate keyPrefix to prevent path traversal attacks
+    validateKeyPrefix(keyPrefix);
+  }
 
   private getFullKey(key: string): string {
     if (this.keyPrefix) {
@@ -444,6 +450,7 @@ export class R2Storage implements Storage {
   }
 
   async read(path: string): Promise<Uint8Array | null> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     const obj = await this.bucket.get(fullKey);
     if (!obj) return null;
@@ -452,18 +459,20 @@ export class R2Storage implements Storage {
   }
 
   async write(path: string, data: Uint8Array): Promise<void> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     const buffer = (data.buffer as ArrayBuffer).slice(data.byteOffset, data.byteOffset + data.byteLength);
     await this.bucket.put(fullKey, buffer);
   }
 
   async list(prefix: string): Promise<{ paths: string[] }> {
+    validateStoragePath(prefix);
     const fullPrefix = this.getFullKey(prefix);
     const paths: string[] = [];
     let cursor: string | undefined;
 
     do {
-      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: 1000 });
+      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: STORAGE_LIST_PAGE_SIZE });
       for (const obj of result.objects) {
         let key = obj.key;
         if (this.keyPrefix && key.startsWith(this.keyPrefix)) {
@@ -478,6 +487,7 @@ export class R2Storage implements Storage {
   }
 
   async delete(path: string): Promise<void> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     await this.bucket.delete(fullKey);
   }
@@ -488,6 +498,7 @@ export class R2Storage implements Storage {
   }
 
   async head(path: string): Promise<StorageMetadata | null> {
+    validateStoragePath(path);
     const fullKey = this.getFullKey(path);
     const obj = await this.bucket.head(fullKey);
     if (!obj) return null;
@@ -546,10 +557,7 @@ export function storageToObjectAdapter(storage: Storage): ObjectStorageAdapter {
       if (!data) {
         throw new Error(`Object not found: ${path}`);
       }
-      let start = offset;
-      if (start < 0) {
-        start = data.length + offset;
-      }
+      const start = validateRangeBounds(data.length, offset, length);
       return data.slice(start, start + length);
     },
   };
@@ -592,10 +600,7 @@ export function objectAdapterToStorage(adapter: ObjectStorageAdapter): Storage {
       if (!data) {
         throw new Error(`Object not found: ${path}`);
       }
-      let start = offset;
-      if (start < 0) {
-        start = data.length + offset;
-      }
+      const start = validateRangeBounds(data.length, offset, length);
       return data.slice(start, start + length);
     },
   };
@@ -698,21 +703,187 @@ export function validateTableName(tableName: string): void {
   }
 }
 
+/**
+ * Quote a SQL identifier using double quotes (SQL standard).
+ * This provides defense in depth when combined with validation.
+ * Any embedded double quotes are escaped by doubling them.
+ *
+ * @param identifier - The identifier to quote (table name, column name, etc.)
+ * @returns The quoted identifier safe for SQL interpolation
+ */
+export function quoteIdentifier(identifier: string): string {
+  // Escape any embedded double quotes by doubling them
+  const escaped = identifier.replace(/"/g, '""');
+  return `"${escaped}"`;
+}
+
+// =============================================================================
+// Path Traversal Prevention
+// Issue: evodb-409 - Validate key prefix format with whitelist approach
+// =============================================================================
+
+/**
+ * Validate a storage path to prevent path traversal attacks.
+ * Uses a whitelist approach: only allow known-safe characters and patterns.
+ *
+ * Safe paths:
+ * - Use forward slashes for directories
+ * - Contain only alphanumeric, dash, underscore, dot characters
+ * - Do not start with / (no absolute paths)
+ * - Do not contain .. (no path traversal)
+ * - Do not contain null bytes or control characters
+ *
+ * @param path - The storage path to validate
+ * @throws Error if path contains dangerous patterns
+ */
+export function validateStoragePath(path: string): void {
+  // Check for empty or whitespace-only paths
+  if (!path || path.trim().length === 0) {
+    throw new Error('Storage path validation failed: path cannot be empty');
+  }
+
+  // Check for null bytes (can truncate paths in some systems)
+  if (path.includes('\x00')) {
+    throw new Error('Storage path validation failed: path contains null byte');
+  }
+
+  // Check for control characters (ASCII 0x00-0x1F except allowed whitespace)
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(path)) {
+    throw new Error('Storage path validation failed: path contains control character');
+  }
+
+  // Check for absolute paths (Unix-style)
+  if (path.startsWith('/')) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Check for Windows absolute paths (C:\ or C:/)
+  if (/^[a-zA-Z]:[/\\]/.test(path)) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Check for UNC paths (\\server\share or //server/share)
+  if (path.startsWith('\\\\') || path.startsWith('//')) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Normalize the path for traversal detection (handle backslashes as path separators)
+  const normalizedPath = path.replace(/\\/g, '/');
+
+  // Check for path traversal patterns - must check BEFORE and AFTER URL decoding
+  const pathTraversalPatterns = [
+    /\.\./,           // Direct ..
+    /%2e%2e/i,        // URL-encoded .
+    /%252e%252e/i,    // Double URL-encoded .
+  ];
+
+  for (const pattern of pathTraversalPatterns) {
+    if (pattern.test(normalizedPath)) {
+      throw new Error('Storage path validation failed: path traversal detected');
+    }
+  }
+
+  // Try URL-decoding and check again (handles single URL-encoded attacks)
+  try {
+    const decoded = decodeURIComponent(normalizedPath);
+    if (decoded.includes('..')) {
+      throw new Error('Storage path validation failed: path traversal detected');
+    }
+    // Try double-decoding (handles double URL-encoded attacks)
+    try {
+      const doubleDecoded = decodeURIComponent(decoded);
+      if (doubleDecoded.includes('..')) {
+        throw new Error('Storage path validation failed: path traversal detected');
+      }
+    } catch {
+      // Double decoding failed, which is fine - the path is safe from double-encoding attacks
+    }
+  } catch (e) {
+    // If decoding fails with a non-path-traversal error, re-throw original path traversal errors
+    if (e instanceof Error && e.message.includes('path traversal')) {
+      throw e;
+    }
+    // Otherwise, decoding failed which means it's not a valid URL-encoded attack
+  }
+}
+
+/**
+ * Validate a key prefix used in storage constructors.
+ * Empty prefixes are allowed. Non-empty prefixes must pass path validation.
+ *
+ * @param keyPrefix - The key prefix to validate (can be empty string)
+ * @throws Error if prefix contains dangerous patterns
+ */
+export function validateKeyPrefix(keyPrefix: string): void {
+  // Empty prefix is always valid
+  if (keyPrefix === '') {
+    return;
+  }
+  // Non-empty prefixes must pass full path validation
+  validateStoragePath(keyPrefix);
+}
+
+// =============================================================================
+// Range Bounds Validation
+// Issue: evodb-qpi - TDD: Add getRange bounds validation
+// =============================================================================
+
+/**
+ * Validate and normalize range parameters for getRange/readRange operations.
+ * This function checks for:
+ * - Negative lengths (invalid)
+ * - Offsets that are out of bounds (past end or before start after negative resolution)
+ *
+ * @param dataLength - The total length of the data being read from
+ * @param offset - The requested offset (can be negative for from-end semantics)
+ * @param length - The requested length (must be non-negative)
+ * @returns The normalized start position (always non-negative)
+ * @throws Error if length is negative, or if offset is out of bounds
+ */
+export function validateRangeBounds(dataLength: number, offset: number, length: number): number {
+  // Check for negative length
+  if (length < 0) {
+    throw new Error(`Invalid length: ${length}. Length cannot be negative.`);
+  }
+
+  // Resolve negative offset (from end of data)
+  let start = offset;
+  if (start < 0) {
+    start = dataLength + offset;
+  }
+
+  // Check if start is out of bounds
+  // Note: start == dataLength is allowed ONLY if length == 0 (reading nothing from end)
+  if (start < 0) {
+    throw new Error(`Offset out of range: ${offset} resolves to ${start} for data of length ${dataLength}.`);
+  }
+
+  if (start > dataLength || (start === dataLength && length > 0)) {
+    throw new Error(`Offset out of range: ${offset} (resolved to ${start}) is beyond data length ${dataLength}.`);
+  }
+
+  return start;
+}
+
 /** Create DO SQLite storage adapter */
 export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): StorageAdapter {
-  // Validate table name to prevent SQL injection
+  // Validate table name to prevent SQL injection (first line of defense)
   validateTableName(tableName);
 
+  // Quote the table name for defense in depth (second line of defense)
+  const quotedTable = quoteIdentifier(tableName);
+
   // Ensure table exists
-  sql.exec(`CREATE TABLE IF NOT EXISTS ${tableName} (id TEXT PRIMARY KEY, data BLOB, created_at INTEGER DEFAULT (unixepoch()))`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS ${quotedTable} (id TEXT PRIMARY KEY, data BLOB, created_at INTEGER DEFAULT (unixepoch()))`);
 
   return {
     async writeBlock(id: string, data: Uint8Array): Promise<void> {
-      sql.exec(`INSERT OR REPLACE INTO ${tableName} (id, data) VALUES (?, ?)`, id, data);
+      sql.exec(`INSERT OR REPLACE INTO ${quotedTable} (id, data) VALUES (?, ?)`, id, data);
     },
 
     async readBlock(id: string): Promise<Uint8Array | null> {
-      const result = sql.exec(`SELECT data FROM ${tableName} WHERE id = ?`, id);
+      const result = sql.exec(`SELECT data FROM ${quotedTable} WHERE id = ?`, id);
       if (!result.results.length) return null;
       const row = result.results[0] as { data: ArrayBuffer };
       return new Uint8Array(row.data);
@@ -720,8 +891,8 @@ export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): Storag
 
     async listBlocks(prefix?: string): Promise<string[]> {
       const query = prefix
-        ? `SELECT id FROM ${tableName} WHERE id LIKE ? ORDER BY id`
-        : `SELECT id FROM ${tableName} ORDER BY id`;
+        ? `SELECT id FROM ${quotedTable} WHERE id LIKE ? ORDER BY id`
+        : `SELECT id FROM ${quotedTable} ORDER BY id`;
       const result = prefix
         ? sql.exec(query, prefix + '%')
         : sql.exec(query);
@@ -729,7 +900,7 @@ export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): Storag
     },
 
     async deleteBlock(id: string): Promise<void> {
-      sql.exec(`DELETE FROM ${tableName} WHERE id = ?`, id);
+      sql.exec(`DELETE FROM ${quotedTable} WHERE id = ?`, id);
     },
   };
 }

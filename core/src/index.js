@@ -13,9 +13,11 @@ assertNever, } from './types.js';
 // JSON Shredding
 export { shred, unshred, extractPath, extractPaths, coerceToType, appendRows, buildPathIndex, } from './shred.js';
 // Encoding
-export { encode, decode, unpackBits, encodeDict, encodeDelta, 
+export { encode, decode, unpackBits, encodeDict, encodeDelta,
 // Fast decode paths for snippet constraints
-fastDecodeInt32, fastDecodeFloat64, fastDecodeDeltaInt32, iterateNonNullIndices, batchDecode, } from './encode.js';
+fastDecodeInt32, fastDecodeFloat64, fastDecodeDeltaInt32, iterateNonNullIndices, batchDecode,
+// Sparse null bitmap optimization (Issue: evodb-qp6)
+SparseNullSet, unpackBitsSparse, isAllNull, hasNoNulls, SPARSE_NULL_THRESHOLD, } from './encode.js';
 // String Intern Pool (LRU)
 export { LRUStringPool, internString, getStringPoolStats, resetStringPool, } from './string-intern-pool.js';
 // Block Format

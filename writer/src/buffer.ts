@@ -11,6 +11,29 @@ import type { WalEntry } from '@evodb/core';
 import type { BufferState, BufferStats, ResolvedWriterOptions } from './types.js';
 
 /**
+ * Default maximum buffer size (128MB)
+ * This provides a hard limit to prevent unbounded memory growth
+ * when flush operations fail repeatedly.
+ */
+export const DEFAULT_MAX_BUFFER_SIZE = 128 * 1024 * 1024;
+
+/**
+ * Error thrown when buffer exceeds maximum size limit.
+ * This prevents unbounded memory growth when flush operations fail.
+ */
+export class BufferOverflowError extends Error {
+  public readonly currentSize: number;
+  public readonly maxSize: number;
+
+  constructor(currentSize: number, maxSize: number) {
+    super(`BufferOverflowError: Buffer size (${currentSize} bytes) would exceed maximum (${maxSize} bytes). Consider draining the buffer or increasing maxBufferSize.`);
+    this.name = 'BufferOverflowError';
+    this.currentSize = currentSize;
+    this.maxSize = maxSize;
+  }
+}
+
+/**
  * Buffer options extracted from writer options
  */
 export interface BufferOptions {
@@ -20,6 +43,38 @@ export interface BufferOptions {
   bufferTimeout: number;
   /** Target block size in bytes */
   targetBlockSize: number;
+  /** Hard limit on buffer size in bytes (default: 128MB) */
+  maxBufferSize?: number;
+}
+
+/**
+ * Callback function type for LSN update logging.
+ * Called after every cursor update attempt (successful or not).
+ *
+ * @param sourceDoId - The source DO identifier
+ * @param previousLsn - The previous cursor value (undefined if new source)
+ * @param newLsn - The LSN that was attempted to be set
+ * @param updated - Whether the cursor was actually updated
+ */
+export type LsnUpdateLogger = (
+  sourceDoId: string,
+  previousLsn: bigint | undefined,
+  newLsn: bigint,
+  updated: boolean
+) => void;
+
+/**
+ * Record of a cursor update attempt for debugging.
+ */
+export interface CursorUpdateRecord {
+  /** Previous cursor value (undefined if new source) */
+  previousLsn: bigint | undefined;
+  /** The LSN that was attempted to be set */
+  newLsn: bigint;
+  /** Whether the cursor was actually updated */
+  updated: boolean;
+  /** Timestamp when the update was attempted */
+  timestamp: number;
 }
 
 /**
@@ -46,6 +101,9 @@ function validateBufferOptions(options: BufferOptions): void {
   validatePositive(options.bufferSize, 'bufferSize');
   validatePositive(options.bufferTimeout, 'bufferTimeout');
   validatePositive(options.targetBlockSize, 'targetBlockSize');
+  if (options.maxBufferSize !== undefined) {
+    validatePositive(options.maxBufferSize, 'maxBufferSize');
+  }
 }
 
 /**
@@ -66,14 +124,55 @@ export class CDCBuffer {
   private maxLsn: bigint = 0n;
   private firstEntryTime: number | null = null;
   private sourceCursors: Map<string, bigint> = new Map();
+  private readonly maxBufferSize: number;
+
+  /**
+   * Optional callback for logging LSN update attempts.
+   * Useful for debugging race conditions and cursor tracking issues.
+   */
+  private lsnUpdateLogger: LsnUpdateLogger | null = null;
+
+  /**
+   * Map of source DO IDs to their last cursor update record.
+   * Used for debugging to inspect the last update attempt for each source.
+   */
+  private lastCursorUpdates: Map<string, CursorUpdateRecord> = new Map();
 
   constructor(private readonly options: BufferOptions) {
     validateBufferOptions(options);
+    this.maxBufferSize = options.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
+  }
+
+  /**
+   * Set a callback function to be notified of all LSN cursor update attempts.
+   * This is useful for debugging and monitoring cursor updates.
+   *
+   * @param logger - Callback function called on each cursor update attempt
+   */
+  setLsnUpdateLogger(logger: LsnUpdateLogger): void {
+    this.lsnUpdateLogger = logger;
+  }
+
+  /**
+   * Get the last cursor update record for a source.
+   * Returns undefined if no updates have been made for this source.
+   *
+   * @param sourceDoId - The source DO identifier
+   * @returns The last cursor update record or undefined
+   */
+  getLastCursorUpdate(sourceDoId: string): CursorUpdateRecord | undefined {
+    return this.lastCursorUpdates.get(sourceDoId);
   }
 
   /**
    * Atomically update source cursor if new LSN is greater than current.
    * This method provides a safe way to update cursors without race conditions.
+   *
+   * The update uses compare-and-swap semantics:
+   * - Reads current cursor value
+   * - Only updates if newLsn > currentCursor (or cursor doesn't exist)
+   * - Records the update attempt for debugging
+   * - Calls the logger callback if configured
    *
    * @param sourceDoId - The source DO identifier
    * @param newLsn - The new LSN to potentially set as cursor
@@ -81,13 +180,105 @@ export class CDCBuffer {
    */
   private updateSourceCursor(sourceDoId: string, newLsn: bigint): boolean {
     const currentCursor = this.sourceCursors.get(sourceDoId);
+    const timestamp = Date.now();
+
     // Use strict comparison: only update if newLsn is strictly greater
     // This handles undefined (new source) and existing cursor cases
-    if (currentCursor === undefined || newLsn > currentCursor) {
+    const shouldUpdate = currentCursor === undefined || newLsn > currentCursor;
+
+    if (shouldUpdate) {
       this.sourceCursors.set(sourceDoId, newLsn);
-      return true;
     }
-    return false;
+
+    // Record the update attempt for debugging
+    const updateRecord: CursorUpdateRecord = {
+      previousLsn: currentCursor,
+      newLsn,
+      updated: shouldUpdate,
+      timestamp,
+    };
+    this.lastCursorUpdates.set(sourceDoId, updateRecord);
+
+    // Call the logger if configured
+    if (this.lsnUpdateLogger) {
+      this.lsnUpdateLogger(sourceDoId, currentCursor, newLsn, shouldUpdate);
+    }
+
+    return shouldUpdate;
+  }
+
+  /**
+   * Atomic compare-and-set operation for source cursor.
+   * Only updates the cursor if the current value matches the expected value
+   * AND the new value is greater than the current value.
+   *
+   * This is useful for external coordination where the caller needs to
+   * ensure they are updating from a known state.
+   *
+   * @param sourceDoId - The source DO identifier
+   * @param expectedLsn - The expected current cursor value (undefined for new sources)
+   * @param newLsn - The new LSN to set if conditions are met
+   * @returns true if cursor was updated, false otherwise
+   */
+  compareAndSetCursor(
+    sourceDoId: string,
+    expectedLsn: bigint | undefined,
+    newLsn: bigint
+  ): boolean {
+    const currentCursor = this.sourceCursors.get(sourceDoId);
+    const timestamp = Date.now();
+
+    // Check if current value matches expected
+    if (currentCursor !== expectedLsn) {
+      // Record failed update attempt
+      const updateRecord: CursorUpdateRecord = {
+        previousLsn: currentCursor,
+        newLsn,
+        updated: false,
+        timestamp,
+      };
+      this.lastCursorUpdates.set(sourceDoId, updateRecord);
+
+      if (this.lsnUpdateLogger) {
+        this.lsnUpdateLogger(sourceDoId, currentCursor, newLsn, false);
+      }
+      return false;
+    }
+
+    // Check monotonicity: new value must be greater than current (if current exists)
+    if (currentCursor !== undefined && newLsn <= currentCursor) {
+      // Record failed update attempt due to non-monotonic update
+      const updateRecord: CursorUpdateRecord = {
+        previousLsn: currentCursor,
+        newLsn,
+        updated: false,
+        timestamp,
+      };
+      this.lastCursorUpdates.set(sourceDoId, updateRecord);
+
+      if (this.lsnUpdateLogger) {
+        this.lsnUpdateLogger(sourceDoId, currentCursor, newLsn, false);
+      }
+      return false;
+    }
+
+    // Perform the update
+    this.sourceCursors.set(sourceDoId, newLsn);
+
+    // Record successful update
+    const updateRecord: CursorUpdateRecord = {
+      previousLsn: currentCursor,
+      newLsn,
+      updated: true,
+      timestamp,
+    };
+    this.lastCursorUpdates.set(sourceDoId, updateRecord);
+
+    if (this.lsnUpdateLogger) {
+      this.lsnUpdateLogger(sourceDoId, currentCursor, newLsn, true);
+    }
+
+    return true;
   }
 
   /**
@@ -98,6 +289,7 @@ export class CDCBuffer {
       bufferSize: options.bufferSize,
       bufferTimeout: options.bufferTimeout,
       targetBlockSize: options.targetBlockSize,
+      maxBufferSize: options.maxBufferSize,
     });
   }
 
@@ -110,9 +302,22 @@ export class CDCBuffer {
    *
    * @param sourceDoId - The source DO identifier
    * @param entries - WAL entries to add (must be non-empty for any effect)
+   * @throws {BufferOverflowError} if adding entries would exceed maxBufferSize
    */
   add(sourceDoId: string, entries: WalEntry[]): void {
     if (entries.length === 0) return;
+
+    // Calculate the size of incoming entries before adding
+    let incomingSize = 0;
+    for (const entry of entries) {
+      incomingSize += this.estimateEntrySize(entry);
+    }
+
+    // Check if adding these entries would exceed the hard buffer limit
+    const projectedSize = this.estimatedSize + incomingSize;
+    if (projectedSize > this.maxBufferSize) {
+      throw new BufferOverflowError(projectedSize, this.maxBufferSize);
+    }
 
     // Set first entry time if buffer was empty
     if (this.entries.length === 0) {

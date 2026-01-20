@@ -1,4 +1,5 @@
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { resolve } from 'path';
 
 export default defineWorkersConfig({
   test: {
@@ -8,6 +9,11 @@ export default defineWorkersConfig({
     // Limit concurrency to prevent excessive RAM usage
     maxConcurrency: 1,
     fileParallelism: false,
+    // Ensure tests use source files, not dist
+    alias: {
+      '../shred.js': resolve(__dirname, 'src/shred.ts'),
+      '../index.js': resolve(__dirname, 'src/index.ts'),
+    },
     poolOptions: {
       workers: {
         wrangler: { configPath: './wrangler.toml' },
