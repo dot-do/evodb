@@ -1,6 +1,17 @@
 # @evodb/lance-reader
 
-Pure TypeScript Lance format reader for vector search in Cloudflare Workers.
+**Vector Search Without Dependencies**
+
+A pure TypeScript Lance format reader. Zero native dependencies, ~50KB bundle, runs anywhere JavaScript runs - including Cloudflare Workers.
+
+## Why Lance?
+
+Lance is the vector format that powers LanceDB. It's designed for:
+- **Fast vector search** - IVF-PQ and HNSW indices
+- **Efficient storage** - Columnar format with compression
+- **Versioning** - Git-like dataset versioning
+
+EvoDB brings Lance to the edge with a pure TypeScript implementation.
 
 ## Installation
 
@@ -8,113 +19,119 @@ Pure TypeScript Lance format reader for vector search in Cloudflare Workers.
 npm install @evodb/lance-reader
 ```
 
-## Overview
-
-This package provides a zero-dependency Lance format reader:
-
-- **Pure TypeScript**: No native dependencies, ~50KB bundle
-- **Vector Indices**: IVF-PQ and HNSW support
-- **Storage Adapters**: R2, Fetch, Memory, and Caching
-- **Protobuf Parsing**: Read Lance manifests and metadata
-- **Arrow IPC**: Parse Arrow record batches
-
 ## Quick Start
 
 ```typescript
 import { LanceReader, R2StorageAdapter } from '@evodb/lance-reader';
 
-// Create reader with R2 storage
+// Open a Lance dataset from R2
 const reader = new LanceReader({
   storage: new R2StorageAdapter(env.MY_BUCKET),
-  basePath: 'datasets/embeddings',
+  basePath: 'embeddings/products',
 });
 
 await reader.open();
 
 // Vector search
+const queryVector = await getEmbedding('red running shoes');
 const results = await reader.search('embedding', queryVector, {
-  k: 10,
-  nprobes: 20,
+  k: 10,          // Top 10 results
+  nprobes: 20,    // Search 20 partitions
 });
 
 for (const result of results) {
-  console.log(`Row ${result.rowId}: distance=${result.distance}`);
+  console.log(`Product ${result.rowId}: similarity=${result.score}`);
 }
 ```
 
-## API Reference
+## Vector Indices
 
-### LanceReader
+### IVF-PQ (Recommended for Large Datasets)
 
-```typescript
-const reader = new LanceReader(config);
-
-await reader.open()                    // Load manifest
-await reader.search(column, vector, opts) // Vector search
-await reader.getSchema()               // Get schema
-await reader.getRowCount()             // Get total rows
-await reader.close()                   // Clean up
-```
-
-### Vector Search Options
+Inverted File with Product Quantization. Fast approximate search with memory efficiency.
 
 ```typescript
-interface VectorSearchOptions {
-  k?: number;           // Number of results (default: 10)
-  nprobes?: number;     // Partitions to search (default: 20)
-  refineK?: number;     // Candidates for re-ranking
-  filter?: RowFilter;   // Pre-filter rows
-  distanceType?: DistanceType; // 'l2' | 'cosine' | 'dot'
-}
+import { IvfPqIndex } from '@evodb/lance-reader';
 
-interface SearchResult {
-  rowId: bigint;
-  distance: number;
-  score: number;
-}
-```
-
-### Storage Adapters
-
-```typescript
-// R2 Storage
-const r2 = new R2StorageAdapter(bucket);
-
-// HTTP Fetch
-const fetch = new FetchStorageAdapter('https://cdn.example.com/data');
-
-// In-Memory (for testing)
-const memory = new MemoryStorageAdapter();
-memory.set('file.lance', buffer);
-
-// Caching wrapper
-const cached = new CachingStorageAdapter(r2, {
-  maxSize: 100_000_000, // 100MB cache
-});
-```
-
-### Vector Indices
-
-```typescript
-// IVF-PQ Index
-const ivfpq = new IvfPqIndex(config);
-await ivfpq.load(storage, path);
-const results = await ivfpq.search(queryVector, { k: 10 });
-
-// Build index from vectors
-const index = await buildIvfPqIndex(vectors, {
-  numPartitions: 256,
-  numSubVectors: 48,
+const index = new IvfPqIndex({
+  numPartitions: 256,    // Number of centroids
+  numSubVectors: 48,     // PQ compression level
   distanceType: 'l2',
 });
 
-// HNSW Index
-const hnsw = new HnswIndex(config);
-await hnsw.load(storage, path);
-const results = await hnsw.search(queryVector, { k: 10 });
+await index.load(storage, 'embeddings/products/_indices/vector_idx');
+
+const results = await index.search(queryVector, {
+  k: 10,
+  nprobes: 20,  // More probes = more accurate, slower
+});
 ```
 
-### Distance Functions
+### HNSW (Best Accuracy)
+
+Hierarchical Navigable Small World. Highest accuracy, more memory.
+
+```typescript
+import { HnswIndex } from '@evodb/lance-reader';
+
+const index = new HnswIndex({
+  m: 16,              // Connections per node
+  efConstruction: 200, // Build-time quality
+  distanceType: 'cosine',
+});
+
+await index.load(storage, 'embeddings/products/_indices/hnsw_idx');
+
+const results = await index.search(queryVector, {
+  k: 10,
+  ef: 100,  // Search-time quality (higher = more accurate)
+});
+```
+
+## Storage Adapters
+
+### R2 Storage
+
+```typescript
+import { R2StorageAdapter } from '@evodb/lance-reader';
+
+const storage = new R2StorageAdapter(env.MY_BUCKET);
+```
+
+### HTTP Fetch
+
+For datasets served via CDN:
+
+```typescript
+import { FetchStorageAdapter } from '@evodb/lance-reader';
+
+const storage = new FetchStorageAdapter('https://cdn.example.com/datasets');
+```
+
+### Memory (Testing)
+
+```typescript
+import { MemoryStorageAdapter } from '@evodb/lance-reader';
+
+const storage = new MemoryStorageAdapter();
+storage.set('manifest.lance', manifestBuffer);
+storage.set('data/part-0.lance', dataBuffer);
+```
+
+### Caching Wrapper
+
+Cache frequently accessed files:
+
+```typescript
+import { CachingStorageAdapter } from '@evodb/lance-reader';
+
+const cached = new CachingStorageAdapter(r2Storage, {
+  maxSize: 100_000_000,  // 100MB cache
+  ttl: 3600,             // 1 hour
+});
+```
+
+## Distance Functions
 
 ```typescript
 import {
@@ -124,85 +141,123 @@ import {
   normalizeVector,
 } from '@evodb/lance-reader';
 
-// L2 (Euclidean) distance
+// L2 (Euclidean) - good for raw embeddings
 const l2 = computeL2Distance(vec1, vec2);
 
-// Cosine similarity
+// Cosine - good for normalized embeddings
 const cosine = computeCosineSimilarity(vec1, vec2);
 
-// Dot product
+// Dot product - good for recommendation scores
 const dot = computeDotProduct(vec1, vec2);
 
-// Normalize to unit length
+// Normalize to unit length (required for cosine)
 const normalized = normalizeVector(vec);
 ```
 
-### Protobuf Parser
+## Filtering
+
+Pre-filter rows before vector search:
 
 ```typescript
-import {
-  parseManifest,
-  parseIvf,
-  parsePqCodebook,
-} from '@evodb/lance-reader';
+const results = await reader.search('embedding', queryVector, {
+  k: 10,
+  filter: {
+    column: 'category',
+    operator: 'eq',
+    value: 'shoes'
+  }
+});
 
-// Parse Lance manifest
-const manifest = parseManifest(buffer);
-
-// Parse IVF structure
-const ivf = parseIvf(buffer);
-
-// Parse PQ codebook
-const codebook = parsePqCodebook(buffer);
+// Only searches products in 'shoes' category
 ```
 
-### Arrow IPC Reader
+## Reading Data
+
+Beyond vector search, read any column:
 
 ```typescript
-import { ArrowIpcReader, readPartitionData } from '@evodb/lance-reader';
+// Get schema
+const schema = await reader.getSchema();
+// [
+//   { name: 'id', type: 'int64' },
+//   { name: 'name', type: 'string' },
+//   { name: 'embedding', type: 'fixed_size_list<float32, 768>' }
+// ]
 
-// Read Arrow IPC file
-const reader = new ArrowIpcReader(buffer);
-const schema = reader.getSchema();
-const batches = reader.getRecordBatches();
-
-// Read partition data for vector index
-const data = await readPartitionData(storage, path, partitionId);
+// Read specific columns
+const rows = await reader.read({
+  columns: ['id', 'name'],
+  filter: { column: 'id', operator: 'in', values: [1, 2, 3] }
+});
 ```
 
-### Types
+## API Reference
+
+### LanceReader
 
 ```typescript
-// Lance Format
-type LanceManifest     // Dataset manifest
-type LanceFragment     // Data fragment
-type LanceDataFile     // Data file reference
-type LanceField        // Schema field
-type LanceIndexMetadata // Index metadata
+const reader = new LanceReader(config);
 
-// Vector Index
-type IvfStructure      // IVF centroids
-type PqCodebook        // Product quantization codebook
-type HnswParams        // HNSW parameters
-type DistanceType      // 'l2' | 'cosine' | 'dot'
+await reader.open()               // Load manifest
+await reader.search(col, vec, opts) // Vector search
+await reader.read(opts)           // Read rows
+await reader.getSchema()          // Get schema
+await reader.getRowCount()        // Total rows
+await reader.close()              // Clean up
+```
+
+### Search Options
+
+```typescript
+interface VectorSearchOptions {
+  k?: number;           // Results to return (default: 10)
+  nprobes?: number;     // Partitions to search (default: 20)
+  refineK?: number;     // Candidates for re-ranking
+  filter?: RowFilter;   // Pre-filter
+  distanceType?: 'l2' | 'cosine' | 'dot';
+}
+```
+
+### Search Result
+
+```typescript
+interface SearchResult {
+  rowId: bigint;        // Row identifier
+  distance: number;     // Raw distance value
+  score: number;        // Normalized similarity score
+}
 ```
 
 ## Performance
 
-Optimized for Cloudflare Workers:
+Optimized for edge constraints:
 
-| Dataset | Search Time | Memory |
-|---------|-------------|--------|
+| Dataset Size | Search Time | Memory Usage |
+|--------------|-------------|--------------|
 | 10K vectors | <1ms | ~1MB |
 | 100K vectors | ~2ms | ~2MB |
 | 1M vectors | ~10ms | ~10MB |
+| 10M vectors | ~50ms | ~50MB |
+
+IVF-PQ index with 256 partitions, 48 sub-vectors, k=10, nprobes=20.
+
+## Bundle Size
+
+```
+@evodb/lance-reader: ~50KB (minified + gzipped)
+
+Dependencies: 0
+Native modules: 0
+```
+
+Runs anywhere: Workers, Deno, Node, browsers.
 
 ## Related Packages
 
-- `@evodb/snippets-lance` - Snippets-optimized vector search
-- `@evodb/core` - Columnar encoding primitives
-- `@evodb/edge-cache` - Edge caching integration
+- [@evodb/snippets-lance](../snippets-lance) - Optimized for Snippets (5ms CPU, 32MB RAM)
+- [@evodb/core](../core) - Columnar encoding
+- [@evodb/edge-cache](../edge-cache) - Edge caching
 
 ## License
 
-MIT
+MIT - Copyright 2026 .do

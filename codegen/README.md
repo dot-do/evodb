@@ -1,6 +1,30 @@
 # @evodb/codegen
 
-CLI tool for EvoDB schema code generation.
+**From Schema to TypeScript**
+
+CLI tool for managing EvoDB schemas. Pull types, push changes, lock versions, diff schemas - all from the command line.
+
+## The Workflow
+
+```
+Development                     Production
+───────────────                 ──────────────────
+
+1. Write data                   4. Lock schema
+   (schema evolves)                evodb lock --env prod
+        │                               │
+        ▼                               ▼
+2. Pull types                   5. Deploy with confidence
+   evodb pull                      (types are frozen)
+        │                               │
+        ▼                               ▼
+3. Review diff                  6. Push new versions
+   evodb diff                      evodb push --migration
+```
+
+**Development**: Schema evolves automatically. Pull types to stay in sync.
+
+**Production**: Lock the schema. TypeScript ensures nothing breaks.
 
 ## Installation
 
@@ -8,45 +32,20 @@ CLI tool for EvoDB schema code generation.
 npm install @evodb/codegen
 ```
 
-## Overview
-
-Generate TypeScript type definitions from EvoDB database schemas:
-
-- **Pull**: Generate `.evodb/[db].d.ts` from schema
-- **Push**: Push schema changes to database
-- **Lock**: Lock schema at current version
-- **Diff**: Show schema differences
-
 ## Quick Start
 
 ```bash
-# Generate types from database schema
+# Pull schema and generate TypeScript types
 npx evodb pull --db users
 
-# Push schema changes
-npx evodb push --db users
-
-# Lock schema version
-npx evodb lock --db users
-
-# Show schema diff
-npx evodb diff --db users
+# Output: .evodb/users.d.ts
 ```
 
-## Commands
-
-### Pull
-
-Generate TypeScript definitions from database schema.
-
-```bash
-evodb pull [--db <name>]
-```
-
-Output: `.evodb/<name>.d.ts`
+Generated types:
 
 ```typescript
-// .evodb/users.d.ts (generated)
+// .evodb/users.d.ts
+
 export interface UsersTable {
   id: number;
   name: string;
@@ -55,39 +54,74 @@ export interface UsersTable {
 }
 
 export interface UsersInsert {
-  id?: number;  // auto-increment
+  id?: number;           // auto-increment
   name: string;
   email?: string | null;
-  created_at?: Date;
+  created_at?: Date;     // defaults to now()
 }
 ```
 
-### Push
+## Commands
+
+### pull
+
+Generate TypeScript types from your database schema.
+
+```bash
+evodb pull [--db <name>] [--output <path>]
+```
+
+```bash
+# Pull specific database
+evodb pull --db users
+
+# Pull all databases
+evodb pull --all
+
+# Custom output path
+evodb pull --db users --output src/types/users.d.ts
+```
+
+### push
 
 Push schema changes to the database.
 
 ```bash
-evodb push [--db <name>]
+evodb push [--db <name>] [--dry-run]
 ```
 
-This will:
-1. Compare local schema with remote
-2. Generate migration SQL
-3. Apply changes (with confirmation)
+```bash
+# Preview changes (recommended)
+evodb push --db users --dry-run
 
-### Lock
+# Apply changes
+evodb push --db users
 
-Lock schema at current version (prevent accidental changes).
+# Apply with migration script
+evodb push --db users --migration
+```
+
+### lock
+
+Lock the schema at its current version.
 
 ```bash
 evodb lock [--db <name>]
 ```
 
-Creates `.evodb/<name>.lock` with schema hash.
+Creates `.evodb/<name>.lock` with the schema hash. Any schema changes will require explicit migrations.
 
-### Diff
+```bash
+# Lock schema
+evodb lock --db users
 
-Show differences between local and remote schemas.
+# Verify lock
+evodb lock --db users --verify
+```
+
+### diff
+
+Show differences between local types and remote schema.
 
 ```bash
 evodb diff [--db <name>]
@@ -96,10 +130,123 @@ evodb diff [--db <name>]
 Output:
 ```
 Schema diff for 'users':
+
 + ADD COLUMN age: int32
 ~ MODIFY COLUMN email: string -> string (nullable)
 - DROP COLUMN legacy_field
+
+3 changes detected
 ```
+
+## Configuration
+
+Create `.evodbrc.json` in your project root:
+
+```json
+{
+  "databases": {
+    "users": {
+      "connection": "evodb://localhost:5432/users",
+      "output": ".evodb/users.d.ts"
+    },
+    "analytics": {
+      "connection": "evodb://localhost:5432/analytics",
+      "output": ".evodb/analytics.d.ts"
+    }
+  },
+  "defaultDb": "users"
+}
+```
+
+## Programmatic API
+
+```typescript
+import { pullCommand, pushCommand, lockCommand, diffCommand } from '@evodb/codegen';
+
+// Pull schema
+const pullResult = await pullCommand({
+  db: 'users',
+  output: '.evodb/users.d.ts',
+});
+console.log(`Generated types for ${pullResult.tables.length} tables`);
+
+// Push changes (dry run)
+const pushResult = await pushCommand({
+  db: 'users',
+  dryRun: true,
+});
+console.log(`${pushResult.changes.length} changes would be applied`);
+
+// Lock schema
+const lockResult = await lockCommand({
+  db: 'users',
+});
+console.log(`Schema locked with hash: ${lockResult.hash}`);
+
+// Get diff
+const diffResult = await diffCommand({
+  db: 'users',
+});
+if (diffResult.hasChanges) {
+  for (const change of diffResult.changes) {
+    console.log(`${change.type}: ${change.table}.${change.column}`);
+  }
+}
+```
+
+## Type Mapping
+
+EvoDB types map to TypeScript:
+
+| EvoDB Type | TypeScript |
+|------------|------------|
+| `int32` | `number` |
+| `int64` | `bigint` |
+| `float32` | `number` |
+| `float64` | `number` |
+| `string` | `string` |
+| `boolean` | `boolean` |
+| `timestamp` | `Date` |
+| `date` | `Date` |
+| `binary` | `Uint8Array` |
+| `json` | `unknown` |
+| `variant` | `unknown` |
+
+Nullable types become `T | null`.
+
+## Schema Evolution
+
+When schema changes are detected:
+
+```bash
+$ evodb diff --db users
+
+Schema diff for 'users':
+
++ ADD COLUMN preferences: json (nullable)
+  └─ Safe: Adding nullable column
+
+~ MODIFY COLUMN score: int32 -> int64
+  └─ Safe: Widening integer type
+
+- DROP COLUMN deprecated_field
+  └─ Breaking: Column in use by 3 queries
+
+1 breaking change, 2 safe changes
+```
+
+### Safe Changes (auto-applied)
+
+- Add nullable column
+- Widen type (int32 → int64)
+- Make required field optional
+
+### Breaking Changes (require migration)
+
+- Remove column
+- Narrow type
+- Make optional field required
+- Rename column
 
 ## API Reference
 
@@ -122,76 +269,14 @@ interface TableDefinition {
   indexes?: IndexDefinition[];
 }
 
-interface Schema {
-  tables: TableDefinition[];
-  version: number;
-}
-
-interface SchemaLock {
-  hash: string;
-  version: number;
-  lockedAt: Date;
-}
-
 interface SchemaChange {
-  type: ChangeType;
+  type: 'ADD_TABLE' | 'DROP_TABLE' | 'ADD_COLUMN' | 'DROP_COLUMN' | 'MODIFY_COLUMN';
   table: string;
   column?: string;
   before?: ColumnDefinition;
   after?: ColumnDefinition;
+  breaking: boolean;
 }
-
-type ChangeType = 'ADD_TABLE' | 'DROP_TABLE' | 'ADD_COLUMN' | 'DROP_COLUMN' | 'MODIFY_COLUMN';
-```
-
-### SQL Types
-
-```typescript
-type SqlType =
-  | 'int32'
-  | 'int64'
-  | 'float32'
-  | 'float64'
-  | 'string'
-  | 'boolean'
-  | 'timestamp'
-  | 'date'
-  | 'binary'
-  | 'json';
-```
-
-### Programmatic Usage
-
-```typescript
-import {
-  pullCommand,
-  pushCommand,
-  lockCommand,
-  diffCommand,
-} from '@evodb/codegen';
-
-// Pull schema
-const result = await pullCommand({
-  db: 'users',
-  output: '.evodb/users.d.ts',
-});
-
-// Push changes
-const pushResult = await pushCommand({
-  db: 'users',
-  dryRun: true, // Preview only
-});
-
-// Lock schema
-const lockResult = await lockCommand({
-  db: 'users',
-});
-
-// Get diff
-const diffResult = await diffCommand({
-  db: 'users',
-});
-console.log(diffResult.changes);
 ```
 
 ### Command Results
@@ -220,30 +305,16 @@ interface LockResult {
 interface DiffResult {
   changes: SchemaChange[];
   hasChanges: boolean;
-}
-```
-
-## Configuration
-
-Create `.evodbrc.json` in project root:
-
-```json
-{
-  "databases": {
-    "users": {
-      "connection": "evodb://localhost:5432/users",
-      "output": ".evodb/users.d.ts"
-    }
-  },
-  "defaultDb": "users"
+  breakingChanges: number;
+  safeChanges: number;
 }
 ```
 
 ## Related Packages
 
-- `@evodb/core` - Core types and encoding
-- `@evodb/lakehouse` - Schema management
+- [@evodb/core](../core) - Schema types and utilities
+- [@evodb/lakehouse](../lakehouse) - Schema storage
 
 ## License
 
-MIT
+MIT - Copyright 2026 .do

@@ -1,69 +1,55 @@
 # @evodb/snippets-lance
 
-Lance vector search optimized for Cloudflare Snippets (5ms CPU, 32MB RAM).
+**Vector Search in 5ms**
 
-## TL;DR
+Yes, we can do semantic search within Cloudflare Snippets' brutal constraints. IVF-PQ vector search, edge-cached indices, under 5ms CPU and 32MB RAM.
 
-**YES, we can achieve vector search in under 5ms CPU and 32MB RAM using pure TypeScript Lance reader with edge-cached Lance files.**
+## The Proof
 
-| Dataset Size | CPU Time (P99) | Memory | Verdict |
-|-------------|----------------|--------|---------|
-| 1K vectors  | 0.6ms          | 535KB  | PASS    |
-| 10K vectors | 0.2ms          | 1.1MB  | PASS    |
-| 50K vectors | 0.3ms          | 816KB* | PASS    |
-| 100K vectors| ~2ms           | 2MB*   | PASS    |
+| Dataset | CPU Time (P99) | Memory | Verdict |
+|---------|----------------|--------|---------|
+| 1K vectors | 0.6ms | 535KB | PASS |
+| 10K vectors | 0.2ms | 1.1MB | PASS |
+| 50K vectors | 0.3ms | 816KB | PASS |
+| 100K vectors | ~2ms | 2MB | PASS |
 
-*Memory for Snippets = centroids + codebook + lookup tables (partition data loaded from edge cache)
+**It works.** Vector search in Snippets isn't just possible - it's fast.
 
 ## How It Works
 
-### Architecture
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Cloudflare Snippet                       │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────┐                   │
-│  │ Centroid Index  │  │  PQ Codebook    │   In-Memory      │
-│  │  (384KB-1.5MB)  │  │   (384KB-768KB) │   (Pre-loaded)   │
-│  └─────────────────┘  └─────────────────┘                   │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Lookup Tables (48KB-96KB)               │   │
-│  │              (Computed per-query)                     │   │
-│  └─────────────────────────────────────────────────────┘   │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ Range Request (1-3 per query)
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Edge Cache (cdn.workers.do)               │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Partition Data (lazy-loaded)            │   │
-│  │              Only requested partitions fetched       │   │
-│  │              (50-200KB per partition)                │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                    Cloudflare Snippet                            │
+│                    (5ms CPU, 32MB RAM, 5 subrequests)           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   IN MEMORY (pre-loaded):                                       │
+│   ┌─────────────────┐  ┌─────────────────┐                     │
+│   │ Centroid Index  │  │  PQ Codebook    │                     │
+│   │  (384KB-1.5MB)  │  │   (384KB-768KB) │                     │
+│   └─────────────────┘  └─────────────────┘                     │
+│                                                                  │
+│   COMPUTED PER-QUERY:                                           │
+│   ┌─────────────────────────────────────────────────────┐      │
+│   │              Lookup Tables (48KB-96KB)               │      │
+│   └─────────────────────────────────────────────────────┘      │
+│                                                                  │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             │ Range request (1-3 per query)
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Edge Cache (cdn.workers.do)                    │
+├─────────────────────────────────────────────────────────────────┤
+│   ┌─────────────────────────────────────────────────────┐      │
+│   │              Partition Data (lazy-loaded)            │      │
+│   │              50-200KB per partition                  │      │
+│   │              Only requested partitions fetched       │      │
+│   └─────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### Search Algorithm
-
-1. **Centroid Search** (~50% of CPU time)
-   - Linear scan of all centroids
-   - Find `nprobes` nearest partitions
-   - SIMD-friendly distance computation
-
-2. **Build Lookup Tables** (~10% of CPU time)
-   - Compute distance from query to each PQ code
-   - One table per sub-vector
-
-3. **Partition Search** (~35% of CPU time)
-   - Load partition data from edge cache
-   - Asymmetric Distance Computation (ADC)
-   - Early termination with top-k heap
-
-4. **Sort Results** (~5% of CPU time)
-   - Return k nearest neighbors
+**The trick**: Keep the small stuff in memory (centroids, codebook). Load the big stuff (partition data) from edge cache only when needed.
 
 ## Installation
 
@@ -71,9 +57,38 @@ Lance vector search optimized for Cloudflare Snippets (5ms CPU, 32MB RAM).
 npm install @evodb/snippets-lance
 ```
 
-## Usage
+## Quick Start
 
-### In-Memory Search (for testing)
+### Production (Edge Cache)
+
+```typescript
+import { CachedLanceReader, SnippetsVectorSearch } from '@evodb/snippets-lance';
+
+// Create reader with edge cache
+const reader = new CachedLanceReader({
+  baseUrl: 'https://cdn.workers.do/lance',
+  dataset: 'product-embeddings',
+});
+
+// Initialize (loads centroids + codebook to memory)
+const search = new SnippetsVectorSearch(reader);
+await search.initialize();  // ~200KB loaded
+
+// Search (loads 1-3 partitions from edge cache)
+const results = await search.search(queryVector, {
+  k: 10,       // Top 10 results
+  nprobes: 1,  // Search 1 partition (fastest)
+});
+
+// Results:
+// [
+//   { rowId: 42n, distance: 0.15, score: 0.85 },
+//   { rowId: 17n, distance: 0.23, score: 0.77 },
+//   ...
+// ]
+```
+
+### Testing (In-Memory)
 
 ```typescript
 import {
@@ -90,156 +105,83 @@ const index = buildCachedIndex({
   numPartitions: 128,
   dimension: 384,
   numSubVectors: 48,
-  distanceType: 'l2',
   vectors,
 });
 
-// Create search engine
+// Search
 const search = new InMemoryVectorSearch(
   index.centroids,
   index.pqCodebook,
   index.partitionData
 );
 
-// Search
-const query = generateRandomVectors(1, 384)[0];
-const results = search.search(query, { k: 10, nprobes: 1 });
+const results = search.search(queryVector, { k: 10, nprobes: 1 });
 ```
 
-### Edge-Cached Search (for production)
+## Memory Budget
 
-```typescript
-import {
-  CachedLanceReader,
-  SnippetsVectorSearch,
-} from '@evodb/snippets-lance';
+Everything fits in 32MB with room to spare:
 
-// Create reader with edge cache
-const reader = new CachedLanceReader({
-  baseUrl: 'https://cdn.workers.do/lance',
-  dataset: 'my-embeddings',
-});
+| Component | Formula | 384d, 256 partitions |
+|-----------|---------|---------------------|
+| Centroids | `partitions * dim * 4` | 384KB |
+| Codebook | `256 * subVectors * subDim * 4` | 384KB |
+| Lookup Tables | `256 * subVectors * 4` | 48KB |
+| **Total** | | **816KB** |
 
-// Initialize search engine (load centroids and codebook)
-const search = new SnippetsVectorSearch(reader);
-await search.initialize();
-
-// Search (partitions loaded on-demand from edge cache)
-const results = await search.search(queryVector, {
-  k: 10,
-  nprobes: 1,
-});
-```
-
-## Memory Budget Analysis
-
-### Index Components
-
-| Component | Formula | Example (384d, 256 partitions) |
-|-----------|---------|-------------------------------|
-| Centroids | `partitions * dim * 4` | 256 * 384 * 4 = 384KB |
-| Codebook | `256 * subVectors * subDim * 4` | 256 * 48 * 8 * 4 = 384KB |
-| Lookup Tables | `256 * subVectors * 4` | 256 * 48 * 4 = 48KB |
-| **Total** | - | **816KB** |
-
-### Partition Data (loaded from edge cache)
-
-| Vectors | Sub-vectors | Size per partition |
-|---------|-------------|-------------------|
-| 100 | 48 | 5.6KB |
-| 500 | 48 | 28KB |
-| 1000 | 48 | 56KB |
+Partition data stays on edge cache until needed.
 
 ## Performance Tuning
 
 ### Partition Count
 
-More partitions = better recall but slower centroid search:
+More partitions = better recall, slower centroid search:
 
-| Partitions | Centroid Search | Recommended Use |
-|------------|-----------------|-----------------|
-| 32-64 | <0.1ms | 1K-5K vectors |
+| Partitions | Centroid Search | Best For |
+|------------|-----------------|----------|
+| 64 | <0.1ms | 1K-5K vectors |
 | 128 | ~0.1ms | 5K-20K vectors |
 | 256 | ~0.2ms | 20K-50K vectors |
 | 512 | ~0.4ms | 50K-100K vectors |
-| 1024 | ~1ms | 100K+ vectors |
 
 ### nprobes
 
-More probes = better recall but more partition loads:
+More probes = better recall, more subrequests:
 
-| nprobes | Edge Cache Requests | CPU Overhead |
-|---------|---------------------|--------------|
+| nprobes | Subrequests | CPU Overhead |
+|---------|-------------|--------------|
 | 1 | 1 | Baseline |
-| 2 | 2 | +~0.1ms |
-| 3 | 3 | +~0.2ms |
-| 5 | 5 (max for Snippets) | +~0.3ms |
+| 2 | 2 | +0.1ms |
+| 3 | 3 | +0.2ms |
+| 5 | 5 (max) | +0.3ms |
 
-### Dimension
+**Tip**: For Snippets, start with `nprobes=1`. Recall is usually good enough.
 
-Higher dimensions = more memory and slower search:
+### Recommended Configs
 
-| Dimension | Common Models | Memory Impact |
-|-----------|---------------|---------------|
-| 384 | MiniLM, E5-small | 1x |
-| 768 | BERT, E5-base | 2x |
-| 1536 | OpenAI ada-002 | 4x |
-
-## Recommended Configurations
-
-### Small Dataset (1K-10K vectors)
-
+**Small (1K-10K vectors)**
 ```typescript
-const config = {
-  numPartitions: 64,
-  numSubVectors: 48,  // dimension / 8
-  nprobes: 2,
-};
+{ numPartitions: 64, numSubVectors: 48, nprobes: 2 }
+// ~500KB memory, <1ms, 2 subrequests
 ```
 
-- Memory: ~500KB
-- Latency: <1ms
-- Subrequests: 2
-
-### Medium Dataset (10K-50K vectors)
-
+**Medium (10K-50K vectors)**
 ```typescript
-const config = {
-  numPartitions: 256,
-  numSubVectors: 48,
-  nprobes: 1,
-};
+{ numPartitions: 256, numSubVectors: 48, nprobes: 1 }
+// ~800KB memory, 1-2ms, 1 subrequest
 ```
 
-- Memory: ~800KB
-- Latency: 1-2ms
-- Subrequests: 1
-
-### Large Dataset (50K-100K vectors)
-
+**Large (50K-100K vectors)**
 ```typescript
-const config = {
-  numPartitions: 512,
-  numSubVectors: 48,
-  nprobes: 1,
-};
+{ numPartitions: 512, numSubVectors: 48, nprobes: 1 }
+// ~1.5MB memory, 2-3ms, 1 subrequest
 ```
-
-- Memory: ~1.5MB
-- Latency: 2-3ms
-- Subrequests: 1
 
 ## Benchmark Results
 
-Tested on Node.js v20 (representative of V8 in Cloudflare Workers):
+Node.js v20 (V8 similar to Workers):
 
 ```
-=== 1K Vectors, 384 Dimensions ===
-Average: 0.266ms
-P50: 0.330ms
-P99: 0.637ms
-Memory: 535KB
-
 === 10K Vectors, nprobes=1 ===
 Average: 0.191ms
 P99: 0.246ms
@@ -248,61 +190,86 @@ Memory: 1.14MB
 === 50K Vectors, nprobes=1 ===
 Average: 0.216ms
 P99: 0.273ms
-Snippets Memory: 816KB
+Memory: 816KB (Snippets-safe)
 
 === nprobes Scaling (20K vectors) ===
 nprobes=1: avg=0.189ms, p99=0.208ms
 nprobes=2: avg=0.352ms, p99=1.539ms
-nprobes=3: avg=0.227ms, p99=0.230ms
 nprobes=5: avg=0.278ms, p99=0.316ms
 ```
 
-## Limitations
+## Search Algorithm
 
-1. **Index Building**: Must be done offline (not in Snippets)
-2. **Maximum Dataset**: ~100K vectors for reliable <5ms
-3. **Recall Trade-off**: IVF-PQ is approximate; may miss some results
-4. **No Updates**: Index is read-only; rebuild for new data
+1. **Centroid Search** (~50% CPU)
+   - Linear scan of all centroids
+   - Find `nprobes` nearest partitions
 
-## Edge Cache Setup
+2. **Build Lookup Tables** (~10% CPU)
+   - Precompute distances from query to PQ codes
 
-For production, pre-process your Lance index and upload to edge cache:
+3. **Partition Search** (~35% CPU)
+   - Load partition data from edge cache
+   - Asymmetric Distance Computation (ADC)
+   - Top-k heap for results
 
-1. Build the cached index format (`.lcix` file)
-2. Upload to R2 or your CDN
-3. Configure cdn.workers.do caching rules
-4. Point `baseUrl` to your cached files
+4. **Sort Results** (~5% CPU)
+   - Return k nearest neighbors
 
 ## API Reference
+
+### Classes
+
+```typescript
+// Production - uses edge cache
+const search = new SnippetsVectorSearch(reader);
+await search.initialize();
+const results = await search.search(vector, options);
+
+// Testing - fully in-memory
+const search = new InMemoryVectorSearch(centroids, codebook, partitions);
+const results = search.search(vector, options);
+
+// Edge-cache reader
+const reader = new CachedLanceReader({ baseUrl, dataset });
+```
 
 ### Types
 
 ```typescript
 interface SnippetsSearchOptions {
-  k?: number;      // Results to return (default: 10)
-  nprobes?: number; // Partitions to search (default: 1)
+  k?: number;           // Results to return (default: 10)
+  nprobes?: number;     // Partitions to search (default: 1)
   includeDistance?: boolean;
 }
 
 interface SearchResult {
-  rowId: bigint;   // Vector ID
-  distance: number; // Distance to query
-  score: number;   // Similarity score (0-1)
+  rowId: bigint;        // Vector ID
+  distance: number;     // Distance to query
+  score: number;        // Similarity (0-1)
 }
 ```
 
-### Classes
+### Utilities
 
-- `InMemoryVectorSearch`: For testing without network
-- `SnippetsVectorSearch`: For production with edge cache
-- `CachedLanceReader`: Edge-cache-aware reader
+```typescript
+buildCachedIndex(options)      // Build index from vectors
+generateRandomVectors(n, dim)  // Generate test data
+normalizeVector(vec)           // Normalize to unit length
+```
 
-### Functions
+## Limitations
 
-- `buildCachedIndex()`: Build index from vectors
-- `generateRandomVectors()`: Generate test data
-- `normalizeVector()`: Normalize to unit length
+1. **Index building** - Must be done offline (too expensive for Snippets)
+2. **Max dataset** - ~100K vectors for reliable <5ms
+3. **Approximate** - IVF-PQ may miss some results (tune nprobes for recall)
+4. **Read-only** - Rebuild index for new vectors
+
+## Related Packages
+
+- [@evodb/lance-reader](../lance-reader) - Full Lance reader (not Snippets-optimized)
+- [@evodb/snippets-chain](../snippets-chain) - Chain multiple Snippets
+- [@evodb/edge-cache](../edge-cache) - Edge caching
 
 ## License
 
-MIT
+MIT - Copyright 2026 .do

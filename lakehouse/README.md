@@ -1,6 +1,38 @@
 # @evodb/lakehouse
 
-Iceberg-inspired manifest management optimized for Cloudflare R2.
+**Time-Travel for Your Data**
+
+The unified storage layer. Iceberg-inspired manifest management that gives you snapshots, time-travel queries, and schema evolution - all backed by Cloudflare R2.
+
+## The Vision
+
+Your edge databases are distributed globally. But analytics need to see everything:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Global Lakehouse                            │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │                    Unified View                           │   │
+│  │                                                           │   │
+│  │  • Query across all tenants                              │   │
+│  │  • Time-travel to any snapshot                           │   │
+│  │  • Schema evolution with compatibility                    │   │
+│  │  • Partition pruning for fast queries                    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│         ┌────────────────────┼────────────────────┐             │
+│         │                    │                    │             │
+│  ┌──────┴──────┐     ┌──────┴──────┐     ┌──────┴──────┐       │
+│  │ Tenant: acme│     │Tenant: globex│     │ Tenant: ...│       │
+│  │  namespace  │     │  namespace   │     │  namespace │       │
+│  └─────────────┘     └──────────────┘     └────────────┘       │
+│                                                                  │
+│  Storage: Cloudflare R2 (S3-compatible, zero egress)            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Global indexes** for cross-tenant analytics. **Tenant-scoped namespaces** for isolation. **Time-travel** for auditing and debugging.
 
 ## Installation
 
@@ -8,67 +40,139 @@ Iceberg-inspired manifest management optimized for Cloudflare R2.
 npm install @evodb/lakehouse
 ```
 
-## Overview
-
-This package provides lakehouse table management:
-
-- **Table Manifests**: Track data files with snapshots for time-travel
-- **Schema Evolution**: Add/drop columns with compatibility checking
-- **Partition Specs**: Define and prune by partition columns
-- **URL-based Paths**: Reverse hostname organization (e.g., `com/example/api/users`)
-- **Snapshot History**: Query historical versions of tables
-- **Compaction**: Merge small files into larger ones
-
 ## Quick Start
 
 ```typescript
-import {
-  createTable,
-  appendFiles,
-  queryFiles,
-  createR2Adapter,
-} from '@evodb/lakehouse';
+import { createTable, appendFiles, createR2Adapter } from '@evodb/lakehouse';
 
-// Create storage adapter
+// Connect to R2
 const storage = createR2Adapter(env.R2_BUCKET);
 
-// Create a new table
+// Create a table with schema
 let table = createTable({
-  tableId: 'users',
-  location: 'com/example/users',
+  tableId: 'events',
+  location: 'com/example/events',
   schema: {
     schemaId: 1,
     columns: [
       { name: 'id', type: 'int64', nullable: false },
-      { name: 'name', type: 'string', nullable: false },
-      { name: 'email', type: 'string', nullable: true },
+      { name: 'type', type: 'string', nullable: false },
+      { name: 'data', type: 'variant', nullable: true },  // Flexible!
+      { name: 'timestamp', type: 'timestamp', nullable: false },
     ],
   },
-  partitionSpec: {
-    specId: 0,
-    fields: [{ name: 'created_date', transform: 'day', sourceId: 3 }],
-  },
 });
 
-// Append data files
+// Append data files (creates a snapshot)
 table = appendFiles(table, {
-  files: [
-    {
-      filePath: 'data/part-0001.parquet',
-      format: 'parquet',
-      rowCount: 10000,
-      sizeBytes: 1_000_000,
-      partitionValues: { created_date: '2024-01-15' },
-    },
-  ],
+  files: [{
+    filePath: 'data/part-0001.parquet',
+    rowCount: 10000,
+    sizeBytes: 1_000_000,
+  }],
 });
 
-// Query files for a partition range
-const files = queryFiles(table, {
+// Every append creates a new snapshot
+console.log(table.currentSnapshotId);  // 'snap_abc123'
+```
+
+## Time-Travel Queries
+
+Query data as it existed at any point in time:
+
+```typescript
+import { findSnapshotAsOf, getFilesForQuery } from '@evodb/lakehouse';
+
+// What did the data look like last week?
+const lastWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+const historicalSnapshot = findSnapshotAsOf(table, lastWeek);
+
+// Get files for that snapshot
+const files = getFilesForQuery(table, historicalSnapshot.snapshotId);
+
+// Query historical data
+const results = await reader.query(files, { ... });
+```
+
+**Use cases:**
+- Debug production issues by querying past state
+- Audit trails with immutable history
+- Rollback to a known-good snapshot
+- Compare data between time periods
+
+## Schema Evolution
+
+Schemas evolve without breaking existing data:
+
+```typescript
+import { evolveSchema, addSchema, isCompatible } from '@evodb/lakehouse';
+
+// Add a new column (backward compatible)
+const newSchema = evolveSchema(table.currentSchema, {
+  add: [{ name: 'region', type: 'string', nullable: true }]
+});
+
+// Verify compatibility
+if (isCompatible(table.currentSchema, newSchema)) {
+  table = addSchema(table, newSchema);
+}
+
+// Existing data still readable - new column is null for old rows
+```
+
+**Compatible changes:**
+- Add nullable column
+- Widen type (int32 → int64)
+- Make required field optional
+
+**Breaking changes (require migration):**
+- Remove column
+- Narrow type
+- Make optional field required
+
+## Partition Pruning
+
+Only read relevant files:
+
+```typescript
+import { pruneFiles, dayField } from '@evodb/lakehouse';
+
+// Partition by date
+const table = createTable({
+  // ...
+  partitionSpec: {
+    fields: [dayField('timestamp')]
+  }
+});
+
+// Query only reads files for matching partitions
+const files = pruneFiles(table, {
   partitionFilters: [
-    { column: 'created_date', operator: 'gte', value: '2024-01-01' },
-    { column: 'created_date', operator: 'lt', value: '2024-02-01' },
-  ],
+    { column: 'timestamp', operator: 'gte', value: '2024-01-01' },
+    { column: 'timestamp', operator: 'lt', value: '2024-02-01' },
+  ]
+});
+
+// Instead of scanning 365 days, we read 31
+```
+
+## Tenant Namespaces
+
+Isolate tenant data while enabling cross-tenant analytics:
+
+```typescript
+// Tenant-specific namespace
+const acmeTable = createTable({
+  tableId: 'events',
+  location: 'tenants/acme/events',  // Isolated
+  // ...
+});
+
+// Global analytics namespace
+const globalIndex = createTable({
+  tableId: 'all_events',
+  location: 'global/events',  // Cross-tenant
+  // ...
 });
 ```
 
@@ -77,101 +181,56 @@ const files = queryFiles(table, {
 ### Table Operations
 
 ```typescript
-createTable(options)           // Create new table manifest
-appendFiles(table, options)    // Add data files (append snapshot)
-overwriteFiles(table, options) // Replace files (overwrite snapshot)
-compact(table, options)        // Merge small files
-```
-
-### Schema Operations
-
-```typescript
-createSchema(columns)          // Create schema definition
-evolveSchema(schema, changes)  // Evolve schema
-inferSchema(rows)              // Infer from sample data
-isCompatible(old, new)         // Check compatibility
-addSchema(table, schema)       // Add schema version
-setCurrentSchema(table, id)    // Set active schema
-```
-
-### Partition Operations
-
-```typescript
-createPartitionSpec(fields)    // Create partition spec
-identityField(name)            // Partition by column value
-yearField(name)                // Partition by year
-monthField(name)               // Partition by month
-dayField(name)                 // Partition by day
-bucketField(name, n)           // Hash bucket partitioning
-truncateField(name, width)     // Truncate string/int
-```
-
-### Partition Pruning
-
-```typescript
-pruneByPartition(files, filters)    // Prune by partition values
-pruneByColumnStats(files, filters)  // Prune by zone maps
-pruneFiles(files, query)            // Full pruning pipeline
-
-// Optimized pruning with index
-const index = createPartitionIndex(files);
-const pruned = pruneFilesOptimized(index, filters);
+createTable(opts)              // Create new table
+appendFiles(table, opts)       // Add files (append snapshot)
+overwriteFiles(table, opts)    // Replace files (overwrite snapshot)
+compact(table, opts)           // Merge small files
 ```
 
 ### Snapshot Operations
 
 ```typescript
-findSnapshotById(table, id)         // Get specific snapshot
-findSnapshotAsOf(table, timestamp)  // Time-travel query
-getSnapshotHistory(table)           // List all snapshots
-diffSnapshots(table, id1, id2)      // Compare snapshots
-getExpiredSnapshots(table, options) // Find old snapshots
-getOrphanedFiles(table)             // Find unreferenced files
+findSnapshotById(table, id)    // Get specific snapshot
+findSnapshotAsOf(table, time)  // Time-travel
+getSnapshotHistory(table)      // List all snapshots
+diffSnapshots(table, a, b)     // Compare snapshots
 ```
 
-### Path Utilities
+### Schema Operations
 
 ```typescript
-urlToR2Path(url)      // 'https://api.example.com/v1' -> 'com/example/api/v1'
-r2PathToUrl(path)     // Reverse conversion
-manifestPath(table)   // Get manifest file path
-dataDir(table)        // Get data directory path
+createSchema(columns)          // Create schema
+evolveSchema(schema, changes)  // Evolve schema
+isCompatible(old, new)         // Check compatibility
+addSchema(table, schema)       // Add schema version
+```
+
+### Partition Operations
+
+```typescript
+dayField(name)                 // Partition by day
+monthField(name)               // Partition by month
+bucketField(name, n)           // Hash bucket
+pruneFiles(table, query)       // Partition pruning
 ```
 
 ### R2 Storage
 
 ```typescript
 const adapter = createR2Adapter(bucket);
-
-await adapter.read(path)              // Read file
-await adapter.write(path, data)       // Write file
-await adapter.delete(path)            // Delete file
-await adapter.list(prefix)            // List files
-
-// Atomic commit (optimistic concurrency)
-await atomicCommit(adapter, table, newManifest);
-```
-
-## Time-Travel Queries
-
-```typescript
-// Query table as of a specific time
-const historicalSnapshot = findSnapshotAsOf(table, new Date('2024-01-01'));
-const files = getFilesForQuery(table, historicalSnapshot.snapshotId);
-
-// Use snapshot cache for repeated time-travel
-const cache = createSnapshotCache();
-const traverser = createSnapshotTraverser(table, cache);
-const query = new TimeTravelQuery(traverser);
+await adapter.read(path)       // Read file
+await adapter.write(path, data)// Write file
+await adapter.list(prefix)     // List files
+await atomicCommit(adapter, table, manifest)  // Atomic update
 ```
 
 ## Related Packages
 
-- `@evodb/core` - Columnar encoding primitives
-- `@evodb/writer` - Write data files to R2
-- `@evodb/reader` - Query data from R2
-- `@evodb/edge-cache` - Edge caching for hot data
+- [@evodb/core](../core) - Columnar encoding
+- [@evodb/writer](../writer) - Write data to lakehouse
+- [@evodb/reader](../reader) - Query from lakehouse
+- [@evodb/edge-cache](../edge-cache) - Edge caching
 
 ## License
 
-MIT
+MIT - Copyright 2026 .do
