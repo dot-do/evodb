@@ -3,7 +3,7 @@
  * Provides atomic manifest operations with optimistic concurrency
  *
  * This module provides two layers of abstraction:
- * 1. ObjectStorageAdapter - low-level byte storage (R2-compatible interface)
+ * 1. ObjectStorageAdapter - low-level byte storage (R2-compatible interface) - from @evodb/core
  * 2. R2StorageAdapter - high-level JSON/binary with lakehouse semantics
  *
  * For improved testability, use MemoryObjectStorageAdapter in unit tests
@@ -29,306 +29,42 @@ import {
 } from './path.js';
 
 // =============================================================================
-// Object Storage Adapter Interface (R2-compatible)
+// Re-export low-level storage types from @evodb/core
 // =============================================================================
 
-/**
- * File/object metadata returned by storage operations
- */
-export interface ObjectMetadata {
-  size: number;
-  etag: string;
-  lastModified?: Date;
-}
+// Import from core - these are the canonical definitions
+import {
+  type ObjectStorageAdapter,
+  type ObjectMetadata,
+  type R2BucketLike,
+  type R2ObjectLike,
+  type R2ObjectsLike,
+  type R2PutOptionsLike,
+  type R2ListOptionsLike,
+  R2ObjectStorageAdapter,
+  MemoryObjectStorageAdapter,
+  createR2ObjectAdapter,
+  createMemoryObjectAdapter,
+  wrapStorageBackend,
+} from '@evodb/core';
 
-/**
- * Unified storage adapter interface for R2, S3, filesystem, etc.
- * Designed for testability - use MemoryObjectStorageAdapter for unit tests.
- *
- * This interface is compatible with Cloudflare R2 operations and provides
- * a clean abstraction layer for storage backends.
- */
-export interface ObjectStorageAdapter {
-  /** Write data to a path */
-  put(path: string, data: Uint8Array | ArrayBuffer): Promise<void>;
+// Re-export all types from core for backward compatibility
+export {
+  type ObjectStorageAdapter,
+  type ObjectMetadata,
+  R2ObjectStorageAdapter,
+  MemoryObjectStorageAdapter,
+  createR2ObjectAdapter,
+  createMemoryObjectAdapter,
+  wrapStorageBackend,
+};
 
-  /** Read data from a path, returns null if not found */
-  get(path: string): Promise<Uint8Array | null>;
+// Re-export R2 types with both old names (for backward compat) and new names
+export type { R2BucketLike, R2ObjectLike, R2ObjectsLike };
 
-  /** Delete an object at path */
-  delete(path: string): Promise<void>;
-
-  /** List objects with a prefix */
-  list(prefix: string): Promise<string[]>;
-
-  /** Get object metadata without reading body */
-  head(path: string): Promise<ObjectMetadata | null>;
-
-  /** Check if an object exists */
-  exists?(path: string): Promise<boolean>;
-
-  /** Read a byte range from an object (for efficient partial reads) */
-  getRange?(path: string, offset: number, length: number): Promise<Uint8Array>;
-}
-
-// =============================================================================
-// R2 Bucket Interface (Cloudflare Workers compatible)
-// =============================================================================
-
-/**
- * Minimal R2 bucket interface for manifest operations
- * Compatible with Cloudflare Workers R2Bucket
- */
-export interface R2BucketLike {
-  get(key: string): Promise<R2ObjectLike | null>;
-  put(key: string, value: ArrayBuffer | string, options?: R2PutOptions): Promise<R2ObjectLike>;
-  delete(key: string): Promise<void>;
-  list(options?: R2ListOptions): Promise<R2ObjectsLike>;
-  head(key: string): Promise<R2ObjectLike | null>;
-}
-
-export interface R2ObjectLike {
-  key: string;
-  size: number;
-  etag: string;
-  uploaded: Date;
-  text(): Promise<string>;
-  arrayBuffer(): Promise<ArrayBuffer>;
-}
-
-export interface R2ObjectsLike {
-  objects: R2ObjectLike[];
-  truncated: boolean;
-  cursor?: string;
-}
-
-export interface R2PutOptions {
-  httpMetadata?: {
-    contentType?: string;
-  };
-  customMetadata?: Record<string, string>;
-  onlyIf?: {
-    etagMatches?: string;
-    etagDoesNotMatch?: string;
-  };
-}
-
-export interface R2ListOptions {
-  prefix?: string;
-  cursor?: string;
-  limit?: number;
-  delimiter?: string;
-}
-
-// =============================================================================
-// R2 Object Storage Adapter Implementation
-// =============================================================================
-
-/**
- * R2 storage adapter implementation
- * Wraps an R2Bucket binding to implement ObjectStorageAdapter
- */
-export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
-  constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {}
-
-  private getFullKey(key: string): string {
-    if (this.keyPrefix) {
-      return `${this.keyPrefix}/${key}`.replace(/\/+/g, '/');
-    }
-    return key;
-  }
-
-  async put(path: string, data: Uint8Array | ArrayBuffer): Promise<void> {
-    const fullKey = this.getFullKey(path);
-    // Ensure data is an ArrayBuffer for R2 (not SharedArrayBuffer)
-    let buffer: ArrayBuffer;
-    if (data instanceof ArrayBuffer) {
-      buffer = data;
-    } else {
-      // Create a new ArrayBuffer copy from Uint8Array to avoid SharedArrayBuffer
-      buffer = new ArrayBuffer(data.byteLength);
-      new Uint8Array(buffer).set(data);
-    }
-    await this.bucket.put(fullKey, buffer);
-  }
-
-  async get(path: string): Promise<Uint8Array | null> {
-    const fullKey = this.getFullKey(path);
-    const obj = await this.bucket.get(fullKey);
-    if (!obj) return null;
-    const buffer = await obj.arrayBuffer();
-    return new Uint8Array(buffer);
-  }
-
-  async delete(path: string): Promise<void> {
-    const fullKey = this.getFullKey(path);
-    await this.bucket.delete(fullKey);
-  }
-
-  async list(prefix: string): Promise<string[]> {
-    const fullPrefix = this.getFullKey(prefix);
-    const keys: string[] = [];
-    let cursor: string | undefined;
-
-    do {
-      const result = await this.bucket.list({ prefix: fullPrefix, cursor, limit: 1000 });
-      for (const obj of result.objects) {
-        let key = obj.key;
-        if (this.keyPrefix && key.startsWith(this.keyPrefix)) {
-          key = key.slice(this.keyPrefix.length).replace(/^\/+/, '');
-        }
-        keys.push(key);
-      }
-      cursor = result.truncated ? result.cursor : undefined;
-    } while (cursor);
-
-    return keys;
-  }
-
-  async head(path: string): Promise<ObjectMetadata | null> {
-    const fullKey = this.getFullKey(path);
-    const obj = await this.bucket.head(fullKey);
-    if (!obj) return null;
-    return {
-      size: obj.size,
-      etag: obj.etag,
-      lastModified: obj.uploaded,
-    };
-  }
-
-  async exists(path: string): Promise<boolean> {
-    const meta = await this.head(path);
-    return meta !== null;
-  }
-}
-
-// =============================================================================
-// Memory Object Storage Adapter (for testing)
-// =============================================================================
-
-/**
- * In-memory storage adapter for testing
- * Implements the same interface as R2ObjectStorageAdapter but stores data in memory
- */
-export class MemoryObjectStorageAdapter implements ObjectStorageAdapter {
-  private storage = new Map<string, { data: Uint8Array; metadata: ObjectMetadata }>();
-
-  async put(path: string, data: Uint8Array | ArrayBuffer): Promise<void> {
-    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-    this.storage.set(path, {
-      data: bytes.slice(), // Copy to prevent mutation
-      metadata: {
-        size: bytes.length,
-        etag: `"${this.computeEtag(bytes)}"`,
-        lastModified: new Date(),
-      },
-    });
-  }
-
-  async get(path: string): Promise<Uint8Array | null> {
-    const entry = this.storage.get(path);
-    return entry ? entry.data.slice() : null;
-  }
-
-  async delete(path: string): Promise<void> {
-    this.storage.delete(path);
-  }
-
-  async list(prefix: string): Promise<string[]> {
-    return [...this.storage.keys()]
-      .filter(k => k.startsWith(prefix))
-      .sort();
-  }
-
-  async head(path: string): Promise<ObjectMetadata | null> {
-    const entry = this.storage.get(path);
-    return entry ? { ...entry.metadata } : null;
-  }
-
-  async exists(path: string): Promise<boolean> {
-    return this.storage.has(path);
-  }
-
-  async getRange(path: string, offset: number, length: number): Promise<Uint8Array> {
-    const entry = this.storage.get(path);
-    if (!entry) {
-      throw new Error(`Object not found: ${path}`);
-    }
-    let start = offset;
-    if (start < 0) {
-      start = entry.data.length + offset;
-    }
-    return entry.data.slice(start, start + length);
-  }
-
-  /** Clear all stored data (useful for test cleanup) */
-  clear(): void {
-    this.storage.clear();
-  }
-
-  /** Get number of stored objects */
-  get size(): number {
-    return this.storage.size;
-  }
-
-  /** Get all keys (for debugging) */
-  keys(): string[] {
-    return [...this.storage.keys()];
-  }
-
-  private computeEtag(data: Uint8Array): string {
-    // Simple hash for testing - in production this would be MD5 or similar
-    let hash = 0;
-    for (let i = 0; i < data.length; i++) {
-      hash = ((hash << 5) - hash + data[i]) | 0;
-    }
-    return hash.toString(16);
-  }
-}
-
-// =============================================================================
-// Factory Functions for Object Storage
-// =============================================================================
-
-/**
- * Create an R2 storage adapter from a bucket binding
- * @param bucket - R2Bucket binding or R2BucketLike interface
- * @param keyPrefix - Optional prefix to prepend to all keys
- */
-export function createR2ObjectAdapter(bucket: R2BucketLike, keyPrefix?: string): ObjectStorageAdapter {
-  return new R2ObjectStorageAdapter(bucket, keyPrefix);
-}
-
-/**
- * Create an in-memory storage adapter for testing
- */
-export function createMemoryObjectAdapter(): MemoryObjectStorageAdapter {
-  return new MemoryObjectStorageAdapter();
-}
-
-/**
- * Wrap a raw R2Bucket (or R2BucketLike) in an ObjectStorageAdapter
- * Provides backward compatibility - accepts either an adapter or a raw bucket
- */
-export function wrapStorageBackend(
-  backend: ObjectStorageAdapter | R2BucketLike,
-  keyPrefix?: string
-): ObjectStorageAdapter {
-  // Check if it's already an ObjectStorageAdapter
-  if (backend instanceof MemoryObjectStorageAdapter || backend instanceof R2ObjectStorageAdapter) {
-    return backend;
-  }
-
-  // Check if it looks like an ObjectStorageAdapter (has our specific signature)
-  if ('put' in backend && 'get' in backend && 'head' in backend && !('text' in backend)) {
-    // Has our methods but not R2-specific methods like text() on objects
-    // This is a heuristic - duck typing for ObjectStorageAdapter
-    return backend as ObjectStorageAdapter;
-  }
-
-  // Assume it's an R2BucketLike and wrap it
-  return new R2ObjectStorageAdapter(backend as R2BucketLike, keyPrefix);
-}
+// Backward compatibility aliases - lakehouse previously used these names without "Like" suffix
+export type R2PutOptions = R2PutOptionsLike;
+export type R2ListOptions = R2ListOptionsLike;
 
 // =============================================================================
 // R2 Storage Adapter Implementation (High-Level with JSON support)

@@ -256,6 +256,10 @@ export abstract class ShardCoordinator {
    * Handle binary CDC message
    */
   private async handleBinaryCDCMessage(ws: RoutedWebSocket, data: Uint8Array): Promise<void> {
+    if (!ws.tenant || !ws.table || !ws.sourceDoId) {
+      throw new Error('WebSocket missing required routing metadata (tenant, table, or sourceDoId)');
+    }
+
     // Parse message header
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     const sequenceNumber = view.getBigUint64(0, true);
@@ -268,12 +272,12 @@ export abstract class ShardCoordinator {
 
     // Get routing key
     const key: ShardKey = {
-      tenant: ws.tenant!,
-      table: ws.table!,
+      tenant: ws.tenant,
+      table: ws.table,
     };
 
     // Route to shard
-    await this.routeToShard(key, ws.sourceDoId!, sequenceNumber, entries, ws);
+    await this.routeToShard(key, ws.sourceDoId, sequenceNumber, entries, ws);
     ws.lastSequence = sequenceNumber;
   }
 
@@ -306,9 +310,13 @@ export abstract class ShardCoordinator {
    * Handle CDC batch message
    */
   private async handleCDCBatch(ws: RoutedWebSocket, message: CDCBatchMessage): Promise<void> {
+    if (!ws.tenant || !ws.table || !ws.sourceDoId) {
+      throw new Error('WebSocket missing required routing metadata (tenant, table, or sourceDoId)');
+    }
+
     const key: ShardKey = {
-      tenant: ws.tenant!,
-      table: ws.table!,
+      tenant: ws.tenant,
+      table: ws.table,
     };
 
     // Convert entries
@@ -321,7 +329,7 @@ export abstract class ShardCoordinator {
       checksum: 0,
     }));
 
-    await this.routeToShard(key, ws.sourceDoId!, BigInt(message.sequenceNumber), entries, ws);
+    await this.routeToShard(key, ws.sourceDoId, BigInt(message.sequenceNumber), entries, ws);
     ws.lastSequence = BigInt(message.sequenceNumber);
   }
 
@@ -390,6 +398,10 @@ export abstract class ShardCoordinator {
    * Handle connect message
    */
   private async handleConnect(ws: RoutedWebSocket, _message: ConnectMessage): Promise<void> {
+    if (!ws.tenant || !ws.table) {
+      throw new Error('WebSocket missing required routing metadata (tenant or table)');
+    }
+
     // Send status response
     const statusMessage = {
       type: 'status',
@@ -398,8 +410,8 @@ export abstract class ShardCoordinator {
       shardCount: this.router.shardCount,
       connectedChildren: this.connectedSockets.size,
       assignedShard: this.router.getShard({
-        tenant: ws.tenant!,
-        table: ws.table!,
+        tenant: ws.tenant,
+        table: ws.table,
       }).shardNumber,
     };
 
@@ -418,9 +430,13 @@ export abstract class ShardCoordinator {
    * Handle flush request
    */
   private async handleFlushRequest(ws: RoutedWebSocket): Promise<void> {
+    if (!ws.tenant || !ws.table) {
+      throw new Error('WebSocket missing required routing metadata (tenant or table)');
+    }
+
     const key: ShardKey = {
-      tenant: ws.tenant!,
-      table: ws.table!,
+      tenant: ws.tenant,
+      table: ws.table,
     };
 
     const stub = this.router.getShardStub(this.env.SHARD_WRITERS, key);
@@ -680,6 +696,10 @@ export abstract class ShardWriterDO {
    * Handle CDC request from coordinator
    */
   private async handleCDC(request: Request): Promise<Response> {
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+
     const message = await request.json() as ShardedCDCMessage;
 
     // Reconstruct bigint entries
@@ -700,12 +720,12 @@ export abstract class ShardWriterDO {
     }));
 
     // Receive CDC
-    await this.writer!.receiveCDC(message.sourceDoId, entries);
+    await this.writer.receiveCDC(message.sourceDoId, entries);
 
     // Check if we should flush
     let result: FlushResult | null = null;
-    if (this.writer!.shouldFlush()) {
-      result = await this.writer!.flush();
+    if (this.writer.shouldFlush()) {
+      result = await this.writer.flush();
     }
 
     const status: AckStatus = result?.status === 'persisted' ? 'persisted' : 'buffered';
@@ -721,7 +741,10 @@ export abstract class ShardWriterDO {
    * Handle flush request
    */
   private async handleFlush(): Promise<Response> {
-    const result = await this.writer!.flush();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+    const result = await this.writer.flush();
     return Response.json(result);
   }
 
@@ -729,7 +752,10 @@ export abstract class ShardWriterDO {
    * Handle compact request
    */
   private async handleCompact(): Promise<Response> {
-    const result = await this.writer!.compact();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+    const result = await this.writer.compact();
     return Response.json(result);
   }
 
@@ -737,7 +763,10 @@ export abstract class ShardWriterDO {
    * Handle stats request
    */
   private handleStats(): Response {
-    const stats = this.writer!.getStats();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+    const stats = this.writer.getStats();
 
     // Convert Maps to objects for JSON serialization
     const serializedStats = {
@@ -758,7 +787,10 @@ export abstract class ShardWriterDO {
    * Handle blocks request
    */
   private handleBlocks(): Response {
-    const blocks = this.writer!.getBlockIndex();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+    const blocks = this.writer.getBlockIndex();
     return Response.json(blocks);
   }
 
@@ -766,7 +798,10 @@ export abstract class ShardWriterDO {
    * Handle health request
    */
   private handleHealth(): Response {
-    const stats = this.writer!.getStats();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
+    }
+    const stats = this.writer.getStats();
 
     let status: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
     if (stats.blocks.pendingBlockCount > 10) {
@@ -789,21 +824,25 @@ export abstract class ShardWriterDO {
   async alarm(): Promise<void> {
     await this.initialize();
 
-    if (this.writer!.shouldFlush()) {
-      await this.writer!.flush();
+    if (!this.writer) {
+      throw new Error('Writer not initialized');
     }
 
-    if (this.writer!.getPendingBlockCount() > 0) {
-      await this.writer!.retryPendingBlocks();
+    if (this.writer.shouldFlush()) {
+      await this.writer.flush();
     }
 
-    const stats = this.writer!.getStats();
+    if (this.writer.getPendingBlockCount() > 0) {
+      await this.writer.retryPendingBlocks();
+    }
+
+    const stats = this.writer.getStats();
     if (stats.blocks.smallBlockCount >= 4) {
-      await this.writer!.compact();
+      await this.writer.compact();
     }
 
     // Schedule next alarm
-    const nextAlarm = this.writer!.getNextAlarmTime();
+    const nextAlarm = this.writer.getNextAlarmTime();
     if (nextAlarm) {
       await this.state.storage.setAlarm(nextAlarm);
     }

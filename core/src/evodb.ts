@@ -46,6 +46,7 @@ import {
   type SortSpec,
   type AggregateSpec,
 } from './query-ops.js';
+import { ValidationError } from './errors.js';
 
 // =============================================================================
 // Types
@@ -176,6 +177,50 @@ export interface QueryResult<T = Record<string, unknown>> {
   totalCount: number;
   hasMore: boolean;
 }
+
+/**
+ * Update operation result
+ */
+export interface UpdateResult<T = Record<string, unknown>> {
+  /** Number of documents that matched the filter */
+  matchedCount: number;
+  /** Number of documents that were modified */
+  modifiedCount: number;
+  /** Updated documents (only if returnDocuments option is true) */
+  documents?: T[];
+}
+
+/**
+ * Update operation options
+ */
+export interface UpdateOptions {
+  /** Whether to return the updated documents */
+  returnDocuments?: boolean;
+}
+
+/**
+ * Delete operation result
+ */
+export interface DeleteResult<T = Record<string, unknown>> {
+  /** Number of documents that were deleted */
+  deletedCount: number;
+  /** Deleted documents (only if returnDocuments option is true) */
+  documents?: T[];
+}
+
+/**
+ * Delete operation options
+ */
+export interface DeleteOptions {
+  /** Whether to return the deleted documents */
+  returnDocuments?: boolean;
+}
+
+/**
+ * Filter object for update/delete operations
+ * Matches documents where all specified field values match
+ */
+export type FilterObject = Record<string, unknown>;
 
 // =============================================================================
 // Query Builder
@@ -425,7 +470,11 @@ export class SchemaManager {
     if (!this.relationships.has(from)) {
       this.relationships.set(from, new Map());
     }
-    this.relationships.get(from)!.set(to, {
+    const relationshipMap = this.relationships.get(from);
+    if (!relationshipMap) {
+      throw new Error(`Failed to create relationship map for '${from}'`);
+    }
+    relationshipMap.set(to, {
       type: options.type ?? 'one-to-many',
       foreignKey: options.foreignKey,
       onDelete: options.onDelete ?? 'restrict',
@@ -610,6 +659,165 @@ export class EvoDB {
   }
 
   /**
+   * Update documents in a table
+   *
+   * Updates all documents that match the filter with the provided changes.
+   * In production mode with locked schema, updates are validated.
+   *
+   * @param table - Table name
+   * @param filter - Filter object to match documents (empty object matches all)
+   * @param changes - Object with field values to update
+   * @param options - Update options
+   * @returns Update result with matched and modified counts
+   *
+   * @example
+   * ```typescript
+   * // Update a single document by ID
+   * await db.update('users', { _id: 'user-1' }, { name: 'New Name' });
+   *
+   * // Update multiple documents matching a filter
+   * await db.update('users', { role: 'user' }, { role: 'member' });
+   *
+   * // Get the updated documents
+   * const result = await db.update('users', { _id: 'user-1' }, { name: 'New Name' }, { returnDocuments: true });
+   * console.log(result.documents);
+   * ```
+   */
+  async update<T extends Record<string, unknown>>(
+    table: string,
+    filter: FilterObject,
+    changes: Partial<T>,
+    options: UpdateOptions = {}
+  ): Promise<UpdateResult<T>> {
+    const existingRows = this.tableRows.get(table) ?? [];
+
+    // Find matching documents
+    const matchingIndices: number[] = [];
+    for (let i = 0; i < existingRows.length; i++) {
+      if (this.matchesFilter(existingRows[i], filter)) {
+        matchingIndices.push(i);
+      }
+    }
+
+    if (matchingIndices.length === 0) {
+      return { matchedCount: 0, modifiedCount: 0 };
+    }
+
+    // Validate changes against locked schema in production mode
+    if (this.config.mode === 'production' && this.schema.isLocked(table)) {
+      const lockedSchema = this.schema.getLockedSchema(table)!;
+      // Validate the changes object (partial document)
+      this.validatePartialDocument(changes as Record<string, unknown>, lockedSchema);
+    }
+
+    // Apply updates
+    const updatedDocuments: T[] = [];
+    for (const index of matchingIndices) {
+      const original = existingRows[index];
+      const updated = { ...original, ...changes };
+      existingRows[index] = updated;
+      updatedDocuments.push(updated as T);
+    }
+
+    // Re-shred the entire table to update columnar format
+    const newColumns = shred(existingRows);
+    this.tables.set(table, newColumns);
+
+    // Persist to storage if available
+    if (this.config.storage) {
+      await this.persistTable(table);
+    }
+
+    const result: UpdateResult<T> = {
+      matchedCount: matchingIndices.length,
+      modifiedCount: matchingIndices.length,
+    };
+
+    if (options.returnDocuments) {
+      result.documents = updatedDocuments;
+    }
+
+    return result;
+  }
+
+  /**
+   * Delete documents from a table
+   *
+   * Deletes all documents that match the filter.
+   *
+   * @param table - Table name
+   * @param filter - Filter object to match documents (empty object matches all)
+   * @param options - Delete options
+   * @returns Delete result with deleted count
+   *
+   * @example
+   * ```typescript
+   * // Delete a single document by ID
+   * await db.delete('users', { _id: 'user-1' });
+   *
+   * // Delete multiple documents matching a filter
+   * await db.delete('users', { role: 'inactive' });
+   *
+   * // Delete all documents
+   * await db.delete('users', {});
+   *
+   * // Get the deleted documents
+   * const result = await db.delete('users', { _id: 'user-1' }, { returnDocuments: true });
+   * console.log(result.documents);
+   * ```
+   */
+  async delete<T extends Record<string, unknown>>(
+    table: string,
+    filter: FilterObject,
+    options: DeleteOptions = {}
+  ): Promise<DeleteResult<T>> {
+    const existingRows = this.tableRows.get(table) ?? [];
+
+    // Find matching documents
+    const deletedDocuments: T[] = [];
+    const remainingRows: Record<string, unknown>[] = [];
+
+    for (const row of existingRows) {
+      if (this.matchesFilter(row, filter)) {
+        deletedDocuments.push(row as T);
+      } else {
+        remainingRows.push(row);
+      }
+    }
+
+    if (deletedDocuments.length === 0) {
+      return { deletedCount: 0 };
+    }
+
+    // Update in-memory storage
+    this.tableRows.set(table, remainingRows);
+
+    // Re-shred the remaining rows to update columnar format
+    if (remainingRows.length > 0) {
+      const newColumns = shred(remainingRows);
+      this.tables.set(table, newColumns);
+    } else {
+      // Clear columns if no rows remain
+      this.tables.set(table, []);
+    }
+
+    // Persist to storage if available
+    if (this.config.storage) {
+      await this.persistTable(table);
+    }
+
+    const result: DeleteResult<T> = {
+      deletedCount: deletedDocuments.length,
+    };
+
+    if (options.returnDocuments) {
+      result.documents = deletedDocuments;
+    }
+
+    return result;
+  }
+
+  /**
    * Create a query builder for a table
    *
    * @param table - Table name to query
@@ -782,7 +990,7 @@ export class EvoDB {
 
       // Check required fields
       if (fieldDef.required && (value === undefined || value === null)) {
-        throw new EvoDBError(`Required field '${field}' is missing`, 'VALIDATION_ERROR');
+        throw new ValidationError(`Required field '${field}' is missing`);
       }
 
       // Skip validation for undefined/null optional fields
@@ -790,32 +998,28 @@ export class EvoDB {
 
       // Type validation
       if (!this.validateType(value, fieldDef.type)) {
-        throw new EvoDBError(
-          `Field '${field}' expected type '${fieldDef.type}' but got '${typeof value}'`,
-          'VALIDATION_ERROR'
+        throw new ValidationError(
+          `Field '${field}' expected type '${fieldDef.type}' but got '${typeof value}'`
         );
       }
 
       // Enum validation
       if (fieldDef.enum && !fieldDef.enum.includes(value)) {
-        throw new EvoDBError(
-          `Field '${field}' value '${value}' not in allowed values: ${fieldDef.enum.join(', ')}`,
-          'VALIDATION_ERROR'
+        throw new ValidationError(
+          `Field '${field}' value '${value}' not in allowed values: ${fieldDef.enum.join(', ')}`
         );
       }
 
       // String constraints
       if (fieldDef.type === 'string' && typeof value === 'string') {
         if (fieldDef.minLength !== undefined && value.length < fieldDef.minLength) {
-          throw new EvoDBError(
-            `Field '${field}' must be at least ${fieldDef.minLength} characters`,
-            'VALIDATION_ERROR'
+          throw new ValidationError(
+            `Field '${field}' must be at least ${fieldDef.minLength} characters`
           );
         }
         if (fieldDef.maxLength !== undefined && value.length > fieldDef.maxLength) {
-          throw new EvoDBError(
-            `Field '${field}' must be at most ${fieldDef.maxLength} characters`,
-            'VALIDATION_ERROR'
+          throw new ValidationError(
+            `Field '${field}' must be at most ${fieldDef.maxLength} characters`
           );
         }
         if (fieldDef.format) {
@@ -826,10 +1030,10 @@ export class EvoDB {
       // Number constraints
       if (fieldDef.type === 'number' && typeof value === 'number') {
         if (fieldDef.min !== undefined && value < fieldDef.min) {
-          throw new EvoDBError(`Field '${field}' must be at least ${fieldDef.min}`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' must be at least ${fieldDef.min}`);
         }
         if (fieldDef.max !== undefined && value > fieldDef.max) {
-          throw new EvoDBError(`Field '${field}' must be at most ${fieldDef.max}`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' must be at most ${fieldDef.max}`);
         }
       }
     }
@@ -839,7 +1043,7 @@ export class EvoDB {
       for (const field of Object.keys(doc)) {
         if (field === '_id') continue; // Allow generated ID
         if (!(field in schema)) {
-          throw new EvoDBError(`Unknown field '${field}' not allowed in strict mode`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Unknown field '${field}' not allowed in strict mode`);
         }
       }
     }
@@ -868,29 +1072,29 @@ export class EvoDB {
     switch (format) {
       case 'email':
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-          throw new EvoDBError(`Field '${field}' is not a valid email address`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' is not a valid email address`);
         }
         break;
       case 'url':
         try {
           new URL(value);
         } catch {
-          throw new EvoDBError(`Field '${field}' is not a valid URL`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' is not a valid URL`);
         }
         break;
       case 'uuid':
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
-          throw new EvoDBError(`Field '${field}' is not a valid UUID`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' is not a valid UUID`);
         }
         break;
       case 'iso-date':
         if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-          throw new EvoDBError(`Field '${field}' is not a valid ISO date (YYYY-MM-DD)`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' is not a valid ISO date (YYYY-MM-DD)`);
         }
         break;
       case 'iso-datetime':
         if (isNaN(Date.parse(value))) {
-          throw new EvoDBError(`Field '${field}' is not a valid ISO datetime`, 'VALIDATION_ERROR');
+          throw new ValidationError(`Field '${field}' is not a valid ISO datetime`);
         }
         break;
     }
@@ -931,21 +1135,97 @@ export class EvoDB {
     const random = Math.random().toString(36).substring(2, 9);
     return `${timestamp}-${random}`;
   }
-}
 
-// =============================================================================
-// Error Class
-// =============================================================================
+  /**
+   * Check if a document matches a filter object
+   * Empty filter matches all documents
+   */
+  private matchesFilter(doc: Record<string, unknown>, filter: FilterObject): boolean {
+    // Empty filter matches all
+    if (Object.keys(filter).length === 0) {
+      return true;
+    }
 
-/**
- * EvoDB error class
- */
-export class EvoDBError extends Error {
-  public readonly code: string;
+    // All filter properties must match
+    for (const [key, value] of Object.entries(filter)) {
+      if (doc[key] !== value) {
+        return false;
+      }
+    }
+    return true;
+  }
 
-  constructor(message: string, code: string) {
-    super(message);
-    this.name = 'EvoDBError';
-    this.code = code;
+  /**
+   * Validate a partial document (for updates) against a schema definition
+   * Similar to validateDocument but doesn't check required fields
+   */
+  private validatePartialDocument(doc: Record<string, unknown>, schema: SchemaDefinition): void {
+    for (const [field, value] of Object.entries(doc)) {
+      // Skip _id field
+      if (field === '_id') continue;
+
+      const def = schema[field];
+      if (!def) {
+        // Unknown field - check strict mode
+        if (this.config.rejectUnknownFields) {
+          throw new ValidationError(`Unknown field '${field}' not allowed in strict mode`);
+        }
+        continue;
+      }
+
+      const fieldDef = def as FieldDefinition;
+
+      // Check if it's a nested schema definition (no 'type' property)
+      if (!('type' in fieldDef)) {
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          this.validatePartialDocument(value as Record<string, unknown>, def as SchemaDefinition);
+        }
+        continue;
+      }
+
+      // Skip validation for undefined/null values (partial updates may set to null)
+      if (value === undefined || value === null) continue;
+
+      // Type validation
+      if (!this.validateType(value, fieldDef.type)) {
+        throw new ValidationError(
+          `Field '${field}' expected type '${fieldDef.type}' but got '${typeof value}'`
+        );
+      }
+
+      // Enum validation
+      if (fieldDef.enum && !fieldDef.enum.includes(value)) {
+        throw new ValidationError(
+          `Field '${field}' value '${value}' not in allowed values: ${fieldDef.enum.join(', ')}`
+        );
+      }
+
+      // String constraints
+      if (fieldDef.type === 'string' && typeof value === 'string') {
+        if (fieldDef.minLength !== undefined && value.length < fieldDef.minLength) {
+          throw new ValidationError(
+            `Field '${field}' must be at least ${fieldDef.minLength} characters`
+          );
+        }
+        if (fieldDef.maxLength !== undefined && value.length > fieldDef.maxLength) {
+          throw new ValidationError(
+            `Field '${field}' must be at most ${fieldDef.maxLength} characters`
+          );
+        }
+        if (fieldDef.format) {
+          this.validateFormat(value, fieldDef.format, field);
+        }
+      }
+
+      // Number constraints
+      if (fieldDef.type === 'number' && typeof value === 'number') {
+        if (fieldDef.min !== undefined && value < fieldDef.min) {
+          throw new ValidationError(`Field '${field}' must be at least ${fieldDef.min}`);
+        }
+        if (fieldDef.max !== undefined && value > fieldDef.max) {
+          throw new ValidationError(`Field '${field}' must be at most ${fieldDef.max}`);
+        }
+      }
+    }
   }
 }

@@ -2,12 +2,23 @@
 // Ultra-minimal columnar JSON storage for Cloudflare DO SQLite blobs
 
 // =============================================================================
+// Errors (typed exception classes)
+// =============================================================================
+
+export {
+  EvoDBError,
+  QueryError,
+  TimeoutError,
+  ValidationError,
+  StorageError,
+} from './errors.js';
+
+// =============================================================================
 // EvoDB High-Level Facade
 // =============================================================================
 
 export {
   EvoDB,
-  EvoDBError,
   QueryBuilder,
   SchemaManager,
   type EvoDBConfig,
@@ -22,6 +33,11 @@ export {
   type EnforceOptions,
   type InferredSchema,
   type QueryResult,
+  type UpdateResult,
+  type UpdateOptions,
+  type DeleteResult,
+  type DeleteOptions,
+  type FilterObject,
   type UserFilterOperator,
 } from './evodb.js';
 
@@ -163,6 +179,8 @@ export {
   parseBlockId,
   makeWalId,
   parseWalId,
+  // SQL injection prevention
+  validateTableName,
   // Object storage adapters (R2-compatible)
   type ObjectStorageAdapter,
   type ObjectMetadata,
@@ -420,3 +438,27 @@ export {
   secToMs,
   msToSec,
 } from './constants.js';
+
+// Type Guards (runtime validation for type safety)
+export {
+  // Core type guards
+  isArray,
+  isRecord,
+  isNumber,
+  isNumberIncludingNaN,
+  isString,
+  isBoolean,
+  isNullish,
+  isNotNullish,
+  isBigInt,
+  isFunction,
+  isDate,
+  isValidDate,
+  isUint8Array,
+  isArrayBuffer,
+  // Assertion helpers
+  assertArray,
+  assertRecord,
+  assertNumber,
+  assertString,
+} from './guards.js';

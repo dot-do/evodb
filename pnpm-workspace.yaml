@@ -11,4 +11,5 @@ packages:
   - snippets-lance
   - benchmark
   - codegen
+  - e2e
   - test-utils

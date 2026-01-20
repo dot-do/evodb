@@ -152,6 +152,13 @@ export interface ResultProcessor {
 // =============================================================================
 
 /**
+ * Type guard: check if value is a plain object (not null, not array)
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
  * Get nested value from object using dot notation
  */
 export function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
@@ -165,7 +172,8 @@ export function getNestedValue(obj: Record<string, unknown>, path: string): unkn
     let current: unknown = obj;
     for (const part of parts) {
       if (current === null || current === undefined) return undefined;
-      current = (current as Record<string, unknown>)[part];
+      if (!isRecord(current)) return undefined;
+      current = current[part];
     }
     return current;
   }
@@ -298,9 +306,11 @@ export function evaluateFilter(value: unknown, filter: FilterPredicate): boolean
       matches = value !== null && value !== undefined;
       break;
 
-    default:
-      // Unknown operator - default to false
-      matches = false;
+    default: {
+      // Exhaustiveness check - TypeScript will error if a case is missing
+      const _exhaustiveCheck: never = filter.operator;
+      throw new Error(`Unhandled filter operator: ${_exhaustiveCheck}`);
+    }
   }
 
   // Apply negation if specified
@@ -606,7 +616,10 @@ export function computeAggregations(
       if (!groups.has(key)) {
         groups.set(key, []);
       }
-      groups.get(key)!.push(row);
+      const group = groups.get(key);
+      if (group) {
+        group.push(row);
+      }
     }
   } else {
     // Single group (all rows)

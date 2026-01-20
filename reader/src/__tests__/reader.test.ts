@@ -1382,3 +1382,441 @@ describe('Block Data JSON Validation', () => {
     });
   });
 });
+
+// ============================================================================
+// Manifest JSON Validation Tests
+// ============================================================================
+
+describe('Manifest JSON Validation', () => {
+  /**
+   * Helper to create a mock bucket with custom manifest data
+   */
+  function createBucketWithManifest(manifestData: unknown): R2Bucket {
+    const objects = new Map<string, unknown>([
+      ['manifest.json', manifestData],
+      ['data/events/block_001.json', SAMPLE_BLOCK_1],
+      ['data/events/block_002.json', SAMPLE_BLOCK_2],
+    ]);
+    return createMockR2Bucket(objects);
+  }
+
+  /**
+   * Helper to create a mock bucket that returns raw bytes for manifest (for invalid JSON)
+   */
+  function createBucketWithRawManifest(rawContent: string): R2Bucket {
+    const buffer = new TextEncoder().encode(rawContent).buffer;
+    return {
+      get: vi.fn(async (key: string) => {
+        if (key === 'manifest.json') {
+          return {
+            key,
+            size: buffer.byteLength,
+            etag: '"test"',
+            httpEtag: '"test"',
+            uploaded: new Date(),
+            customMetadata: {},
+            arrayBuffer: vi.fn().mockResolvedValue(buffer),
+            text: vi.fn().mockResolvedValue(rawContent),
+            json: vi.fn().mockRejectedValue(new SyntaxError('Invalid JSON')),
+          };
+        }
+        if (key === 'data/events/block_001.json') {
+          return createMockR2Object(key, SAMPLE_BLOCK_1);
+        }
+        if (key === 'data/events/block_002.json') {
+          return createMockR2Object(key, SAMPLE_BLOCK_2);
+        }
+        return null;
+      }),
+      head: vi.fn(async () => null),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    };
+  }
+
+  describe('Valid Manifest Parsing', () => {
+    it('should parse valid manifest correctly', async () => {
+      const bucket = createBucketWithManifest(SAMPLE_MANIFEST);
+      const engine = createQueryEngine({ bucket });
+
+      const tables = await engine.listTables();
+      expect(tables).toContain('events');
+      expect(tables).toContain('users');
+    });
+
+    it('should handle manifest with single table', async () => {
+      const singleTableManifest = {
+        version: 1,
+        tables: {
+          events: SAMPLE_MANIFEST.tables.events,
+        },
+      };
+      const bucket = createBucketWithManifest(singleTableManifest);
+      const engine = createQueryEngine({ bucket });
+
+      const tables = await engine.listTables();
+      expect(tables).toEqual(['events']);
+    });
+
+    it('should handle manifest with empty tables object', async () => {
+      const emptyTablesManifest = {
+        version: 1,
+        tables: {},
+      };
+      const bucket = createBucketWithManifest(emptyTablesManifest);
+      const engine = createQueryEngine({ bucket });
+
+      const tables = await engine.listTables();
+      expect(tables).toEqual([]);
+    });
+  });
+
+  describe('Invalid Manifest JSON Syntax', () => {
+    it('should throw descriptive error for malformed JSON', async () => {
+      const bucket = createBucketWithRawManifest('{ invalid json }');
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/invalid.*json|json.*parse|syntax|manifest/i);
+    });
+
+    it('should throw descriptive error for truncated JSON', async () => {
+      const bucket = createBucketWithRawManifest('{"version": 1, "tables":');
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/invalid.*json|json.*parse|syntax|unexpected|manifest/i);
+    });
+
+    it('should throw descriptive error for empty manifest content', async () => {
+      const bucket = createBucketWithRawManifest('');
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/invalid.*json|json.*parse|empty|unexpected|manifest/i);
+    });
+  });
+
+  describe('Valid JSON but Missing Required Fields', () => {
+    it('should throw error when manifest is missing version field', async () => {
+      const invalidManifest = {
+        tables: SAMPLE_MANIFEST.tables,
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/version|missing.*field|invalid.*manifest/i);
+    });
+
+    it('should throw error when manifest is missing tables field', async () => {
+      const invalidManifest = {
+        version: 1,
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/tables|missing.*field|invalid.*manifest/i);
+    });
+
+    it('should throw error when table is missing name field', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            schema: SAMPLE_MANIFEST.tables.events.schema,
+            blockPaths: SAMPLE_MANIFEST.tables.events.blockPaths,
+            rowCount: 100,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/name|missing.*field|invalid.*table/i);
+    });
+
+    it('should throw error when table is missing schema field', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            blockPaths: SAMPLE_MANIFEST.tables.events.blockPaths,
+            rowCount: 100,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/schema|missing.*field|invalid.*table/i);
+    });
+
+    it('should throw error when table is missing blockPaths field', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: SAMPLE_MANIFEST.tables.events.schema,
+            rowCount: 100,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/blockPaths|missing.*field|invalid.*table/i);
+    });
+
+    it('should throw error when table is missing rowCount field', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: SAMPLE_MANIFEST.tables.events.schema,
+            blockPaths: SAMPLE_MANIFEST.tables.events.blockPaths,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/rowCount|missing.*field|invalid.*table/i);
+    });
+  });
+
+  describe('Valid JSON but Wrong Types', () => {
+    it('should throw error when manifest is null', async () => {
+      const bucket = createBucketWithManifest(null);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/manifest.*object|null|invalid.*manifest/i);
+    });
+
+    it('should throw error when manifest is an array', async () => {
+      const bucket = createBucketWithManifest([1, 2, 3]);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/manifest.*object|array|invalid.*manifest/i);
+    });
+
+    it('should throw error when manifest is a primitive (string)', async () => {
+      const bucket = createBucketWithManifest('just a string');
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/manifest.*object|string|invalid.*manifest/i);
+    });
+
+    it('should throw error when manifest is a primitive (number)', async () => {
+      const bucket = createBucketWithManifest(42);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/manifest.*object|number|invalid.*manifest/i);
+    });
+
+    it('should throw error when version is not a number', async () => {
+      const invalidManifest = {
+        version: 'one',
+        tables: SAMPLE_MANIFEST.tables,
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/version.*number|invalid.*version/i);
+    });
+
+    it('should throw error when tables is not an object', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: ['events', 'users'],
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/tables.*object|invalid.*tables/i);
+    });
+
+    it('should throw error when schema is not an array', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: 'not an array',
+            blockPaths: [],
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/schema.*array|invalid.*schema/i);
+    });
+
+    it('should throw error when blockPaths is not an array', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: [],
+            blockPaths: 'not an array',
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/blockPaths.*array|invalid.*blockPaths/i);
+    });
+
+    it('should throw error when rowCount is not a number', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: [],
+            blockPaths: [],
+            rowCount: 'many',
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/rowCount.*number|invalid.*rowCount/i);
+    });
+  });
+
+  describe('Column Schema Validation', () => {
+    it('should throw error when column schema is missing name', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: [
+              { type: 'int64', nullable: false }, // Missing name
+            ],
+            blockPaths: [],
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/column.*name|missing.*name|invalid.*column/i);
+    });
+
+    it('should throw error when column schema is missing type', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: [
+              { name: 'id', nullable: false }, // Missing type
+            ],
+            blockPaths: [],
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/column.*type|missing.*type|invalid.*column/i);
+    });
+
+    it('should throw error when column type is invalid', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          events: {
+            name: 'events',
+            schema: [
+              { name: 'id', type: 'invalid_type', nullable: false },
+            ],
+            blockPaths: [],
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('events')).rejects.toThrow(/invalid.*type|unknown.*type|invalid_type/i);
+    });
+  });
+
+  describe('Query with Invalid Manifest', () => {
+    it('should throw validation error during query with invalid manifest', async () => {
+      const invalidManifest = {
+        version: 'not a number',
+        tables: SAMPLE_MANIFEST.tables,
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(
+        engine.query({ table: 'events', columns: ['id'] })
+      ).rejects.toThrow(/version|invalid.*manifest/i);
+    });
+
+    it('should throw validation error during query with missing tables', async () => {
+      const invalidManifest = {
+        version: 1,
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(
+        engine.query({ table: 'events', columns: ['id'] })
+      ).rejects.toThrow(/tables|missing|invalid.*manifest/i);
+    });
+  });
+
+  describe('Error Message Quality', () => {
+    it('should include context in manifest validation errors', async () => {
+      const invalidManifest = {
+        version: 'invalid',
+        tables: {},
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.listTables()).rejects.toThrow(/manifest|version/i);
+    });
+
+    it('should include table name in table validation errors', async () => {
+      const invalidManifest = {
+        version: 1,
+        tables: {
+          my_broken_table: {
+            name: 'my_broken_table',
+            schema: 'not an array',
+            blockPaths: [],
+            rowCount: 0,
+            lastUpdated: Date.now(),
+          },
+        },
+      };
+      const bucket = createBucketWithManifest(invalidManifest);
+      const engine = createQueryEngine({ bucket });
+
+      await expect(engine.getTableMetadata('my_broken_table')).rejects.toThrow(/my_broken_table|schema/i);
+    });
+  });
+});

@@ -315,3 +315,20 @@ export {
   type PrefetchErrorStats,
   type PrefetchErrorCallback,
 } from './cache-aware-planner.js';
+
+export {
+  CacheInvalidationManager,
+  createCacheInvalidationManager,
+  setFetchFunction as setInvalidationFetchFunction,
+  resetFetchFunction as resetInvalidationFetchFunction,
+  type CacheInvalidationHook,
+  type CDCCommitEvent,
+  type CDCOperation,
+  type InvalidationResult,
+  type InvalidationScope,
+  type InvalidationLevel,
+  type InvalidationStrategy,
+  type InvalidationManagerConfig,
+  type InvalidationStats,
+  type HookResult,
+} from './cache-invalidation.js';

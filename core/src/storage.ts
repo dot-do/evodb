@@ -67,7 +67,7 @@ export interface R2ObjectLike {
   etag: string;
   uploaded: Date;
   arrayBuffer(): Promise<ArrayBuffer>;
-  text?(): Promise<string>;
+  text(): Promise<string>;
 }
 
 export interface R2ObjectsLike {
@@ -79,6 +79,10 @@ export interface R2ObjectsLike {
 export interface R2PutOptionsLike {
   httpMetadata?: { contentType?: string };
   customMetadata?: Record<string, string>;
+  onlyIf?: {
+    etagMatches?: string;
+    etagDoesNotMatch?: string;
+  };
 }
 
 export interface R2ListOptionsLike {
@@ -301,8 +305,36 @@ interface DOSqlStorage {
   exec(query: string, ...bindings: unknown[]): { results: unknown[] };
 }
 
+// =============================================================================
+// SQL Injection Prevention
+// Issue: evodb-ofu - Table names must be validated before SQL interpolation
+// =============================================================================
+
+/** Valid table name regex: only alphanumeric characters and underscores */
+const VALID_TABLE_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Validate a table name to prevent SQL injection.
+ * Table names must:
+ * - Start with a letter or underscore
+ * - Contain only alphanumeric characters and underscores
+ * - Not be empty
+ *
+ * @throws Error if table name is invalid
+ */
+export function validateTableName(tableName: string): void {
+  if (!tableName || !VALID_TABLE_NAME_REGEX.test(tableName)) {
+    throw new Error(
+      `Invalid table name: "${tableName}". Table names must start with a letter or underscore and contain only alphanumeric characters and underscores.`
+    );
+  }
+}
+
 /** Create DO SQLite storage adapter */
 export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): StorageAdapter {
+  // Validate table name to prevent SQL injection
+  validateTableName(tableName);
+
   // Ensure table exists
   sql.exec(`CREATE TABLE IF NOT EXISTS ${tableName} (id TEXT PRIMARY KEY, data BLOB, created_at INTEGER DEFAULT (unixepoch()))`);
 

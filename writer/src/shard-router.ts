@@ -22,6 +22,8 @@ export interface ShardRouterConfig {
   hashFn?: (key: string) => number;
   /** Optional: Virtual nodes per shard for better distribution */
   virtualNodesPerShard?: number;
+  /** Optional: Maximum cache size for routing cache (default: 10000) */
+  maxCacheSize?: number;
 }
 
 /**
@@ -30,6 +32,7 @@ export interface ShardRouterConfig {
 export const DEFAULT_SHARD_CONFIG: Omit<ShardRouterConfig, 'shardCount' | 'namespaceBinding'> = {
   shardIdPrefix: 'shard',
   virtualNodesPerShard: 1,
+  maxCacheSize: 10000,
 };
 
 /**
@@ -198,6 +201,9 @@ export class ShardRouter {
     // Check cache first
     const cached = this.routingCache.get(cacheKey);
     if (cached) {
+      // LRU: Move to end by deleting and re-inserting
+      this.routingCache.delete(cacheKey);
+      this.routingCache.set(cacheKey, cached);
       return cached;
     }
 
@@ -216,6 +222,17 @@ export class ShardRouter {
       hashValue,
       key,
     };
+
+    // LRU eviction: Remove oldest entries if cache is full
+    while (this.routingCache.size >= this.config.maxCacheSize) {
+      // Map.keys().next() returns the first (oldest) key
+      const oldestKey = this.routingCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.routingCache.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
 
     // Cache the result
     this.routingCache.set(cacheKey, info);
@@ -332,16 +349,20 @@ export class ShardRouter {
     // Route each key
     for (const key of keys) {
       const shard = this.getShard(key);
-      const stats = shardStats.get(shard.shardNumber)!;
+      const stats = shardStats.get(shard.shardNumber);
+      const tenantSet = tenantsPerShard.get(shard.shardNumber);
 
-      stats.keys.push(key);
-      tenantsPerShard.get(shard.shardNumber)!.add(key.tenant);
+      if (stats && tenantSet) {
+        stats.keys.push(key);
+        tenantSet.add(key.tenant);
+      }
     }
 
     // Update counts
     for (const [shardNum, stats] of shardStats) {
+      const tenantSet = tenantsPerShard.get(shardNum);
       stats.tableCount = stats.keys.length;
-      stats.tenantCount = tenantsPerShard.get(shardNum)!.size;
+      stats.tenantCount = tenantSet ? tenantSet.size : 0;
     }
 
     return Array.from(shardStats.values());
@@ -381,6 +402,24 @@ export class ShardRouter {
    */
   getCacheSize(): number {
     return this.routingCache.size;
+  }
+
+  /**
+   * Get the maximum cache size
+   */
+  getMaxCacheSize(): number {
+    return this.config.maxCacheSize;
+  }
+
+  /**
+   * Check if a key is currently in the cache
+   *
+   * @param key - Shard routing key (tenant/table)
+   * @returns True if the key is cached
+   */
+  isCached(key: ShardKey): boolean {
+    const cacheKey = this.getCacheKey(key);
+    return this.routingCache.has(cacheKey);
   }
 
   /**

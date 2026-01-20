@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -41,6 +42,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260120.0",
+    "@vitest/coverage-v8": "^1.0.0",
     "typescript": "^5.9.3",
     "vitest": "^1.0.0"
   }

@@ -790,3 +790,250 @@ describe('QueryBuilder', () => {
     expect(results[1].name).toBe('Bob');
   });
 });
+
+// =============================================================================
+// Update Operation Tests
+// =============================================================================
+
+describe('update', () => {
+  let db: EvoDB;
+
+  beforeEach(() => {
+    db = new EvoDB({ mode: 'development' });
+  });
+
+  it('should update a single document by filter', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice', age: 30 },
+      { _id: 'user-2', name: 'Bob', age: 25 },
+    ]);
+
+    const result = await db.update('users', { _id: 'user-1' }, { name: 'Alice Updated' });
+
+    expect(result.matchedCount).toBe(1);
+    expect(result.modifiedCount).toBe(1);
+
+    const users = await db.query('users').where('_id', '=', 'user-1');
+    expect(users[0].name).toBe('Alice Updated');
+    expect(users[0].age).toBe(30); // Other fields preserved
+  });
+
+  it('should update multiple documents matching filter', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice', role: 'user' },
+      { _id: 'user-2', name: 'Bob', role: 'user' },
+      { _id: 'user-3', name: 'Charlie', role: 'admin' },
+    ]);
+
+    const result = await db.update('users', { role: 'user' }, { role: 'member' });
+
+    expect(result.matchedCount).toBe(2);
+    expect(result.modifiedCount).toBe(2);
+
+    const members = await db.query('users').where('role', '=', 'member');
+    expect(members).toHaveLength(2);
+  });
+
+  it('should return zero counts when no documents match', async () => {
+    await db.insert('users', { _id: 'user-1', name: 'Alice' });
+
+    const result = await db.update('users', { _id: 'nonexistent' }, { name: 'Updated' });
+
+    expect(result.matchedCount).toBe(0);
+    expect(result.modifiedCount).toBe(0);
+  });
+
+  it('should handle nested field updates', async () => {
+    await db.insert('users', {
+      _id: 'user-1',
+      name: 'Alice',
+      address: { city: 'NYC', zip: '10001' },
+    });
+
+    const result = await db.update('users', { _id: 'user-1' }, { address: { city: 'LA', zip: '90001' } });
+
+    expect(result.modifiedCount).toBe(1);
+
+    const users = await db.query('users').where('_id', '=', 'user-1');
+    expect(users[0].address).toEqual({ city: 'LA', zip: '90001' });
+  });
+
+  it('should add new fields during update', async () => {
+    await db.insert('users', { _id: 'user-1', name: 'Alice' });
+
+    const result = await db.update('users', { _id: 'user-1' }, { email: 'alice@example.com' });
+
+    expect(result.modifiedCount).toBe(1);
+
+    const users = await db.query('users').where('_id', '=', 'user-1');
+    expect(users[0].name).toBe('Alice');
+    expect(users[0].email).toBe('alice@example.com');
+  });
+
+  it('should validate updates against locked schema', async () => {
+    const prodDb = new EvoDB({ mode: 'production' });
+    await prodDb.schema.lock('users', {
+      name: { type: 'string', required: true },
+      age: { type: 'number', required: false },
+    });
+
+    await prodDb.insert('users', { _id: 'user-1', name: 'Alice', age: 30 });
+
+    // Should fail - wrong type
+    await expect(
+      prodDb.update('users', { _id: 'user-1' }, { age: 'not-a-number' })
+    ).rejects.toThrow(/expected type 'number'/);
+  });
+
+  it('should return updated documents when returnDocuments option is true', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice' },
+      { _id: 'user-2', name: 'Bob' },
+    ]);
+
+    const result = await db.update('users', { _id: 'user-1' }, { name: 'Alice Updated' }, { returnDocuments: true });
+
+    expect(result.documents).toBeDefined();
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents![0].name).toBe('Alice Updated');
+  });
+});
+
+// =============================================================================
+// Delete Operation Tests
+// =============================================================================
+
+describe('delete', () => {
+  let db: EvoDB;
+
+  beforeEach(() => {
+    db = new EvoDB({ mode: 'development' });
+  });
+
+  it('should delete a single document by filter', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice' },
+      { _id: 'user-2', name: 'Bob' },
+    ]);
+
+    const result = await db.delete('users', { _id: 'user-1' });
+
+    expect(result.deletedCount).toBe(1);
+
+    const users = await db.query('users');
+    expect(users).toHaveLength(1);
+    expect(users[0].name).toBe('Bob');
+  });
+
+  it('should delete multiple documents matching filter', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice', role: 'user' },
+      { _id: 'user-2', name: 'Bob', role: 'user' },
+      { _id: 'user-3', name: 'Charlie', role: 'admin' },
+    ]);
+
+    const result = await db.delete('users', { role: 'user' });
+
+    expect(result.deletedCount).toBe(2);
+
+    const users = await db.query('users');
+    expect(users).toHaveLength(1);
+    expect(users[0].name).toBe('Charlie');
+  });
+
+  it('should return zero when no documents match', async () => {
+    await db.insert('users', { _id: 'user-1', name: 'Alice' });
+
+    const result = await db.delete('users', { _id: 'nonexistent' });
+
+    expect(result.deletedCount).toBe(0);
+
+    const users = await db.query('users');
+    expect(users).toHaveLength(1);
+  });
+
+  it('should delete all documents when filter is empty', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice' },
+      { _id: 'user-2', name: 'Bob' },
+      { _id: 'user-3', name: 'Charlie' },
+    ]);
+
+    const result = await db.delete('users', {});
+
+    expect(result.deletedCount).toBe(3);
+
+    const users = await db.query('users');
+    expect(users).toHaveLength(0);
+  });
+
+  it('should return deleted documents when returnDocuments option is true', async () => {
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice' },
+      { _id: 'user-2', name: 'Bob' },
+    ]);
+
+    const result = await db.delete('users', { _id: 'user-1' }, { returnDocuments: true });
+
+    expect(result.documents).toBeDefined();
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents![0].name).toBe('Alice');
+  });
+
+  it('should handle complex filter conditions', async () => {
+    await db.insert('products', [
+      { _id: 'p-1', name: 'Widget', price: 100, inStock: true },
+      { _id: 'p-2', name: 'Gadget', price: 200, inStock: false },
+      { _id: 'p-3', name: 'Gizmo', price: 150, inStock: false },
+    ]);
+
+    const result = await db.delete('products', { inStock: false });
+
+    expect(result.deletedCount).toBe(2);
+
+    const products = await db.query('products');
+    expect(products).toHaveLength(1);
+    expect(products[0].name).toBe('Widget');
+  });
+});
+
+// =============================================================================
+// Update/Delete with Storage Persistence Tests
+// =============================================================================
+
+describe('Update/Delete Storage Integration', () => {
+  it('should persist updates to storage', async () => {
+    const storage = createMockStorage();
+    const db = new EvoDB({ mode: 'development', storage });
+
+    await db.insert('users', { _id: 'user-1', name: 'Alice' });
+    await db.update('users', { _id: 'user-1' }, { name: 'Alice Updated' });
+
+    const storedData = await storage.get('data/users/data.json');
+    expect(storedData).not.toBeNull();
+
+    const content = await storedData!.arrayBuffer();
+    const parsed = JSON.parse(new TextDecoder().decode(content));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe('Alice Updated');
+  });
+
+  it('should persist deletes to storage', async () => {
+    const storage = createMockStorage();
+    const db = new EvoDB({ mode: 'development', storage });
+
+    await db.insert('users', [
+      { _id: 'user-1', name: 'Alice' },
+      { _id: 'user-2', name: 'Bob' },
+    ]);
+    await db.delete('users', { _id: 'user-1' });
+
+    const storedData = await storage.get('data/users/data.json');
+    expect(storedData).not.toBeNull();
+
+    const content = await storedData!.arrayBuffer();
+    const parsed = JSON.parse(new TextDecoder().decode(content));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe('Bob');
+  });
+});

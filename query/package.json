@@ -18,6 +18,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -37,13 +38,14 @@
     "directory": "query"
   },
   "dependencies": {
-    "@evodb/core": "file:../core",
-    "@evodb/lakehouse": "file:../lakehouse"
+    "@evodb/core": "workspace:*",
+    "@evodb/lakehouse": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.0",
     "@cloudflare/workers-types": "^4.20260120.0",
     "@evodb/test-utils": "workspace:*",
+    "@vitest/coverage-v8": "^2.1.0",
     "typescript": "^5.3.0",
     "vitest": "^2.1.0",
     "wrangler": "^3.0.0"

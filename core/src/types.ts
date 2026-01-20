@@ -259,7 +259,7 @@ export interface BlockHeader {
 }
 
 /** WAL operation types */
-export const enum WalOp {
+export enum WalOp {
   Insert = 1,
   Update = 2,
   Delete = 3,

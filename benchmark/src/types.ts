@@ -358,7 +358,7 @@ export interface ScatterGatherConfig extends ScenarioConfig {
   scatterFanOut: number;
 
   /** Gather aggregation type */
-  aggregationType: 'sum' | 'avg' | 'count' | 'topk' | 'distinct';
+  aggregationType: 'sum' | 'avg' | 'count' | 'topk' | 'distinct' | 'min' | 'max';
 
   /** Result set size limit */
   resultLimit: number;

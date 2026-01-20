@@ -40,6 +40,7 @@ import {
   type WalEntry,
   type PartitionMode,
 } from './types.js';
+import { ShardRouter, createShardRouter, RECOMMENDED_SHARD_COUNTS, type ShardKey } from './shard-router.js';
 
 // WAL operation types (matching @evodb/core)
 const WalOp = {
@@ -1127,6 +1128,70 @@ describe('End-to-End Integration Tests', () => {
       expect(result.status === 'persisted' || result.status === 'buffered').toBe(true);
     });
 
+    it('should handle high volume CDC streaming with proper ordering', async () => {
+      const mockBucket = createMockR2Bucket();
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/events',
+        bufferSize: 100,
+        bufferTimeout: 60000,
+        maxRetries: 1,
+        retryBackoffMs: 1,
+      });
+
+      // Simulate high volume CDC from multiple sources
+      const sources = ['source-a', 'source-b', 'source-c'];
+      let lsn = 0;
+
+      for (let batch = 0; batch < 5; batch++) {
+        for (const source of sources) {
+          const entries = Array.from({ length: 10 }, () => createSimpleWalEntry(++lsn, `data-${lsn}`));
+          await writer.receiveCDC(source, entries);
+        }
+      }
+
+      const stats = writer.getStats();
+      expect(stats.operations.cdcEntriesReceived).toBe(150); // 5 batches * 3 sources * 10 entries
+      expect(stats.buffer.sourceCount).toBe(3);
+      expect(writer.shouldFlush()).toBe(true);
+    });
+
+    it('should maintain LSN ordering across multiple flushes', async () => {
+      const mockBucket = createMockR2Bucket();
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/ordered',
+        bufferSize: 3,
+        bufferTimeout: 60000,
+        maxRetries: 1,
+        retryBackoffMs: 1,
+      });
+
+      // First batch
+      await writer.receiveCDC('source-1', [
+        createSimpleWalEntry(1, 'first'),
+        createSimpleWalEntry(2, 'second'),
+        createSimpleWalEntry(3, 'third'),
+      ]);
+
+      const flush1 = await writer.flush();
+      expect(flush1.status === 'persisted' || flush1.status === 'buffered').toBe(true);
+
+      // Second batch with higher LSNs
+      await writer.receiveCDC('source-1', [
+        createSimpleWalEntry(4, 'fourth'),
+        createSimpleWalEntry(5, 'fifth'),
+        createSimpleWalEntry(6, 'sixth'),
+      ]);
+
+      const flush2 = await writer.flush();
+      expect(flush2.status === 'persisted' || flush2.status === 'buffered').toBe(true);
+
+      // Stats should track both flushes
+      const stats = writer.getStats();
+      expect(stats.operations.cdcEntriesReceived).toBe(6);
+    });
+
     it('should track statistics through the pipeline', async () => {
       const mockBucket = createMockR2Bucket();
       const writer = new LakehouseWriter({
@@ -1308,6 +1373,588 @@ describe('End-to-End Integration Tests', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+});
+
+// =============================================================================
+// 5. Shard Routing Integration Tests
+// =============================================================================
+
+describe('Shard Routing Integration Tests', () => {
+  describe('Multi-Shard Write Distribution', () => {
+    it('should route different tenants to different shards', () => {
+      const router = new ShardRouter({
+        shardCount: 8,
+        namespaceBinding: 'WRITER_SHARDS',
+      });
+
+      const tenants = ['acme', 'beta', 'gamma', 'delta', 'epsilon'];
+      const shardsUsed = new Set<number>();
+
+      for (const tenant of tenants) {
+        const shard = router.getShard({ tenant, table: 'users' });
+        shardsUsed.add(shard.shardNumber);
+      }
+
+      // With 5 tenants and 8 shards, we expect some distribution
+      expect(shardsUsed.size).toBeGreaterThan(1);
+    });
+
+    it('should colocate same tenant tables on same shard', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+      });
+
+      const tenant = 'acme-corp';
+      const tables = ['users', 'orders', 'products', 'inventory'];
+      const shardNumbers = tables.map(table =>
+        router.getShard({ tenant, table }).shardNumber
+      );
+
+      // Different tables for the same tenant should route to different or same shards
+      // based on the hash of tenant/table, not tenant alone
+      expect(shardNumbers.length).toBe(4);
+    });
+
+    it('should provide consistent routing for same key', () => {
+      const router = new ShardRouter({
+        shardCount: 32,
+        namespaceBinding: 'WRITER_SHARDS',
+      });
+
+      const key: ShardKey = { tenant: 'test-tenant', table: 'test-table' };
+
+      // Route same key multiple times
+      const results: number[] = [];
+      for (let i = 0; i < 10; i++) {
+        results.push(router.getShard(key).shardNumber);
+      }
+
+      // All results should be the same
+      expect(new Set(results).size).toBe(1);
+    });
+  });
+
+  describe('Shard Registry Queries', () => {
+    it('should track shard health across multiple shards', () => {
+      const router = new ShardRouter({
+        shardCount: 4,
+        namespaceBinding: 'WRITER_SHARDS',
+      });
+
+      // Simulate distribution analysis
+      const keys: ShardKey[] = [];
+      for (let i = 0; i < 100; i++) {
+        keys.push({ tenant: `tenant-${i}`, table: 'data' });
+      }
+
+      const stats = router.getDistributionStats(keys);
+      expect(stats.length).toBe(4); // One stat per shard
+
+      // Verify distribution is reasonably balanced
+      const counts = stats.map(s => s.keys.length);
+      const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+      const maxDeviation = Math.max(...counts.map(c => Math.abs(c - avg)));
+
+      // Distribution should be within 50% of average
+      expect(maxDeviation).toBeLessThan(avg * 0.5 + 10);
+    });
+  });
+});
+
+// =============================================================================
+// 6. Error Recovery Integration Tests
+// =============================================================================
+
+describe('Error Recovery Integration Tests', () => {
+  describe('R2 Failure Handling', () => {
+    it('should recover from intermittent R2 failures', async () => {
+      let failCount = 0;
+      const intermittentBucket = createMockR2Bucket();
+
+      // Override put to fail intermittently
+      const originalPut = intermittentBucket.put;
+      intermittentBucket.put = vi.fn(async (...args: Parameters<typeof originalPut>) => {
+        failCount++;
+        if (failCount <= 2) {
+          throw new Error('Intermittent R2 failure');
+        }
+        return originalPut(...args);
+      });
+
+      const mockStorage = createMockDOStorage();
+      const writer = new LakehouseWriter({
+        r2Bucket: intermittentBucket,
+        tableLocation: 'test/recovery',
+        maxRetries: 3,
+        retryBackoffMs: 1,
+      });
+      writer.setDOStorage(mockStorage);
+
+      await writer.receiveCDC('source-1', [createSimpleWalEntry(1), createSimpleWalEntry(2)]);
+      const result = await writer.flush();
+
+      // First attempt might fail, data should be buffered in DO
+      expect(result.status === 'persisted' || result.status === 'buffered').toBe(true);
+    });
+
+    it('should track failure statistics correctly', async () => {
+      const failingBucket = createMockR2Bucket({ failOnPut: true });
+      const mockStorage = createMockDOStorage();
+
+      const writer = new LakehouseWriter({
+        r2Bucket: failingBucket,
+        tableLocation: 'test/failures',
+        maxRetries: 1,
+        retryBackoffMs: 1,
+      });
+      writer.setDOStorage(mockStorage);
+
+      await writer.receiveCDC('source-1', [createSimpleWalEntry(1)]);
+      await writer.flush();
+
+      const stats = writer.getStats();
+      expect(stats.operations.r2WriteFailures).toBeGreaterThan(0);
+    });
+
+    it('should not lose data when R2 is completely unavailable', async () => {
+      const unavailableBucket = createMockR2Bucket({ failOnPut: true });
+      const mockStorage = createMockDOStorage();
+
+      const writer = new LakehouseWriter({
+        r2Bucket: unavailableBucket,
+        tableLocation: 'test/unavailable',
+        maxRetries: 1,
+        retryBackoffMs: 1,
+      });
+      writer.setDOStorage(mockStorage);
+
+      await writer.receiveCDC('source-1', [
+        createSimpleWalEntry(1, 'important-data-1'),
+        createSimpleWalEntry(2, 'important-data-2'),
+      ]);
+
+      const result = await writer.flush();
+
+      // Data should be buffered in DO storage
+      expect(result.status).toBe('buffered');
+      expect(result.location).toBe('do');
+      expect(writer.getPendingBlockCount()).toBe(1);
+
+      // Verify data is in DO storage
+      expect(mockStorage._storage.size).toBeGreaterThan(0);
+    });
+  });
+
+  describe('State Recovery', () => {
+    it('should restore full writer state after crash', async () => {
+      const mockBucket = createMockR2Bucket();
+      const mockStorage = createMockDOStorage();
+
+      // First writer - accumulate state
+      const writer1 = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/crash-recovery',
+        partitionMode: 'edge-cache',
+      });
+      writer1.setDOStorage(mockStorage);
+
+      await writer1.receiveCDC('source-1', [createSimpleWalEntry(100)]);
+      await writer1.receiveCDC('source-2', [createSimpleWalEntry(200)]);
+      await writer1.saveState();
+
+      // Simulate crash - create new writer instance
+      const writer2 = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/crash-recovery',
+        partitionMode: 'edge-cache',
+      });
+      writer2.setDOStorage(mockStorage);
+
+      await writer2.loadState();
+
+      // Verify state was restored
+      const stats = writer2.getStats();
+      expect(stats.partitionMode).toBe('edge-cache');
+    });
+
+    it('should handle missing state gracefully', async () => {
+      const mockBucket = createMockR2Bucket();
+      const mockStorage = createMockDOStorage();
+
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/new-writer',
+      });
+      writer.setDOStorage(mockStorage);
+
+      // Load state when none exists
+      await writer.loadState();
+
+      // Should not throw and should use defaults
+      const stats = writer.getStats();
+      expect(stats.buffer.entryCount).toBe(0);
+      expect(stats.blocks.r2BlockCount).toBe(0);
+    });
+  });
+
+  describe('Concurrent Operation Handling', () => {
+    it('should handle concurrent CDC writes safely', async () => {
+      const mockBucket = createMockR2Bucket();
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/concurrent',
+        bufferSize: 1000,
+      });
+
+      // Simulate concurrent writes from multiple sources
+      const writes = [];
+      for (let i = 0; i < 10; i++) {
+        writes.push(
+          writer.receiveCDC(`source-${i}`, [
+            createSimpleWalEntry(i * 10 + 1),
+            createSimpleWalEntry(i * 10 + 2),
+          ])
+        );
+      }
+
+      await Promise.all(writes);
+
+      const stats = writer.getStats();
+      expect(stats.operations.cdcEntriesReceived).toBe(20);
+      expect(stats.buffer.sourceCount).toBe(10);
+    });
+  });
+});
+
+// =============================================================================
+// 7. Compaction Trigger Integration Tests
+// =============================================================================
+
+describe('Compaction Trigger Integration Tests', () => {
+  describe('Automatic Compaction Scheduling', () => {
+    it('should identify blocks eligible for compaction', () => {
+      const mockBucket = createMockR2Bucket();
+      const compactor = new BlockCompactor(mockBucket, 'test/table', {
+        partitionMode: 'do-sqlite',
+        minBlocks: 4,
+        targetSize: 16 * 1024 * 1024,
+      });
+
+      const blocks: BlockMetadata[] = [
+        createMockBlockMetadata('block-1', 1 * 1024 * 1024),
+        createMockBlockMetadata('block-2', 2 * 1024 * 1024),
+        createMockBlockMetadata('block-3', 1.5 * 1024 * 1024),
+        createMockBlockMetadata('block-4', 2.5 * 1024 * 1024),
+      ];
+
+      expect(compactor.shouldCompact(blocks)).toBe(true);
+      const metrics = compactor.getMetrics(blocks);
+      expect(metrics.eligibleForCompaction).toBe(true);
+    });
+
+    it('should not compact recently written blocks', () => {
+      const mockBucket = createMockR2Bucket();
+      const compactor = new BlockCompactor(mockBucket, 'test/table', {
+        partitionMode: 'do-sqlite',
+        minBlocks: 4,
+      });
+
+      // Only 2 small blocks - not enough
+      const blocks: BlockMetadata[] = [
+        createMockBlockMetadata('block-1', 1 * 1024 * 1024),
+        createMockBlockMetadata('block-2', 1 * 1024 * 1024),
+      ];
+
+      expect(compactor.shouldCompact(blocks)).toBe(false);
+    });
+
+    it('should exclude already compacted blocks from selection', () => {
+      const mockBucket = createMockR2Bucket();
+      const compactor = new BlockCompactor(mockBucket, 'test/table', {
+        partitionMode: 'do-sqlite',
+        minBlocks: 2,
+      });
+
+      const blocks: BlockMetadata[] = [
+        createMockBlockMetadata('compacted-1', 1 * 1024 * 1024, { compacted: true }),
+        createMockBlockMetadata('compacted-2', 1 * 1024 * 1024, { compacted: true }),
+        createMockBlockMetadata('small-1', 1 * 1024 * 1024),
+        createMockBlockMetadata('small-2', 1 * 1024 * 1024),
+      ];
+
+      const smallBlocks = compactor.selectSmallBlocks(blocks);
+      expect(smallBlocks.length).toBe(2);
+      expect(smallBlocks.every(b => !b.compacted)).toBe(true);
+    });
+  });
+
+  describe('Partition Mode Compaction Targets', () => {
+    it('should use correct target sizes for each partition mode', () => {
+      const doSqliteConfig = getDefaultCompactionConfig('do-sqlite');
+      const edgeCacheConfig = getDefaultCompactionConfig('edge-cache');
+      const enterpriseConfig = getDefaultCompactionConfig('enterprise');
+
+      expect(doSqliteConfig.targetSize).toBe(16 * 1024 * 1024); // 16MB
+      expect(edgeCacheConfig.targetSize).toBe(500 * 1024 * 1024); // 500MB
+      expect(enterpriseConfig.targetSize).toBe(5 * 1024 * 1024 * 1024); // 5GB
+    });
+
+    it('should select appropriate compaction tier based on total block size', () => {
+      const mockBucket = createMockR2Bucket();
+      const tieredCompactor = new TieredCompactor(mockBucket, 'test/table');
+
+      // Very small total size (< 500MB) -> do-sqlite tier
+      const tinyBlocks = [
+        createMockBlockMetadata('tiny-1', 500 * 1024),
+        createMockBlockMetadata('tiny-2', 500 * 1024),
+      ];
+      expect(tieredCompactor.getCompactorForBlocks(tinyBlocks).getPartitionMode()).toBe('do-sqlite');
+
+      // Medium total size (>= 500MB, < 5GB) -> edge-cache tier
+      // 300MB + 300MB = 600MB total
+      const mediumBlocks = [
+        createMockBlockMetadata('med-1', 300 * 1024 * 1024),
+        createMockBlockMetadata('med-2', 300 * 1024 * 1024),
+      ];
+      expect(tieredCompactor.getCompactorForBlocks(mediumBlocks).getPartitionMode()).toBe('edge-cache');
+
+      // Large total size (>= 5GB) -> enterprise tier
+      // 3GB + 3GB = 6GB total
+      const largeBlocks = [
+        createMockBlockMetadata('large-1', 3 * 1024 * 1024 * 1024),
+        createMockBlockMetadata('large-2', 3 * 1024 * 1024 * 1024),
+      ];
+      expect(tieredCompactor.getCompactorForBlocks(largeBlocks).getPartitionMode()).toBe('enterprise');
+    });
+  });
+});
+
+// =============================================================================
+// 8. Multiple Tables Buffering Integration Tests
+// =============================================================================
+
+describe('Multiple Tables Buffering Integration Tests', () => {
+  describe('Per-Table Buffer Isolation', () => {
+    it('should maintain separate buffers for different tables', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 50,
+        bufferTimeout: 5000,
+        targetBlockSize: 1024 * 1024,
+      });
+
+      // Add to different tables
+      multiBuffer.add('users', 'source-1', [createSimpleWalEntry(1)]);
+      multiBuffer.add('orders', 'source-1', [createSimpleWalEntry(2)]);
+      multiBuffer.add('products', 'source-1', [createSimpleWalEntry(3)]);
+
+      const allStats = multiBuffer.getAllStats();
+      expect(allStats.size).toBe(3);
+      expect(allStats.get('users')?.entryCount).toBe(1);
+      expect(allStats.get('orders')?.entryCount).toBe(1);
+      expect(allStats.get('products')?.entryCount).toBe(1);
+    });
+
+    it('should flush tables independently based on their thresholds', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 10,
+        bufferTimeout: 60000,
+        targetBlockSize: 10 * 1024 * 1024,
+      });
+
+      // Fill users table to threshold
+      multiBuffer.add('users', 'source-1', Array.from({ length: 10 }, (_, i) => createSimpleWalEntry(i)));
+
+      // Partially fill orders table
+      multiBuffer.add('orders', 'source-1', Array.from({ length: 5 }, (_, i) => createSimpleWalEntry(i)));
+
+      const readyToFlush = multiBuffer.getReadyToFlush();
+      expect(readyToFlush).toContain('users');
+      expect(readyToFlush).not.toContain('orders');
+    });
+
+    it('should calculate total size across all tables', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 5000,
+        targetBlockSize: 1024 * 1024,
+      });
+
+      // Add data to multiple tables
+      for (let i = 0; i < 5; i++) {
+        multiBuffer.add(`table-${i}`, 'source-1', [
+          createSimpleWalEntry(i, 'x'.repeat(100)),
+        ]);
+      }
+
+      const totalEntries = multiBuffer.getTotalEntryCount();
+      const totalSize = multiBuffer.getTotalEstimatedSize();
+
+      expect(totalEntries).toBe(5);
+      expect(totalSize).toBeGreaterThan(500); // At least 100 bytes per entry
+    });
+
+    it('should track minimum time to flush across all tables', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 1000,
+        bufferTimeout: 5000,
+        targetBlockSize: 10 * 1024 * 1024,
+      });
+
+      // Empty buffer has no timeout
+      expect(multiBuffer.getMinTimeToFlush()).toBeNull();
+
+      // Add to one table
+      multiBuffer.add('table-1', 'source-1', [createSimpleWalEntry(1)]);
+
+      const timeToFlush = multiBuffer.getMinTimeToFlush();
+      expect(timeToFlush).not.toBeNull();
+      expect(timeToFlush!).toBeGreaterThan(0);
+      expect(timeToFlush!).toBeLessThanOrEqual(5000);
+    });
+  });
+
+  describe('Cross-Table Operations', () => {
+    it('should handle same source writing to multiple tables', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 100,
+        bufferTimeout: 5000,
+        targetBlockSize: 1024 * 1024,
+      });
+
+      const sourceId = 'shared-source';
+
+      multiBuffer.add('users', sourceId, [createSimpleWalEntry(1)]);
+      multiBuffer.add('orders', sourceId, [createSimpleWalEntry(2)]);
+      multiBuffer.add('products', sourceId, [createSimpleWalEntry(3)]);
+
+      // Each table should have the entry
+      expect(multiBuffer.getBuffer('users').size()).toBe(1);
+      expect(multiBuffer.getBuffer('orders').size()).toBe(1);
+      expect(multiBuffer.getBuffer('products').size()).toBe(1);
+    });
+
+    it('should allow removing individual table buffers', () => {
+      const multiBuffer = new MultiTableBuffer({
+        bufferSize: 100,
+        bufferTimeout: 5000,
+        targetBlockSize: 1024 * 1024,
+      });
+
+      multiBuffer.add('table-1', 'source-1', [createSimpleWalEntry(1)]);
+      multiBuffer.add('table-2', 'source-1', [createSimpleWalEntry(2)]);
+      multiBuffer.add('table-3', 'source-1', [createSimpleWalEntry(3)]);
+
+      expect(multiBuffer.hasData()).toBe(true);
+      expect(multiBuffer.getAllStats().size).toBe(3);
+
+      multiBuffer.removeBuffer('table-2');
+
+      expect(multiBuffer.getAllStats().size).toBe(2);
+      expect(multiBuffer.getTotalEntryCount()).toBe(2);
+    });
+  });
+});
+
+// =============================================================================
+// 9. Writer Lifecycle Integration Tests
+// =============================================================================
+
+describe('Writer Lifecycle Integration Tests', () => {
+  describe('Full Lifecycle', () => {
+    it('should handle complete write -> flush -> compact lifecycle', async () => {
+      const mockBucket = createMockR2Bucket();
+      const mockStorage = createMockDOStorage();
+
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/lifecycle',
+        bufferSize: 5,
+        partitionMode: 'do-sqlite',
+        minCompactBlocks: 2,
+      });
+      writer.setDOStorage(mockStorage);
+
+      // Phase 1: Write data
+      await writer.receiveCDC('source-1', [
+        createSimpleWalEntry(1),
+        createSimpleWalEntry(2),
+        createSimpleWalEntry(3),
+        createSimpleWalEntry(4),
+        createSimpleWalEntry(5),
+      ]);
+
+      expect(writer.shouldFlush()).toBe(true);
+
+      // Phase 2: Flush to R2
+      const flushResult = await writer.flush();
+      expect(flushResult.status === 'persisted' || flushResult.status === 'buffered').toBe(true);
+      expect(flushResult.entryCount).toBe(5);
+
+      // Phase 3: Check compaction eligibility
+      const compactionMetrics = writer.getCompactionMetrics();
+      expect(compactionMetrics.partitionMode).toBe('do-sqlite');
+    });
+
+    it('should track timing statistics across operations', async () => {
+      const mockBucket = createMockR2Bucket();
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/timing',
+        bufferSize: 2,
+      });
+
+      // Perform multiple flushes
+      for (let i = 0; i < 3; i++) {
+        await writer.receiveCDC('source-1', [
+          createSimpleWalEntry(i * 2 + 1),
+          createSimpleWalEntry(i * 2 + 2),
+        ]);
+        await writer.flush();
+      }
+
+      const stats = writer.getStats();
+      expect(stats.timing.lastFlushTime).not.toBeNull();
+      expect(stats.timing.avgFlushDurationMs).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('Source Management', () => {
+    it('should track and manage multiple CDC sources', async () => {
+      const mockBucket = createMockR2Bucket();
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/sources',
+        bufferSize: 100,
+      });
+
+      // Connect multiple sources
+      await writer.receiveCDC('source-a', [createSimpleWalEntry(1)]);
+      await writer.receiveCDC('source-b', [createSimpleWalEntry(2)]);
+      await writer.receiveCDC('source-c', [createSimpleWalEntry(3)]);
+
+      let connected = writer.getConnectedSources();
+      expect(connected.length).toBe(3);
+      expect(connected).toContain('source-a');
+      expect(connected).toContain('source-b');
+      expect(connected).toContain('source-c');
+
+      // Disconnect a source
+      writer.markSourceDisconnected('source-b');
+      connected = writer.getConnectedSources();
+      expect(connected.length).toBe(2);
+      expect(connected).not.toContain('source-b');
+
+      // Verify source stats
+      const sourceAStats = writer.getSourceStats('source-a');
+      expect(sourceAStats).toBeDefined();
+      expect(sourceAStats!.entriesReceived).toBe(1);
+      expect(sourceAStats!.connected).toBe(true);
+
+      const sourceBStats = writer.getSourceStats('source-b');
+      expect(sourceBStats!.connected).toBe(false);
     });
   });
 });

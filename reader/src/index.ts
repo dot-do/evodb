@@ -26,6 +26,8 @@ export type {
   ColumnType,
   R2Bucket,
   R2Object,
+  R2ListOptions,
+  R2Objects,
   ReaderConfig,
   ReaderEnv,
 } from './types.js';
@@ -72,8 +74,15 @@ import {
   isValidBlockData,
   BlockDataValidationError,
   BlockDataValidationErrorCode,
+  validateManifest,
+  validateTableMetadata,
+  ManifestValidationError,
+  ManifestValidationErrorCode,
+  isValidManifest,
   type BlockData,
   type BlockDataValidationResult,
+  type ValidatedManifest,
+  type ValidatedTableMetadata,
 } from './validation.js';
 
 // Re-export cache utilities and types
@@ -96,16 +105,18 @@ export {
   parseAndValidateBlockData,
   validateBlockData,
   isValidBlockData,
+  ManifestValidationError,
+  ManifestValidationErrorCode,
+  validateManifest,
+  validateTableMetadata,
+  isValidManifest,
 };
-export type { BlockData, BlockDataValidationResult };
+export type { BlockData, BlockDataValidationResult, ValidatedManifest, ValidatedTableMetadata };
 
 /**
- * Manifest structure
+ * Manifest structure - uses ValidatedManifest from validation module
  */
-interface Manifest {
-  version: number;
-  tables: Record<string, TableMetadata>;
-}
+type Manifest = ValidatedManifest;
 
 /**
  * Query engine for reading data from R2 with Cache API tier
@@ -123,7 +134,7 @@ export class QueryEngine {
   }
 
   /**
-   * Load manifest from R2
+   * Load manifest from R2 with runtime validation
    */
   private async loadManifest(): Promise<Manifest> {
     if (this.manifest) {
@@ -135,7 +146,9 @@ export class QueryEngine {
       throw new Error('Manifest not found');
     }
 
-    this.manifest = await object.json<Manifest>();
+    // Parse JSON and validate the manifest structure
+    const rawData = await object.json<unknown>();
+    this.manifest = validateManifest(rawData);
     return this.manifest;
   }
 

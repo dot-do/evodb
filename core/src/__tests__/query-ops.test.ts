@@ -127,6 +127,12 @@ describe('evaluateFilter', () => {
     expect(evaluateFilter(5, filter)).toBe(false);
     expect(evaluateFilter(6, filter)).toBe(true);
   });
+
+  it('should throw error for unknown operator (exhaustiveness check)', () => {
+    // Force an unknown operator through type casting to test runtime behavior
+    const filter = { column: 'x', operator: 'unknown', value: 5 } as FilterPredicate;
+    expect(() => evaluateFilter(5, filter)).toThrow('Unhandled filter operator: unknown');
+  });
 });
 
 describe('evaluateFilters', () => {

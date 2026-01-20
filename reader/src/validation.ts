@@ -12,6 +12,8 @@
  * - TextDecoder is reused to avoid allocation overhead
  */
 
+import type { ColumnType } from './types.js';
+
 /**
  * Error codes for block data validation failures
  * Use these for programmatic error handling
@@ -296,4 +298,386 @@ export function isValidBlockData(data: unknown): data is BlockData {
   }
 
   return true;
+}
+
+// =============================================================================
+// Manifest Validation
+// =============================================================================
+
+/**
+ * Error codes for manifest validation failures
+ */
+export enum ManifestValidationErrorCode {
+  /** JSON parsing failed (syntax error) */
+  JSON_PARSE_ERROR = 'JSON_PARSE_ERROR',
+  /** Manifest is null */
+  NULL_MANIFEST = 'NULL_MANIFEST',
+  /** Manifest is a primitive instead of object */
+  PRIMITIVE_MANIFEST = 'PRIMITIVE_MANIFEST',
+  /** Manifest is an array instead of object */
+  ARRAY_MANIFEST = 'ARRAY_MANIFEST',
+  /** Missing required field */
+  MISSING_FIELD = 'MISSING_FIELD',
+  /** Field has wrong type */
+  WRONG_TYPE = 'WRONG_TYPE',
+  /** Invalid column type */
+  INVALID_COLUMN_TYPE = 'INVALID_COLUMN_TYPE',
+}
+
+/**
+ * Valid column types
+ */
+const VALID_COLUMN_TYPES = new Set([
+  'null',
+  'boolean',
+  'int32',
+  'int64',
+  'float64',
+  'string',
+  'binary',
+  'timestamp',
+  'date',
+  'list',
+  'object',
+]);
+
+/**
+ * Error thrown when manifest validation fails.
+ */
+export class ManifestValidationError extends Error {
+  public readonly code: ManifestValidationErrorCode;
+
+  constructor(
+    message: string,
+    code: ManifestValidationErrorCode,
+    public readonly details?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'ManifestValidationError';
+    this.code = code;
+  }
+}
+
+/**
+ * Validated column schema type
+ */
+export interface ValidatedColumnSchema {
+  name: string;
+  type: ColumnType;
+  nullable: boolean;
+  metadata?: Record<string, string>;
+}
+
+/**
+ * Validated table metadata type
+ */
+export interface ValidatedTableMetadata {
+  name: string;
+  schema: ValidatedColumnSchema[];
+  blockPaths: string[];
+  rowCount: number;
+  lastUpdated: number;
+}
+
+/**
+ * Validated manifest type
+ */
+export interface ValidatedManifest {
+  version: number;
+  tables: Record<string, ValidatedTableMetadata>;
+}
+
+/**
+ * Validates that a value is a valid Manifest structure.
+ *
+ * @param data - The parsed JSON data to validate
+ * @returns Validated Manifest
+ * @throws ManifestValidationError if validation fails
+ */
+export function validateManifest(data: unknown): ValidatedManifest {
+  // Null check
+  if (data === null) {
+    throw new ManifestValidationError(
+      'Invalid manifest: expected object but got null',
+      ManifestValidationErrorCode.NULL_MANIFEST,
+      { receivedType: 'null' }
+    );
+  }
+
+  // Type check for primitives
+  if (typeof data !== 'object') {
+    throw new ManifestValidationError(
+      `Invalid manifest: expected object but got ${typeof data}`,
+      ManifestValidationErrorCode.PRIMITIVE_MANIFEST,
+      { receivedType: typeof data }
+    );
+  }
+
+  // Array check
+  if (Array.isArray(data)) {
+    throw new ManifestValidationError(
+      'Invalid manifest: expected object but got array',
+      ManifestValidationErrorCode.ARRAY_MANIFEST,
+      { receivedType: 'array' }
+    );
+  }
+
+  const manifest = data as Record<string, unknown>;
+
+  // Validate version field
+  if (!('version' in manifest)) {
+    throw new ManifestValidationError(
+      'Invalid manifest: missing required field "version"',
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { field: 'version' }
+    );
+  }
+
+  if (typeof manifest.version !== 'number') {
+    throw new ManifestValidationError(
+      `Invalid manifest: "version" must be a number but got ${typeof manifest.version}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { field: 'version', expectedType: 'number', receivedType: typeof manifest.version }
+    );
+  }
+
+  // Validate tables field
+  if (!('tables' in manifest)) {
+    throw new ManifestValidationError(
+      'Invalid manifest: missing required field "tables"',
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { field: 'tables' }
+    );
+  }
+
+  if (manifest.tables === null || typeof manifest.tables !== 'object' || Array.isArray(manifest.tables)) {
+    const actualType = manifest.tables === null ? 'null' : Array.isArray(manifest.tables) ? 'array' : typeof manifest.tables;
+    throw new ManifestValidationError(
+      `Invalid manifest: "tables" must be an object but got ${actualType}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { field: 'tables', expectedType: 'object', receivedType: actualType }
+    );
+  }
+
+  const tables = manifest.tables as Record<string, unknown>;
+  const validatedTables: Record<string, ValidatedTableMetadata> = {};
+
+  // Validate each table (lazy validation - only validates structure, not content)
+  for (const [tableName, tableData] of Object.entries(tables)) {
+    validatedTables[tableName] = validateTableMetadataStructure(tableData, tableName);
+  }
+
+  return {
+    version: manifest.version as number,
+    tables: validatedTables,
+  };
+}
+
+/**
+ * Validates that a value is a valid TableMetadata structure.
+ * This is called during getTableMetadata to validate the specific table.
+ *
+ * @param data - The table data to validate
+ * @param tableName - Name of the table (for error messages)
+ * @returns Validated TableMetadata
+ * @throws ManifestValidationError if validation fails
+ */
+export function validateTableMetadata(data: unknown, tableName: string): ValidatedTableMetadata {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    const actualType = data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data;
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": expected object but got ${actualType}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, receivedType: actualType }
+    );
+  }
+
+  const table = data as Record<string, unknown>;
+
+  // Validate name field
+  if (!('name' in table)) {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": missing required field "name"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, field: 'name' }
+    );
+  }
+
+  if (typeof table.name !== 'string') {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": "name" must be a string but got ${typeof table.name}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, field: 'name', expectedType: 'string', receivedType: typeof table.name }
+    );
+  }
+
+  // Validate schema field
+  if (!('schema' in table)) {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": missing required field "schema"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, field: 'schema' }
+    );
+  }
+
+  if (!Array.isArray(table.schema)) {
+    const actualType = table.schema === null ? 'null' : typeof table.schema;
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": "schema" must be an array but got ${actualType}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, field: 'schema', expectedType: 'array', receivedType: actualType }
+    );
+  }
+
+  // Validate each column in schema
+  const validatedSchema: ValidatedColumnSchema[] = [];
+  for (let i = 0; i < table.schema.length; i++) {
+    validatedSchema.push(validateColumnSchema(table.schema[i], tableName, i));
+  }
+
+  // Validate blockPaths field
+  if (!('blockPaths' in table)) {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": missing required field "blockPaths"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, field: 'blockPaths' }
+    );
+  }
+
+  if (!Array.isArray(table.blockPaths)) {
+    const actualType = table.blockPaths === null ? 'null' : typeof table.blockPaths;
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": "blockPaths" must be an array but got ${actualType}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, field: 'blockPaths', expectedType: 'array', receivedType: actualType }
+    );
+  }
+
+  // Validate rowCount field
+  if (!('rowCount' in table)) {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": missing required field "rowCount"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, field: 'rowCount' }
+    );
+  }
+
+  if (typeof table.rowCount !== 'number') {
+    throw new ManifestValidationError(
+      `Invalid table "${tableName}": "rowCount" must be a number but got ${typeof table.rowCount}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, field: 'rowCount', expectedType: 'number', receivedType: typeof table.rowCount }
+    );
+  }
+
+  // lastUpdated is optional, but if present must be a number
+  let lastUpdated = 0;
+  if ('lastUpdated' in table) {
+    if (typeof table.lastUpdated !== 'number') {
+      throw new ManifestValidationError(
+        `Invalid table "${tableName}": "lastUpdated" must be a number but got ${typeof table.lastUpdated}`,
+        ManifestValidationErrorCode.WRONG_TYPE,
+        { table: tableName, field: 'lastUpdated', expectedType: 'number', receivedType: typeof table.lastUpdated }
+      );
+    }
+    lastUpdated = table.lastUpdated;
+  }
+
+  return {
+    name: table.name as string,
+    schema: validatedSchema,
+    blockPaths: table.blockPaths as string[],
+    rowCount: table.rowCount as number,
+    lastUpdated,
+  };
+}
+
+/**
+ * Validates table metadata structure without deep column validation.
+ * Used during manifest loading for lazy validation.
+ */
+function validateTableMetadataStructure(data: unknown, tableName: string): ValidatedTableMetadata {
+  // Defer to full validation
+  return validateTableMetadata(data, tableName);
+}
+
+/**
+ * Validates a column schema entry.
+ */
+function validateColumnSchema(data: unknown, tableName: string, index: number): ValidatedColumnSchema {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    const actualType = data === null ? 'null' : Array.isArray(data) ? 'array' : typeof data;
+    throw new ManifestValidationError(
+      `Invalid column at index ${index} in table "${tableName}": expected object but got ${actualType}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, columnIndex: index, receivedType: actualType }
+    );
+  }
+
+  const column = data as Record<string, unknown>;
+
+  // Validate name field
+  if (!('name' in column)) {
+    throw new ManifestValidationError(
+      `Invalid column at index ${index} in table "${tableName}": missing required field "name"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, columnIndex: index, field: 'name' }
+    );
+  }
+
+  if (typeof column.name !== 'string') {
+    throw new ManifestValidationError(
+      `Invalid column at index ${index} in table "${tableName}": "name" must be a string but got ${typeof column.name}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, columnIndex: index, field: 'name', expectedType: 'string', receivedType: typeof column.name }
+    );
+  }
+
+  // Validate type field
+  if (!('type' in column)) {
+    throw new ManifestValidationError(
+      `Invalid column "${column.name}" in table "${tableName}": missing required field "type"`,
+      ManifestValidationErrorCode.MISSING_FIELD,
+      { table: tableName, column: column.name, field: 'type' }
+    );
+  }
+
+  if (typeof column.type !== 'string') {
+    throw new ManifestValidationError(
+      `Invalid column "${column.name}" in table "${tableName}": "type" must be a string but got ${typeof column.type}`,
+      ManifestValidationErrorCode.WRONG_TYPE,
+      { table: tableName, column: column.name, field: 'type', expectedType: 'string', receivedType: typeof column.type }
+    );
+  }
+
+  // Validate column type value
+  if (!VALID_COLUMN_TYPES.has(column.type)) {
+    throw new ManifestValidationError(
+      `Invalid column "${column.name}" in table "${tableName}": unknown type "${column.type}"`,
+      ManifestValidationErrorCode.INVALID_COLUMN_TYPE,
+      { table: tableName, column: column.name, invalidType: column.type, validTypes: Array.from(VALID_COLUMN_TYPES) }
+    );
+  }
+
+  // nullable defaults to false if not present
+  const nullable = 'nullable' in column ? Boolean(column.nullable) : false;
+
+  return {
+    name: column.name as string,
+    type: column.type as ColumnType,
+    nullable,
+    metadata: column.metadata as Record<string, string> | undefined,
+  };
+}
+
+/**
+ * Type guard to check if a value is a valid Manifest.
+ */
+export function isValidManifest(data: unknown): data is ValidatedManifest {
+  try {
+    validateManifest(data);
+    return true;
+  } catch {
+    return false;
+  }
 }

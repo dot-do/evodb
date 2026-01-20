@@ -104,8 +104,9 @@ describe('E2E Write-Read Integration', () => {
       );
 
       expect(writeResult.success).toBe(true);
+      if (!writeResult.success) throw new Error('Write failed');
       expect(writeResult.metadata).toBeDefined();
-      expect(writeResult.metadata!.rowCount).toBe(5);
+      expect(writeResult.metadata.rowCount).toBe(5);
 
       // Step 2: Store columnar block data in mock R2
       const columnarData = toColumnarFormat(sampleUsers);

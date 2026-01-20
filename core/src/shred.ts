@@ -238,6 +238,34 @@ function parsePath(path: string): (string | number)[] {
 }
 
 /**
+ * Helper to set a value in a container (array or object) by key
+ */
+function setContainerValue(
+  container: Record<string, unknown> | unknown[],
+  key: string | number,
+  value: unknown
+): void {
+  if (isArray(container)) {
+    container[key as number] = value;
+  } else {
+    container[key as string] = value;
+  }
+}
+
+/**
+ * Helper to get a value from a container (array or object) by key
+ */
+function getContainerValue(
+  container: Record<string, unknown> | unknown[],
+  key: string | number
+): unknown {
+  if (isArray(container)) {
+    return container[key as number];
+  }
+  return container[key as string];
+}
+
+/**
  * Ensures a container exists at a given position with the correct type.
  * Creates the container if missing, or overwrites if wrong type.
  *
@@ -251,43 +279,34 @@ function ensureContainer(
   key: string | number,
   needArray: boolean
 ): Record<string, unknown> | unknown[] {
-  const existing = isArray(container)
-    ? (container as unknown[])[key as number]
-    : (container as Record<string, unknown>)[key as string];
+  const existing = getContainerValue(container, key);
 
   // Create if missing or null/undefined
   if (existing === null || existing === undefined || !(key in container)) {
     const newContainer = needArray ? [] : {};
-    if (isArray(container)) {
-      (container as unknown[])[key as number] = newContainer;
-    } else {
-      (container as Record<string, unknown>)[key as string] = newContainer;
-    }
+    setContainerValue(container, key, newContainer);
     return newContainer;
   }
 
   // Check if existing value is correct type
   if (needArray && !isArray(existing)) {
     const newContainer: unknown[] = [];
-    if (isArray(container)) {
-      (container as unknown[])[key as number] = newContainer;
-    } else {
-      (container as Record<string, unknown>)[key as string] = newContainer;
-    }
+    setContainerValue(container, key, newContainer);
     return newContainer;
   }
 
   if (!needArray && !isPlainObject(existing)) {
     const newContainer: Record<string, unknown> = {};
-    if (isArray(container)) {
-      (container as unknown[])[key as number] = newContainer;
-    } else {
-      (container as Record<string, unknown>)[key as string] = newContainer;
-    }
+    setContainerValue(container, key, newContainer);
     return newContainer;
   }
 
-  return existing as Record<string, unknown> | unknown[];
+  // At this point, existing is guaranteed to be the correct type
+  // because we've checked: needArray && isArray(existing) OR !needArray && isPlainObject(existing)
+  if (needArray) {
+    return existing as unknown[];
+  }
+  return existing as Record<string, unknown>;
 }
 
 /**
@@ -327,7 +346,7 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
     return;
   }
 
-  let cur: unknown = obj;
+  let cur: Record<string, unknown> | unknown[] = obj;
 
   // Traverse to the parent of the final destination
   for (let i = 0; i < parts.length - 1; i++) {
@@ -342,7 +361,7 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
         // This is a defensive check - shouldn't happen in normal unshred operation
         return;
       }
-      cur = ensureContainer(cur as unknown[], p, nextIsArray);
+      cur = ensureContainer(cur, p, nextIsArray);
     } else {
       // Current part is string key - validate cur is an object
       if (!isPlainObject(cur)) {
@@ -350,7 +369,7 @@ function setPath(obj: Record<string, unknown>, path: string, value: unknown): vo
         // This is a defensive check - shouldn't happen in normal unshred operation
         return;
       }
-      cur = ensureContainer(cur as Record<string, unknown>, p, nextIsArray);
+      cur = ensureContainer(cur, p, nextIsArray);
     }
   }
 

@@ -330,6 +330,126 @@ describe('ShardRouter', () => {
     });
   });
 
+  describe('LRU cache eviction', () => {
+    it('should enforce max cache size', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+        maxCacheSize: 5,
+      });
+
+      // Add 10 entries
+      for (let i = 0; i < 10; i++) {
+        router.getShard({ tenant: `tenant-${i}`, table: 'data' });
+      }
+
+      // Cache size should not exceed maxCacheSize
+      expect(router.getCacheSize()).toBe(5);
+    });
+
+    it('should evict oldest entries when cache is full', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+        maxCacheSize: 3,
+      });
+
+      // Add entries in order: tenant-0, tenant-1, tenant-2
+      router.getShard({ tenant: 'tenant-0', table: 'data' });
+      router.getShard({ tenant: 'tenant-1', table: 'data' });
+      router.getShard({ tenant: 'tenant-2', table: 'data' });
+
+      expect(router.getCacheSize()).toBe(3);
+
+      // Add a new entry - should evict tenant-0 (oldest)
+      router.getShard({ tenant: 'tenant-3', table: 'data' });
+
+      expect(router.getCacheSize()).toBe(3);
+
+      // Verify tenant-0 was evicted by checking it's not a cache hit
+      // (We can verify this by checking the cache doesn't contain that key)
+      expect(router.isCached({ tenant: 'tenant-0', table: 'data' })).toBe(false);
+      expect(router.isCached({ tenant: 'tenant-1', table: 'data' })).toBe(true);
+      expect(router.isCached({ tenant: 'tenant-2', table: 'data' })).toBe(true);
+      expect(router.isCached({ tenant: 'tenant-3', table: 'data' })).toBe(true);
+    });
+
+    it('should keep recently accessed entries', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+        maxCacheSize: 3,
+      });
+
+      // Add entries in order: tenant-0, tenant-1, tenant-2
+      router.getShard({ tenant: 'tenant-0', table: 'data' });
+      router.getShard({ tenant: 'tenant-1', table: 'data' });
+      router.getShard({ tenant: 'tenant-2', table: 'data' });
+
+      // Access tenant-0 again (making it most recently used)
+      router.getShard({ tenant: 'tenant-0', table: 'data' });
+
+      // Add a new entry - should evict tenant-1 (now the least recently used)
+      router.getShard({ tenant: 'tenant-3', table: 'data' });
+
+      expect(router.getCacheSize()).toBe(3);
+
+      // tenant-0 should still be cached (was recently accessed)
+      expect(router.isCached({ tenant: 'tenant-0', table: 'data' })).toBe(true);
+      // tenant-1 should be evicted (least recently used)
+      expect(router.isCached({ tenant: 'tenant-1', table: 'data' })).toBe(false);
+      // tenant-2 and tenant-3 should be cached
+      expect(router.isCached({ tenant: 'tenant-2', table: 'data' })).toBe(true);
+      expect(router.isCached({ tenant: 'tenant-3', table: 'data' })).toBe(true);
+    });
+
+    it('should use default max cache size when not specified', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+      });
+
+      // Default should be 10000 - add more than that
+      // (For this test we just verify the router has a maxCacheSize set)
+      expect(router.getMaxCacheSize()).toBe(10000);
+    });
+
+    it('should accept custom max cache size', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+        maxCacheSize: 500,
+      });
+
+      expect(router.getMaxCacheSize()).toBe(500);
+    });
+
+    it('should still return correct shard info after eviction and re-lookup', () => {
+      const router = new ShardRouter({
+        shardCount: 16,
+        namespaceBinding: 'WRITER_SHARDS',
+        maxCacheSize: 2,
+      });
+
+      // Get shard info for tenant-0
+      const originalInfo = router.getShard({ tenant: 'tenant-0', table: 'data' });
+
+      // Fill cache to evict tenant-0
+      router.getShard({ tenant: 'tenant-1', table: 'data' });
+      router.getShard({ tenant: 'tenant-2', table: 'data' });
+
+      // tenant-0 should be evicted now
+      expect(router.isCached({ tenant: 'tenant-0', table: 'data' })).toBe(false);
+
+      // Re-lookup tenant-0 - should get same shard info (hash is deterministic)
+      const newInfo = router.getShard({ tenant: 'tenant-0', table: 'data' });
+
+      expect(newInfo.shardNumber).toBe(originalInfo.shardNumber);
+      expect(newInfo.shardId).toBe(originalInfo.shardId);
+      expect(newInfo.hashValue).toBe(originalInfo.hashValue);
+    });
+  });
+
   describe('configuration export', () => {
     it('should export configuration', () => {
       const router = new ShardRouter({

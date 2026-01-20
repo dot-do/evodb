@@ -138,9 +138,11 @@ export function evaluateFilter(value, filter) {
         case 'isNotNull':
             matches = value !== null && value !== undefined;
             break;
-        default:
-            // Unknown operator - default to false
-            matches = false;
+        default: {
+            // Exhaustiveness check - TypeScript will error if a case is missing
+            const _exhaustiveCheck = filter.operator;
+            throw new Error(`Unhandled filter operator: ${_exhaustiveCheck}`);
+        }
     }
     // Apply negation if specified
     return filter.not ? !matches : matches;
