@@ -496,6 +496,131 @@ export const DEFAULT_PARENT_CONFIG: ParentConfig = {
 };
 
 /**
+ * Buffer config validation bounds
+ */
+export const BUFFER_CONFIG_BOUNDS = {
+  /** Minimum value for buffer-related sizes */
+  minBufferSize: 1024, // 1KB minimum
+  /** Maximum value for buffer size (1GB) */
+  maxBufferSize: 1024 * 1024 * 1024,
+  /** Minimum flush interval (100ms) */
+  minFlushIntervalMs: 100,
+  /** Maximum flush interval (1 hour) */
+  maxFlushIntervalMs: 3600_000,
+  /** Minimum flush threshold entries */
+  minFlushThresholdEntries: 1,
+  /** Maximum flush threshold entries */
+  maxFlushThresholdEntries: 1_000_000,
+  /** Minimum deduplication window (1 second) */
+  minDeduplicationWindowMs: 1000,
+  /** Maximum deduplication window (1 hour) */
+  maxDeduplicationWindowMs: 3600_000,
+} as const;
+
+/**
+ * Result of config validation
+ */
+export interface ConfigValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Validate ParentConfig values are within acceptable bounds.
+ *
+ * Checks:
+ * - All numeric values are positive
+ * - Values are within min/max bounds
+ * - Logical constraints (e.g., flushThresholdBytes <= maxBufferSize)
+ *
+ * @param config - Configuration to validate (partial or full)
+ * @returns Validation result with any errors
+ */
+export function validateParentConfig(config: Partial<ParentConfig>): ConfigValidationResult {
+  const errors: string[] = [];
+  const bounds = BUFFER_CONFIG_BOUNDS;
+
+  // Validate flushThresholdEntries
+  if (config.flushThresholdEntries !== undefined) {
+    if (!Number.isInteger(config.flushThresholdEntries) || config.flushThresholdEntries < bounds.minFlushThresholdEntries) {
+      errors.push(`flushThresholdEntries must be an integer >= ${bounds.minFlushThresholdEntries}`);
+    } else if (config.flushThresholdEntries > bounds.maxFlushThresholdEntries) {
+      errors.push(`flushThresholdEntries must be <= ${bounds.maxFlushThresholdEntries}`);
+    }
+  }
+
+  // Validate flushThresholdBytes
+  if (config.flushThresholdBytes !== undefined) {
+    if (!Number.isInteger(config.flushThresholdBytes) || config.flushThresholdBytes < bounds.minBufferSize) {
+      errors.push(`flushThresholdBytes must be an integer >= ${bounds.minBufferSize}`);
+    } else if (config.flushThresholdBytes > bounds.maxBufferSize) {
+      errors.push(`flushThresholdBytes must be <= ${bounds.maxBufferSize}`);
+    }
+  }
+
+  // Validate flushThresholdMs
+  if (config.flushThresholdMs !== undefined) {
+    if (!Number.isInteger(config.flushThresholdMs) || config.flushThresholdMs < bounds.minFlushIntervalMs) {
+      errors.push(`flushThresholdMs must be an integer >= ${bounds.minFlushIntervalMs}`);
+    } else if (config.flushThresholdMs > bounds.maxFlushIntervalMs) {
+      errors.push(`flushThresholdMs must be <= ${bounds.maxFlushIntervalMs}`);
+    }
+  }
+
+  // Validate flushIntervalMs
+  if (config.flushIntervalMs !== undefined) {
+    if (!Number.isInteger(config.flushIntervalMs) || config.flushIntervalMs < bounds.minFlushIntervalMs) {
+      errors.push(`flushIntervalMs must be an integer >= ${bounds.minFlushIntervalMs}`);
+    } else if (config.flushIntervalMs > bounds.maxFlushIntervalMs) {
+      errors.push(`flushIntervalMs must be <= ${bounds.maxFlushIntervalMs}`);
+    }
+  }
+
+  // Validate maxBufferSize
+  if (config.maxBufferSize !== undefined) {
+    if (!Number.isInteger(config.maxBufferSize) || config.maxBufferSize < bounds.minBufferSize) {
+      errors.push(`maxBufferSize must be an integer >= ${bounds.minBufferSize}`);
+    } else if (config.maxBufferSize > bounds.maxBufferSize) {
+      errors.push(`maxBufferSize must be <= ${bounds.maxBufferSize}`);
+    }
+  }
+
+  // Validate maxFallbackSize
+  if (config.maxFallbackSize !== undefined) {
+    if (!Number.isInteger(config.maxFallbackSize) || config.maxFallbackSize < bounds.minBufferSize) {
+      errors.push(`maxFallbackSize must be an integer >= ${bounds.minBufferSize}`);
+    } else if (config.maxFallbackSize > bounds.maxBufferSize) {
+      errors.push(`maxFallbackSize must be <= ${bounds.maxBufferSize}`);
+    }
+  }
+
+  // Validate deduplicationWindowMs
+  if (config.deduplicationWindowMs !== undefined) {
+    if (!Number.isInteger(config.deduplicationWindowMs) || config.deduplicationWindowMs < bounds.minDeduplicationWindowMs) {
+      errors.push(`deduplicationWindowMs must be an integer >= ${bounds.minDeduplicationWindowMs}`);
+    } else if (config.deduplicationWindowMs > bounds.maxDeduplicationWindowMs) {
+      errors.push(`deduplicationWindowMs must be <= ${bounds.maxDeduplicationWindowMs}`);
+    }
+  }
+
+  // Cross-field validations
+  const maxBuffer = config.maxBufferSize ?? DEFAULT_PARENT_CONFIG.maxBufferSize;
+
+  if (config.flushThresholdBytes !== undefined && config.flushThresholdBytes > maxBuffer) {
+    errors.push('flushThresholdBytes must be <= maxBufferSize');
+  }
+
+  if (config.maxFallbackSize !== undefined && config.maxFallbackSize > maxBuffer) {
+    errors.push('maxFallbackSize must be <= maxBufferSize');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
+/**
  * Child DO (client) configuration
  */
 export interface ChildConfig {

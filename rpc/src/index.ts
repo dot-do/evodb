@@ -106,9 +106,12 @@ export {
   type ParentConfig,
   type ChildConfig,
   type ClientCapabilities,
+  type ConfigValidationResult,
   DEFAULT_PARENT_CONFIG,
   DEFAULT_CHILD_CONFIG,
   DEFAULT_CLIENT_CAPABILITIES,
+  BUFFER_CONFIG_BOUNDS,
+  validateParentConfig,
 
   // WebSocket attachment
   type WebSocketAttachment,
