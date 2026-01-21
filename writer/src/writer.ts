@@ -32,6 +32,10 @@ import type {
   ResolvedWriterOptions,
   BlockIndexEvictionPolicy,
 } from './types.js';
+import type {
+  CacheInvalidationManager,
+  InvalidationResult,
+} from '@evodb/edge-cache';
 import { resolveWriterOptions } from './types.js';
 import { BlockIndexLimitError } from './errors.js';
 import { CDCBuffer, BackpressureController } from './buffer.js';
@@ -68,6 +72,8 @@ export interface LakehouseWriterDeps {
   blockWriter?: BlockWriter;
   /** Custom compaction strategy */
   compactionStrategy?: CompactionStrategy;
+  /** Cache invalidation manager for invalidating cache on block writes */
+  cacheInvalidationManager?: CacheInvalidationManager;
 }
 
 /**
@@ -84,6 +90,9 @@ export class LakehouseWriter {
   private readonly bufferStrategy: CDCBufferStrategy;
   private readonly blockWriter: BlockWriter;
   private readonly compactionStrategy: CompactionStrategy;
+
+  // Cache invalidation
+  private readonly cacheInvalidationManager?: CacheInvalidationManager;
 
   // Legacy components (for backward compatibility with existing API)
   private readonly buffer: CDCBuffer;
@@ -145,6 +154,9 @@ export class LakehouseWriter {
 
     this.compactionStrategy = deps?.compactionStrategy ??
       TimeBasedCompaction.fromWriterOptions(this.options.r2Bucket, this.options);
+
+    // Cache invalidation manager (optional)
+    this.cacheInvalidationManager = deps?.cacheInvalidationManager;
   }
 
   /**
@@ -330,13 +342,17 @@ export class LakehouseWriter {
       // Save state
       await this.saveState();
 
-      return {
+      // Invalidate cache for the new block
+      const flushResult: FlushResult = {
         status: 'persisted',
         location: 'r2',
         block: result.metadata,
         entryCount: entries.length,
         durationMs,
       };
+      await this.invalidateCacheForFlush(flushResult);
+
+      return flushResult;
     } else {
       // R2 write failed - fallback to DO storage
       this.r2WriteFailures++;
@@ -518,6 +534,9 @@ export class LakehouseWriter {
       }
 
       await this.saveState();
+
+      // Invalidate cache for compacted blocks
+      await this.invalidateCacheForCompaction(result);
     }
 
     return result;
@@ -538,6 +557,9 @@ export class LakehouseWriter {
       this.compactCount++;
       this.lastCompactTime = Date.now();
       await this.saveState();
+
+      // Invalidate cache for compacted blocks
+      await this.invalidateCacheForCompaction(result);
     }
 
     return result ?? {
@@ -729,5 +751,66 @@ export class LakehouseWriter {
    */
   getCompactionStrategy(): CompactionStrategy {
     return this.compactionStrategy;
+  }
+
+  /**
+   * Get the cache invalidation manager (if configured)
+   */
+  getCacheInvalidationManager(): CacheInvalidationManager | undefined {
+    return this.cacheInvalidationManager;
+  }
+
+  // ==========================================================================
+  // Cache Invalidation Helpers
+  // ==========================================================================
+
+  /**
+   * Invalidate cache for a flush operation.
+   * This method is called after a successful flush to R2.
+   */
+  private async invalidateCacheForFlush(flushResult: FlushResult): Promise<InvalidationResult | null> {
+    if (!this.cacheInvalidationManager || flushResult.status !== 'persisted' || !flushResult.block) {
+      return null;
+    }
+
+    // Extract partition from tableLocation (e.g., "com/example/api/users" -> "users")
+    const tableParts = this.options.tableLocation.split('/');
+    const table = tableParts[tableParts.length - 1] || this.options.tableLocation;
+    const partition = this.options.partitionMode;
+
+    // Create CDC commit event from flush result
+    const commitEvent = this.cacheInvalidationManager.createCommitEventFromFlush(
+      table,
+      partition,
+      flushResult
+    );
+
+    // Process the commit event to invalidate cache
+    return this.cacheInvalidationManager.onCommit(commitEvent);
+  }
+
+  /**
+   * Invalidate cache for a compaction operation.
+   * This method is called after a successful compaction.
+   */
+  private async invalidateCacheForCompaction(compactResult: CompactResult): Promise<InvalidationResult | null> {
+    if (!this.cacheInvalidationManager || compactResult.status !== 'completed' || !compactResult.newBlock) {
+      return null;
+    }
+
+    // Extract partition from tableLocation
+    const tableParts = this.options.tableLocation.split('/');
+    const table = tableParts[tableParts.length - 1] || this.options.tableLocation;
+    const partition = this.options.partitionMode;
+
+    // Create CDC commit event from compaction result
+    const commitEvent = this.cacheInvalidationManager.createCommitEventFromCompaction(
+      table,
+      partition,
+      compactResult
+    );
+
+    // Process the commit event to invalidate cache
+    return this.cacheInvalidationManager.onCommit(commitEvent);
   }
 }

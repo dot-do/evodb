@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@evodb/core": "workspace:*",
+    "@evodb/edge-cache": "workspace:*",
     "@evodb/lakehouse": "workspace:*",
     "@evodb/rpc": "workspace:*"
   },
