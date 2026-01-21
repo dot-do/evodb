@@ -140,6 +140,39 @@ export class MemoryObjectStorageAdapter {
     }
 }
 // =============================================================================
+// SQL Injection Prevention
+// Issue: evodb-ofu - Table names must be validated before SQL interpolation
+// =============================================================================
+/** Valid table name regex: only alphanumeric characters and underscores */
+const VALID_TABLE_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+/**
+ * Validate a table name to prevent SQL injection.
+ * Table names must:
+ * - Start with a letter or underscore
+ * - Contain only alphanumeric characters and underscores
+ * - Not be empty
+ *
+ * @throws Error if table name is invalid
+ */
+export function validateTableName(tableName) {
+    if (!tableName || !VALID_TABLE_NAME_REGEX.test(tableName)) {
+        throw new Error(`Invalid table name: "${tableName}". Table names must start with a letter or underscore and contain only alphanumeric characters and underscores.`);
+    }
+}
+/**
+ * Quote a SQL identifier using double quotes (SQL standard).
+ * This provides defense in depth when combined with validation.
+ * Any embedded double quotes are escaped by doubling them.
+ *
+ * @param identifier - The identifier to quote (table name, column name, etc.)
+ * @returns The quoted identifier safe for SQL interpolation
+ */
+export function quoteIdentifier(identifier) {
+    // Escape any embedded double quotes by doubling them
+    const escaped = identifier.replace(/"/g, '""');
+    return `"${escaped}"`;
+}
+// =============================================================================
 // Factory Functions
 // =============================================================================
 /**
@@ -183,14 +216,18 @@ export function wrapStorageBackend(backend, keyPrefix) {
 }
 /** Create DO SQLite storage adapter */
 export function createDOAdapter(sql, tableName = 'blocks') {
+    // Validate table name to prevent SQL injection (first line of defense)
+    validateTableName(tableName);
+    // Quote the table name for defense in depth (second line of defense)
+    const quotedTable = quoteIdentifier(tableName);
     // Ensure table exists
-    sql.exec(`CREATE TABLE IF NOT EXISTS ${tableName} (id TEXT PRIMARY KEY, data BLOB, created_at INTEGER DEFAULT (unixepoch()))`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS ${quotedTable} (id TEXT PRIMARY KEY, data BLOB, created_at INTEGER DEFAULT (unixepoch()))`);
     return {
         async writeBlock(id, data) {
-            sql.exec(`INSERT OR REPLACE INTO ${tableName} (id, data) VALUES (?, ?)`, id, data);
+            sql.exec(`INSERT OR REPLACE INTO ${quotedTable} (id, data) VALUES (?, ?)`, id, data);
         },
         async readBlock(id) {
-            const result = sql.exec(`SELECT data FROM ${tableName} WHERE id = ?`, id);
+            const result = sql.exec(`SELECT data FROM ${quotedTable} WHERE id = ?`, id);
             if (!result.results.length)
                 return null;
             const row = result.results[0];
@@ -198,15 +235,15 @@ export function createDOAdapter(sql, tableName = 'blocks') {
         },
         async listBlocks(prefix) {
             const query = prefix
-                ? `SELECT id FROM ${tableName} WHERE id LIKE ? ORDER BY id`
-                : `SELECT id FROM ${tableName} ORDER BY id`;
+                ? `SELECT id FROM ${quotedTable} WHERE id LIKE ? ORDER BY id`
+                : `SELECT id FROM ${quotedTable} ORDER BY id`;
             const result = prefix
                 ? sql.exec(query, prefix + '%')
                 : sql.exec(query);
             return result.results.map(r => r.id);
         },
         async deleteBlock(id) {
-            sql.exec(`DELETE FROM ${tableName} WHERE id = ?`, id);
+            sql.exec(`DELETE FROM ${quotedTable} WHERE id = ?`, id);
         },
     };
 }
