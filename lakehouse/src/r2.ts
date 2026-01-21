@@ -99,7 +99,7 @@ export class JsonParseError extends Error {
  * @returns The parsed JSON value
  * @throws JsonParseError if parsing fails
  */
-function parseJsonWithContext<T>(text: string, path: string): T {
+export function parseJsonWithContext<T>(text: string, path: string): T {
   try {
     return JSON.parse(text) as T;
   } catch (err) {

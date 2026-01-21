@@ -274,3 +274,108 @@ describe('JSON Parse Error Handling', () => {
     });
   });
 });
+
+// =============================================================================
+// Deserialize Function Tests
+// =============================================================================
+
+describe('Deserialize functions - JSON Parse Error Handling', () => {
+  // Import deserialize functions dynamically to test them
+  let deserializeSnapshot: (json: string) => unknown;
+  let deserializeManifestDelta: (json: string) => unknown;
+  let deserializeSchema: (json: string) => unknown;
+  let deserializeManifest: (json: string) => unknown;
+
+  beforeEach(async () => {
+    const snapshot = await import('../snapshot.js');
+    const schema = await import('../schema.js');
+    const manifest = await import('../manifest.js');
+    deserializeSnapshot = snapshot.deserializeSnapshot;
+    deserializeManifestDelta = snapshot.deserializeManifestDelta;
+    deserializeSchema = schema.deserializeSchema;
+    deserializeManifest = manifest.deserializeManifest;
+  });
+
+  describe('deserializeSnapshot', () => {
+    it('should throw JsonParseError for invalid JSON', () => {
+      expect(() => deserializeSnapshot('not valid json')).toThrow(JsonParseError);
+    });
+
+    it('should throw JsonParseError for truncated JSON', () => {
+      expect(() => deserializeSnapshot('{"snapshotId": "test"')).toThrow(JsonParseError);
+    });
+
+    it('should include path context in error', () => {
+      try {
+        deserializeSnapshot('invalid');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonParseError);
+        const jsonError = error as JsonParseError;
+        expect(jsonError.path).toBe('snapshot');
+      }
+    });
+  });
+
+  describe('deserializeManifestDelta', () => {
+    it('should throw JsonParseError for invalid JSON', () => {
+      expect(() => deserializeManifestDelta('not valid json')).toThrow(JsonParseError);
+    });
+
+    it('should include path context in error', () => {
+      try {
+        deserializeManifestDelta('invalid');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonParseError);
+        const jsonError = error as JsonParseError;
+        expect(jsonError.path).toBe('manifest-delta');
+      }
+    });
+  });
+
+  describe('deserializeSchema', () => {
+    it('should throw JsonParseError for invalid JSON', () => {
+      expect(() => deserializeSchema('not valid json')).toThrow(JsonParseError);
+    });
+
+    it('should include path context in error', () => {
+      try {
+        deserializeSchema('invalid');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonParseError);
+        const jsonError = error as JsonParseError;
+        expect(jsonError.path).toBe('schema');
+      }
+    });
+  });
+
+  describe('deserializeManifest', () => {
+    it('should throw JsonParseError for invalid JSON', () => {
+      expect(() => deserializeManifest('not valid json')).toThrow(JsonParseError);
+    });
+
+    it('should include path context in error', () => {
+      try {
+        deserializeManifest('invalid');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonParseError);
+        const jsonError = error as JsonParseError;
+        expect(jsonError.path).toBe('manifest');
+      }
+    });
+
+    it('should preserve original SyntaxError as cause', () => {
+      try {
+        deserializeManifest('{broken');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JsonParseError);
+        const jsonError = error as JsonParseError;
+        expect(jsonError.cause).toBeInstanceOf(SyntaxError);
+      }
+    });
+  });
+});

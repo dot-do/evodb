@@ -298,8 +298,9 @@ export {
   // Atomic operations
   atomicCommit,
 
-  // Error types
+  // Error types and utilities
   JsonParseError,
+  parseJsonWithContext,
 
   // Type for flexible backend input
   type StorageBackend,

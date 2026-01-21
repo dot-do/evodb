@@ -10,6 +10,7 @@ import type {
   ColumnType,
 } from './types.js';
 import { schemaPath } from './types.js';
+import { parseJsonWithContext } from './r2.js';
 
 // =============================================================================
 // Exhaustiveness Check Helper
@@ -432,9 +433,10 @@ export function serializeSchema(schema: Schema): string {
 
 /**
  * Deserialize schema from JSON
+ * @throws JsonParseError if the JSON is invalid
  */
 export function deserializeSchema(json: string): Schema {
-  return JSON.parse(json) as Schema;
+  return parseJsonWithContext<Schema>(json, 'schema');
 }
 
 // =============================================================================
