@@ -8,6 +8,51 @@
 import type { StorageAdapter } from './types.js';
 
 // ==========================================
+// Range Bounds Validation
+// ==========================================
+
+/**
+ * Validate and normalize range parameters for getRange operations.
+ *
+ * This follows R2's suffix read semantics:
+ * - Negative offsets read from the end of the file (suffix read)
+ * - If the negative offset exceeds file size, clamp to start (offset 0)
+ * - Positive offsets past end of file throw an error
+ * - Negative lengths always throw an error
+ *
+ * @param dataLength - The total length of the data being read from
+ * @param offset - The requested offset (can be negative for from-end semantics)
+ * @param length - The requested length (must be non-negative)
+ * @returns The normalized start position (always non-negative)
+ * @throws Error if length is negative, or if positive offset is out of bounds
+ */
+function validateRangeBounds(dataLength: number, offset: number, length: number): number {
+  // Check for negative length
+  if (length < 0) {
+    throw new Error(`Invalid length: ${length}. Length cannot be negative.`);
+  }
+
+  // Resolve negative offset (from end of data)
+  // R2 suffix read semantics: clamp to start if offset exceeds file size
+  let start = offset;
+  if (start < 0) {
+    start = dataLength + offset;
+    // Clamp to 0 if negative offset exceeds file size (R2 suffix read behavior)
+    if (start < 0) {
+      start = 0;
+    }
+  }
+
+  // Check if positive offset is out of bounds
+  // Note: start == dataLength is allowed ONLY if length == 0 (reading nothing from end)
+  if (start > dataLength || (start === dataLength && length > 0)) {
+    throw new Error(`Offset out of range: ${offset} (resolved to ${start}) is beyond data length ${dataLength}.`);
+  }
+
+  return start;
+}
+
+// ==========================================
 // R2 Type Definitions
 // ==========================================
 
@@ -313,11 +358,8 @@ export class MemoryStorageAdapter implements StorageAdapter {
       throw new Error(`Object not found: ${key}`);
     }
 
-    // Handle negative offset (from end)
-    let start = offset;
-    if (start < 0) {
-      start = data.byteLength + offset;
-    }
+    // Validate bounds and resolve negative offset
+    const start = validateRangeBounds(data.byteLength, offset, length);
 
     return data.slice(start, start + length);
   }
@@ -478,14 +520,12 @@ export class CachingStorageAdapter implements StorageAdapter {
     // Check if full object is cached
     const cached = this.cache.get(key);
     if (cached) {
-      let start = offset;
-      if (start < 0) {
-        start = cached.byteLength + offset;
-      }
+      // Validate bounds and resolve negative offset
+      const start = validateRangeBounds(cached.byteLength, offset, length);
       return cached.slice(start, start + length);
     }
 
-    // Fetch range directly
+    // Fetch range directly (underlying storage should validate)
     return this.storage.getRange(key, offset, length);
   }
 
@@ -609,10 +649,8 @@ export function createLanceStorageAdapter(storage: CoreStorageWithList): Storage
       if (!fullData) {
         throw new Error(`Object not found: ${key}`);
       }
-      let start = offset;
-      if (start < 0) {
-        start = fullData.length + offset;
-      }
+      // Validate bounds and resolve negative offset
+      const start = validateRangeBounds(fullData.length, offset, length);
       const slice = fullData.slice(start, start + length);
       return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
     },

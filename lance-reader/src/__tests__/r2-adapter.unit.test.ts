@@ -332,6 +332,50 @@ describe('MemoryStorageAdapter', () => {
         /Object not found/
       );
     });
+
+    // Issue #121: TDD bounds validation for getRange
+    it('should throw for negative length', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer;
+      storage.put('test.bin', data);
+
+      await expect(storage.getRange('test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+      await expect(storage.getRange('test.bin', 5, -5)).rejects.toThrow(/length.*negative|invalid.*length/i);
+    });
+
+    it('should throw for offset past end of data', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer; // length 5
+      storage.put('test.bin', data);
+
+      await expect(storage.getRange('test.bin', 10, 1)).rejects.toThrow(/offset.*range|out of range/i);
+      await expect(storage.getRange('test.bin', 5, 1)).rejects.toThrow(/offset.*range|out of range/i);
+    });
+
+    it('should clamp negative offset that exceeds file size (R2 suffix read behavior)', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer; // length 5
+      storage.put('test.bin', data);
+
+      // -10 on a 5-byte array clamps to offset 0 (R2 suffix read behavior)
+      // This returns the entire file (from 0, length 5, but request asked for 1)
+      const result = await storage.getRange('test.bin', -10, 1);
+      expect(new Uint8Array(result)).toEqual(new Uint8Array([0]));
+    });
+
+    it('should handle edge case: reading from exact end with zero length', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer; // length 5
+      storage.put('test.bin', data);
+
+      // Reading 0 bytes from offset 5 (end of data) should return empty array
+      const result = await storage.getRange('test.bin', 5, 0);
+      expect(result.byteLength).toBe(0);
+    });
+
+    it('should handle zero length gracefully', async () => {
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer;
+      storage.put('test.bin', data);
+
+      const result = await storage.getRange('test.bin', 2, 0);
+      expect(result.byteLength).toBe(0);
+    });
   });
 
   describe('list sorting', () => {
@@ -577,6 +621,29 @@ describe('CachingStorageAdapter', () => {
       const range = await caching.getRange('test.bin', -3, 3);
       expect(new Uint8Array(range)).toEqual(new Uint8Array([7, 8, 9]));
     });
+
+    // Issue #121: TDD bounds validation for CachingStorageAdapter getRange
+    it('should throw for negative length in cached data', async () => {
+      const inner = new MemoryStorageAdapter();
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer;
+      inner.put('test.bin', data);
+
+      const caching = new CachingStorageAdapter(inner, 1024);
+      await caching.get('test.bin'); // Cache the data
+
+      await expect(caching.getRange('test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+    });
+
+    it('should throw for offset past end in cached data', async () => {
+      const inner = new MemoryStorageAdapter();
+      const data = new Uint8Array([0, 1, 2, 3, 4]).buffer; // length 5
+      inner.put('test.bin', data);
+
+      const caching = new CachingStorageAdapter(inner, 1024);
+      await caching.get('test.bin'); // Cache the data
+
+      await expect(caching.getRange('test.bin', 10, 1)).rejects.toThrow(/offset.*range|out of range/i);
+    });
   });
 
   describe('list passthrough', () => {
@@ -747,6 +814,46 @@ describe('createLanceStorageAdapter', () => {
     await expect(adapter.getRange('missing.bin', 0, 10)).rejects.toThrow(
       /Object not found/
     );
+  });
+
+  // Issue #121: TDD bounds validation for createLanceStorageAdapter getRange fallback
+  it('should throw for negative length in getRange fallback', async () => {
+    const fullData = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    const coreStorage = {
+      read: vi.fn().mockResolvedValue(fullData),
+      list: vi.fn().mockResolvedValue({ paths: [] }),
+      // No readRange method - uses fallback
+    };
+
+    const adapter = createLanceStorageAdapter(coreStorage);
+
+    await expect(adapter.getRange('test.bin', 0, -1)).rejects.toThrow(/length.*negative|invalid.*length/i);
+  });
+
+  it('should throw for offset past end in getRange fallback', async () => {
+    const fullData = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+    const coreStorage = {
+      read: vi.fn().mockResolvedValue(fullData),
+      list: vi.fn().mockResolvedValue({ paths: [] }),
+    };
+
+    const adapter = createLanceStorageAdapter(coreStorage);
+
+    await expect(adapter.getRange('test.bin', 10, 1)).rejects.toThrow(/offset.*range|out of range/i);
+  });
+
+  it('should clamp negative offset that exceeds file size in getRange fallback (R2 suffix read behavior)', async () => {
+    const fullData = new Uint8Array([0, 1, 2, 3, 4]); // length 5
+    const coreStorage = {
+      read: vi.fn().mockResolvedValue(fullData),
+      list: vi.fn().mockResolvedValue({ paths: [] }),
+    };
+
+    const adapter = createLanceStorageAdapter(coreStorage);
+
+    // -10 on a 5-byte array clamps to offset 0 (R2 suffix read behavior)
+    const result = await adapter.getRange('test.bin', -10, 1);
+    expect(new Uint8Array(result)).toEqual(new Uint8Array([0]));
   });
 
   it('should adapt core Storage interface for list', async () => {
