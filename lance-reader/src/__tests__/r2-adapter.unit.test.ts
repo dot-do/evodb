@@ -50,6 +50,28 @@ describe('R2StorageAdapter', () => {
 
       expect(mockBucket.get).toHaveBeenCalledWith('prefix/file.bin');
     });
+
+    // Path traversal validation tests (Issue evodb-409)
+    it('should reject path traversal in keyPrefix', () => {
+      expect(() => new R2StorageAdapter(mockBucket, '../secrets')).toThrow(/path traversal/i);
+      expect(() => new R2StorageAdapter(mockBucket, 'data/../secrets')).toThrow(/path traversal/i);
+    });
+
+    it('should reject absolute paths in keyPrefix', () => {
+      expect(() => new R2StorageAdapter(mockBucket, '/etc/passwd')).toThrow(/absolute path/i);
+      expect(() => new R2StorageAdapter(mockBucket, 'C:\\Windows')).toThrow(/absolute path/i);
+    });
+
+    it('should reject URL-encoded path traversal in keyPrefix', () => {
+      expect(() => new R2StorageAdapter(mockBucket, '%2e%2e/secrets')).toThrow(/path traversal/i);
+      expect(() => new R2StorageAdapter(mockBucket, 'data/%2e%2e/secrets')).toThrow(/path traversal/i);
+    });
+
+    it('should allow safe keyPrefix values', () => {
+      expect(() => new R2StorageAdapter(mockBucket, 'data')).not.toThrow();
+      expect(() => new R2StorageAdapter(mockBucket, 'my-prefix/nested')).not.toThrow();
+      expect(() => new R2StorageAdapter(mockBucket, '')).not.toThrow();
+    });
   });
 
   describe('get', () => {
