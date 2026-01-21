@@ -133,7 +133,7 @@ export {
   MemoryPressureError,
   ConflictError,
   ETagMismatchError,
-  TimeoutError,
+  ChaosTimeoutError,
   // Factory function
   createChaosStack,
   // Types

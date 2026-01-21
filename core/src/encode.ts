@@ -77,7 +77,7 @@ export function assertType(value: unknown, expectedType: Type, context: string):
 
   if (!valid) {
     throw new Error(
-      `Type assertion failed in ${context}: expected ${Type[expectedType]}, got ${actualType} (value: ${String(value).slice(0, 50)})`
+      `Type assertion failed in ${context}: expected ${getTypeName(expectedType)}, got ${actualType} (value: ${String(value).slice(0, 50)})`
     );
   }
 }
