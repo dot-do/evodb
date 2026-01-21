@@ -12,6 +12,7 @@ import type {
 } from './types.js';
 import { snapshotPath } from './types.js';
 import { pruneFiles } from './partition.js';
+import { parseJsonWithContext } from './r2.js';
 
 // =============================================================================
 // Snapshot Creation
@@ -442,9 +443,10 @@ export function serializeSnapshot(snapshot: Snapshot): string {
 
 /**
  * Deserialize snapshot from JSON
+ * @throws JsonParseError if the JSON is invalid
  */
 export function deserializeSnapshot(json: string): Snapshot {
-  return JSON.parse(json) as Snapshot;
+  return parseJsonWithContext<Snapshot>(json, 'snapshot');
 }
 
 // =============================================================================
@@ -811,9 +813,10 @@ export function serializeManifestDelta(delta: ManifestDelta): string {
 
 /**
  * Deserialize delta from storage
+ * @throws JsonParseError if the JSON is invalid
  */
 export function deserializeManifestDelta(json: string): ManifestDelta {
-  return JSON.parse(json) as ManifestDelta;
+  return parseJsonWithContext<ManifestDelta>(json, 'manifest-delta');
 }
 
 /**

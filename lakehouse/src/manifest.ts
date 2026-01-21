@@ -30,6 +30,7 @@ import {
   getFilesForQuery,
 } from './snapshot.js';
 import { generateBlockFilename, buildPartitionPath, timePartitionValues } from './path.js';
+import { parseJsonWithContext } from './r2.js';
 
 // =============================================================================
 // Table Creation
@@ -467,11 +468,12 @@ export function serializeManifest(manifest: TableManifest): string {
  * - Legacy manifests (without schemaVersion) are treated as version 1
  * - Future versions (> CURRENT_MANIFEST_VERSION) throw VersionMismatchError
  *
+ * @throws {JsonParseError} If the JSON is invalid
  * @throws {VersionMismatchError} If manifest version is higher than supported
  * @throws {ManifestError} If formatVersion is invalid
  */
 export function deserializeManifest(json: string): TableManifest {
-  const parsed = JSON.parse(json) as Record<string, unknown>;
+  const parsed = parseJsonWithContext<Record<string, unknown>>(json, 'manifest');
 
   // Handle schema version - default to 1 for backward compatibility with legacy manifests
   const schemaVersion = typeof parsed.schemaVersion === 'number'
