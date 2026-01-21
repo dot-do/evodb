@@ -16,7 +16,9 @@ export {
   StorageErrorCode,
   isStorageErrorCode,
   CorruptedBlockError,
+  EncodingValidationError,
   type CorruptedBlockDetails,
+  type EncodingValidationDetails,
 } from '../errors.js';
 
 // Stack trace utilities

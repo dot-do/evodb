@@ -11,25 +11,29 @@
  * Abstract storage interface for reading Lance files.
  * Allows pluggable backends (R2, S3, filesystem, etc.)
  *
- * NOTE: This is a read-only interface specific to lance-reader.
- * For a unified read/write interface, use the `Storage` interface from @evodb/core.
+ * @deprecated Use StorageProvider from @evodb/core for new code.
+ * This interface is maintained for backward compatibility with existing
+ * lance-reader code. The lance-reader uses ArrayBuffer (for zero-copy from R2)
+ * while StorageProvider uses Uint8Array (for consistency).
  *
- * Relationship to @evodb/core Storage interface (Issue evodb-pyo):
- * - lance-reader uses ArrayBuffer (for zero-copy from R2)
- * - @evodb/core Storage uses Uint8Array (for consistency)
- * - Use `createLanceStorageAdapter()` to adapt a core Storage to this interface
+ * Migration guide:
+ * - get() -> Convert: new Uint8Array(await provider.get()).buffer
+ * - list() -> provider.list() (same API)
+ * - exists() -> provider.exists() (same API)
+ * - getRange() -> Not available in StorageProvider (use full get() and slice)
  *
  * @example
  * ```typescript
- * // Using lance-reader directly (no dependencies)
+ * // Old code using lance-reader StorageAdapter
  * import { R2StorageAdapter } from '@evodb/lance-reader/r2';
- * const storage = new R2StorageAdapter(env.MY_BUCKET);
+ * const storage: StorageAdapter = new R2StorageAdapter(env.MY_BUCKET);
  *
- * // Using with @evodb/core unified Storage
- * import { createMemoryStorage } from '@evodb/core';
- * import { createLanceStorageAdapter } from '@evodb/lance-reader';
- * const coreStorage = createMemoryStorage();
- * const lanceStorage = createLanceStorageAdapter(coreStorage);
+ * // New code using StorageProvider
+ * import { createStorageProvider, StorageProvider } from '@evodb/core';
+ * const provider: StorageProvider = createStorageProvider(env.MY_BUCKET);
+ * // For ArrayBuffer compatibility:
+ * const data = await provider.get(key);
+ * const buffer = data ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : null;
  * ```
  */
 export interface StorageAdapter {

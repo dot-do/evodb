@@ -24,6 +24,11 @@ export {
   type PartitionModeConfig,
   PARTITION_MODES,
 
+  // Block index limits
+  type BlockIndexEvictionPolicy,
+  DEFAULT_MAX_BLOCK_INDEX_SIZE,
+  DEFAULT_BLOCK_INDEX_EVICTION_POLICY,
+
   // CDC types
   type CDCEntry,
   type CDCBatch,
@@ -107,6 +112,9 @@ export {
 
 // Main writer
 export { LakehouseWriter, type DOStorage, type LakehouseWriterDeps } from './writer.js';
+
+// Errors
+export { BlockIndexLimitError, WriterError } from './errors.js';
 
 // Atomic flush (crash-safe writes)
 export {

@@ -18,7 +18,7 @@ import type {
   DataFileFormat,
   PartitionFilter,
 } from './types.js';
-import { dataFilePath } from './types.js';
+import { dataFilePath, CURRENT_MANIFEST_VERSION, VersionMismatchError } from './types.js';
 import { createSchema, createSchemaRef } from './schema.js';
 import { createPartitionSpec, pruneFiles } from './partition.js';
 import {
@@ -56,6 +56,7 @@ export function createTable(options: CreateTableOptions): {
     : createPartitionSpec([]);
 
   const manifest: TableManifest = {
+    schemaVersion: CURRENT_MANIFEST_VERSION,
     formatVersion: 1,
     tableId,
     location: options.location,
@@ -447,21 +448,50 @@ export function recomputeStats(manifest: TableManifest, snapshot: Snapshot | nul
 
 /**
  * Serialize manifest to JSON
+ *
+ * Ensures the manifest has the current schema version set before serialization.
  */
 export function serializeManifest(manifest: TableManifest): string {
-  return JSON.stringify(manifest, null, 2);
+  // Ensure schemaVersion is set to current version
+  const manifestWithVersion: TableManifest = {
+    ...manifest,
+    schemaVersion: manifest.schemaVersion ?? CURRENT_MANIFEST_VERSION,
+  };
+  return JSON.stringify(manifestWithVersion, null, 2);
 }
 
 /**
  * Deserialize manifest from JSON
+ *
+ * Handles version compatibility:
+ * - Legacy manifests (without schemaVersion) are treated as version 1
+ * - Future versions (> CURRENT_MANIFEST_VERSION) throw VersionMismatchError
+ *
+ * @throws {VersionMismatchError} If manifest version is higher than supported
+ * @throws {ManifestError} If formatVersion is invalid
  */
 export function deserializeManifest(json: string): TableManifest {
-  const manifest = JSON.parse(json) as TableManifest;
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+
+  // Handle schema version - default to 1 for backward compatibility with legacy manifests
+  const schemaVersion = typeof parsed.schemaVersion === 'number'
+    ? parsed.schemaVersion
+    : 1;
+
+  // Check for future versions we don't support
+  if (schemaVersion > CURRENT_MANIFEST_VERSION) {
+    throw new VersionMismatchError(schemaVersion, CURRENT_MANIFEST_VERSION);
+  }
+
+  const manifest = parsed as unknown as TableManifest;
 
   // Validate format version
   if (manifest.formatVersion !== 1) {
     throw new ManifestError(`Unsupported format version: ${manifest.formatVersion}`);
   }
+
+  // Ensure schemaVersion is set (for legacy manifests)
+  manifest.schemaVersion = schemaVersion;
 
   return manifest;
 }
@@ -471,6 +501,15 @@ export function deserializeManifest(json: string): TableManifest {
  */
 export function validateManifest(manifest: TableManifest): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
+
+  // Validate schema version
+  if (manifest.schemaVersion === undefined || manifest.schemaVersion === null) {
+    errors.push('Missing schemaVersion');
+  } else if (manifest.schemaVersion > CURRENT_MANIFEST_VERSION) {
+    errors.push(
+      `Unsupported schema version: ${manifest.schemaVersion} (max supported: ${CURRENT_MANIFEST_VERSION})`
+    );
+  }
 
   if (manifest.formatVersion !== 1) {
     errors.push(`Invalid format version: ${manifest.formatVersion}`);

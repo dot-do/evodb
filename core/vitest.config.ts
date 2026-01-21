@@ -13,6 +13,11 @@ export default defineWorkersConfig({
     alias: {
       '../shred.js': resolve(__dirname, 'src/shred.ts'),
       '../index.js': resolve(__dirname, 'src/index.ts'),
+      '../encode.js': resolve(__dirname, 'src/encode.ts'),
+      '../errors.js': resolve(__dirname, 'src/errors.ts'),
+      '../guards.js': resolve(__dirname, 'src/guards.ts'),
+      '../string-intern-pool.js': resolve(__dirname, 'src/string-intern-pool.ts'),
+      '../types.js': resolve(__dirname, 'src/types.ts'),
     },
     poolOptions: {
       workers: {

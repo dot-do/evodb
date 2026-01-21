@@ -6,10 +6,24 @@ import { STORAGE_LIST_PAGE_SIZE } from './constants.js';
 // =============================================================================
 // UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
 // Consolidates 4 overlapping storage abstractions into one canonical interface
+//
+// NOTE (Issue evodb-v3l): The StorageProvider interface in storage-provider.ts
+// is the new canonical interface. This Storage interface is maintained for
+// backward compatibility but should be considered deprecated for new code.
 // =============================================================================
 
 /**
  * Unified Storage interface - the single source of truth for storage operations.
+ *
+ * @deprecated Use StorageProvider from @evodb/core/storage instead.
+ * This interface is maintained for backward compatibility.
+ *
+ * Migration guide:
+ * - read() -> get()
+ * - write() -> put()
+ * - list() returns string[] instead of { paths: string[] }
+ * - delete() -> delete() (same)
+ * - exists() -> exists() (same, but required in StorageProvider)
  *
  * This interface consolidates the following overlapping abstractions:
  * 1. StorageAdapter (core/types.ts) - DO block storage (writeBlock/readBlock)
@@ -25,15 +39,12 @@ import { STORAGE_LIST_PAGE_SIZE } from './constants.js';
  *
  * @example
  * ```typescript
- * // Implement for R2
- * class R2Storage implements Storage {
- *   async read(path: string) { return bucket.get(path)?.bytes(); }
- *   async write(path: string, data: Uint8Array) { await bucket.put(path, data); }
- *   async list(prefix: string) { return bucket.list({ prefix }).objects.map(o => o.key); }
- *   async delete(path: string) { await bucket.delete(path); }
- * }
+ * // New code should use StorageProvider:
+ * import { StorageProvider, createInMemoryProvider } from '@evodb/core';
+ * const provider: StorageProvider = createInMemoryProvider();
+ * await provider.put('test.bin', new Uint8Array([1, 2, 3]));
  *
- * // Use in tests with MemoryStorage
+ * // Legacy code using Storage (deprecated):
  * const storage = new MemoryStorage();
  * await storage.write('test.bin', new Uint8Array([1, 2, 3]));
  * ```

@@ -11,6 +11,8 @@
 
 import { type Column, type ColumnStats, type EncodedColumn, Encoding, Type, assertNever } from './types.js';
 import { internString } from './string-intern-pool.js';
+import { EncodingValidationError } from './errors.js';
+import { isArray, isRecord, isBoolean, isBigInt, isNumber, isString, isNullish, isUint8Array, isDate } from './guards.js';
 
 // =============================================================================
 // DEBUG MODE RUNTIME CHECKS
@@ -83,11 +85,215 @@ export function assertType(value: unknown, expectedType: Type, context: string):
 /** Encode column with automatic encoding selection */
 export function encode(columns: Column[]): EncodedColumn[] {
   return columns.map(col => {
+    // Validate column before encoding
+    validateColumn(col);
+
     const stats = computeStats(col);
     const nullBitmap = packBits(col.nulls);
     const { encoding, data } = selectAndEncode(col, stats);
     return { path: col.path, type: col.type, encoding, data, nullBitmap, stats };
   });
+}
+
+// =============================================================================
+// RUNTIME TYPE VALIDATION
+// =============================================================================
+
+/**
+ * Valid Type enum values for runtime validation.
+ * This matches the Type enum from types.ts (values 0-10).
+ * Used to validate that a column's type is a known Type enum value.
+ */
+export const VALID_TYPE_VALUES = new Set([
+  Type.Null,      // 0
+  Type.Bool,      // 1
+  Type.Int32,     // 2
+  Type.Int64,     // 3
+  Type.Float64,   // 4
+  Type.String,    // 5
+  Type.Binary,    // 6
+  Type.Array,     // 7
+  Type.Object,    // 8
+  Type.Timestamp, // 9
+  Type.Date,      // 10
+]);
+
+/**
+ * Get human-readable type name for a Type enum value.
+ * Useful for error messages and debugging.
+ *
+ * @param type - The Type enum value
+ * @returns Human-readable name (e.g., 'Int32', 'String')
+ */
+export function getTypeName(type: Type): string {
+  switch (type) {
+    case Type.Null: return 'Null';
+    case Type.Bool: return 'Bool';
+    case Type.Int32: return 'Int32';
+    case Type.Int64: return 'Int64';
+    case Type.Float64: return 'Float64';
+    case Type.String: return 'String';
+    case Type.Binary: return 'Binary';
+    case Type.Array: return 'Array';
+    case Type.Object: return 'Object';
+    case Type.Timestamp: return 'Timestamp';
+    case Type.Date: return 'Date';
+    default: return `Unknown(${type})`;
+  }
+}
+
+/**
+ * Get human-readable type name for an actual runtime value.
+ * Handles special cases like null, undefined, arrays, Uint8Array, Date.
+ *
+ * @param value - The value to describe
+ * @returns Human-readable type name (e.g., 'string', 'number', 'array', 'null')
+ */
+export function getActualTypeName(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (Array.isArray(value)) return 'array';
+  if (value instanceof Uint8Array) return 'Uint8Array';
+  if (value instanceof Date) return 'Date';
+  return typeof value;
+}
+
+/**
+ * Check if a runtime value matches the expected Type enum.
+ * This is a type guard that validates values against the columnar type system.
+ *
+ * @param value - The value to check
+ * @param expectedType - The expected Type enum value
+ * @returns true if the value matches the expected type, false otherwise
+ *
+ * @example
+ * ```typescript
+ * isValueTypeValid(42, Type.Int32) // true
+ * isValueTypeValid('hello', Type.String) // true
+ * isValueTypeValid('hello', Type.Int32) // false
+ * ```
+ */
+export function isValueTypeValid(value: unknown, expectedType: Type): boolean {
+  // Null/undefined values are handled separately via nullability check
+  if (isNullish(value)) {
+    return expectedType === Type.Null;
+  }
+
+  switch (expectedType) {
+    case Type.Null:
+      return isNullish(value);
+    case Type.Bool:
+      return isBoolean(value);
+    case Type.Int32:
+    case Type.Float64:
+      return isNumber(value);
+    case Type.Int64:
+      return isBigInt(value);
+    case Type.String:
+      return isString(value);
+    case Type.Binary:
+      return isUint8Array(value);
+    case Type.Timestamp:
+      // Timestamps accept both number (ms since epoch) and Date objects
+      return isNumber(value) || isDate(value);
+    case Type.Date:
+      // Date column stores ISO date strings
+      return isString(value);
+    case Type.Array:
+      return isArray(value);
+    case Type.Object:
+      return isRecord(value);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Validate a column's type, nullability, and value types.
+ * This function is called automatically by encode() but can also be used
+ * independently for pre-validation.
+ *
+ * Validates:
+ * 1. Column type is a valid Type enum value (0-10)
+ * 2. Non-nullable columns have no null values
+ * 3. All non-null values match the declared column type
+ *
+ * @param col - The column to validate
+ * @throws EncodingValidationError with INVALID_TYPE code if type is invalid
+ * @throws EncodingValidationError with NULLABLE_CONSTRAINT_VIOLATION code if nulls found in non-nullable column
+ * @throws EncodingValidationError with TYPE_MISMATCH code if value type doesn't match column type
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   validateColumn({
+ *     path: 'user.age',
+ *     type: Type.Int32,
+ *     nullable: false,
+ *     values: [25, 'thirty'], // type mismatch!
+ *     nulls: [false, false],
+ *   });
+ * } catch (error) {
+ *   if (error instanceof EncodingValidationError) {
+ *     console.log(error.details); // { path: 'user.age', index: 1, ... }
+ *   }
+ * }
+ * ```
+ */
+export function validateColumn(col: Column): void {
+  // 1. Validate column type is a known Type enum value
+  if (!VALID_TYPE_VALUES.has(col.type)) {
+    throw new EncodingValidationError(
+      `Invalid column type: ${col.type} is not a valid Type enum value for column '${col.path}'`,
+      'INVALID_TYPE',
+      {
+        path: col.path,
+        expectedType: 'valid Type enum (0-10)',
+        actualType: String(col.type),
+      }
+    );
+  }
+
+  // 2. Validate each value
+  for (let i = 0; i < col.values.length; i++) {
+    const value = col.values[i];
+    const isNull = col.nulls[i];
+
+    // 2a. Check nullability constraint
+    if (isNull && !col.nullable) {
+      throw new EncodingValidationError(
+        `Null value at index ${i} in non-nullable column '${col.path}'`,
+        'NULLABLE_CONSTRAINT_VIOLATION',
+        {
+          path: col.path,
+          index: i,
+          expectedType: getTypeName(col.type),
+          actualType: 'null',
+          actualValue: value,
+        }
+      );
+    }
+
+    // 2b. Skip type validation for null values (they're stored in the null bitmap)
+    if (isNull) {
+      continue;
+    }
+
+    // 2c. Validate value type matches column type
+    if (!isValueTypeValid(value, col.type)) {
+      throw new EncodingValidationError(
+        `Type mismatch at index ${i} in column '${col.path}': expected ${getTypeName(col.type)}, got ${getActualTypeName(value)}`,
+        'TYPE_MISMATCH',
+        {
+          path: col.path,
+          index: i,
+          expectedType: getTypeName(col.type),
+          actualType: getActualTypeName(value),
+          actualValue: typeof value === 'string' ? value.slice(0, 50) : value,
+        }
+      );
+    }
+  }
 }
 
 /**
@@ -579,8 +785,80 @@ function concatArrays(arrays: Uint8Array[]): Uint8Array {
   return result;
 }
 
+// =============================================================================
+// DECODE COUNT BOUNDS VALIDATION (Issue: evodb-imj)
+// =============================================================================
+
+/**
+ * Maximum count for decode operations.
+ * JavaScript arrays have a maximum length of 2^32 - 1 elements.
+ * We use a lower bound to be safe and catch unreasonably large counts early,
+ * preventing memory allocation failures with cryptic error messages.
+ */
+export const MAX_DECODE_COUNT = 2 ** 31 - 1; // ~2 billion, safe for typed arrays
+
+/**
+ * Validate count parameter for decode operations.
+ * Ensures count is a valid non-negative integer within safe bounds.
+ *
+ * @param count - The count value to validate
+ * @param context - Description of where the validation is occurring
+ * @throws Error if count is invalid (negative, NaN, Infinity, or exceeds safe integer)
+ */
+export function validateDecodeCount(count: number, context: string): void {
+  if (typeof count !== 'number') {
+    throw new Error(`Invalid count in ${context}: expected number, got ${typeof count}`);
+  }
+  if (Number.isNaN(count)) {
+    throw new Error(`Invalid count in ${context}: count cannot be NaN`);
+  }
+  if (!Number.isFinite(count)) {
+    throw new Error(`Invalid count in ${context}: count cannot be Infinity`);
+  }
+  if (count < 0) {
+    throw new Error(`Invalid count in ${context}: count cannot be negative (got ${count})`);
+  }
+  // Check for counts that would exceed array capacity or cause memory issues
+  if (count > MAX_DECODE_COUNT) {
+    throw new Error(`Invalid count in ${context}: count ${count} exceeds maximum safe capacity ${MAX_DECODE_COUNT}`);
+  }
+  // Ensure count is an integer
+  if (!Number.isInteger(count)) {
+    throw new Error(`Invalid count in ${context}: count must be an integer (got ${count})`);
+  }
+}
+
+/**
+ * Validate that buffer has sufficient capacity for the requested count.
+ *
+ * @param bufferLength - The length of the buffer in bytes
+ * @param count - Number of elements to decode
+ * @param bytesPerElement - Bytes required per element
+ * @param context - Description of where the validation is occurring
+ * @throws Error if buffer is too small for requested count
+ */
+export function validateBufferCapacity(
+  bufferLength: number,
+  count: number,
+  bytesPerElement: number,
+  context: string
+): void {
+  if (count === 0) return; // Zero count always valid
+
+  const requiredBytes = count * bytesPerElement;
+  if (requiredBytes > bufferLength) {
+    throw new Error(
+      `Buffer capacity exceeded in ${context}: ` +
+      `requested ${count} elements (${requiredBytes} bytes) but buffer has ${bufferLength} bytes`
+    );
+  }
+}
+
 /** Decode column data */
 export function decode(encoded: EncodedColumn, rowCount: number): Column {
+  // Validate count parameter (Issue: evodb-imj)
+  validateDecodeCount(rowCount, 'decode');
+
   const nulls = unpackBits(encoded.nullBitmap, rowCount);
   const values = decodeData(encoded.data, encoded.encoding, encoded.type, nulls, rowCount);
   return { path: encoded.path, type: encoded.type, nullable: nulls.some(n => n), values, nulls };
@@ -839,28 +1117,23 @@ export function fastDecodeDeltaInt32(
   data: Uint8Array,
   rowCount: number
 ): Int32Array {
+  // Validate count parameter (Issue: evodb-imj)
+  validateDecodeCount(rowCount, 'fastDecodeDeltaInt32');
+
+  if (rowCount === 0) return new Int32Array(0);
+
+  // Validate buffer capacity for requested count (Issue: evodb-imj)
+  // Each Int32 requires 4 bytes in delta encoding
+  validateBufferCapacity(data.byteLength, rowCount, 4, 'fastDecodeDeltaInt32');
+
   const result = new Int32Array(rowCount);
-
-  if (rowCount === 0) return result;
-
-  // Bounds check: need at least 4 bytes for first Int32
-  if (data.byteLength < 4) {
-    // Return zero-filled array for insufficient data
-    return result;
-  }
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   result[0] = view.getInt32(0, true);
 
   for (let i = 1; i < rowCount; i++) {
     const offset = i * 4;
-    // Bounds check for each subsequent Int32
-    if (offset + 4 > data.byteLength) {
-      // Fill remaining with last known value (delta of 0)
-      result[i] = result[i - 1];
-    } else {
-      result[i] = result[i - 1] + view.getInt32(offset, true);
-    }
+    result[i] = result[i - 1] + view.getInt32(offset, true);
   }
 
   return result;

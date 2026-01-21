@@ -58,6 +58,38 @@ export interface Prefetcher {
 export type FetchFunction = typeof fetch;
 
 // ============================================================================
+// Types for Error Logging
+// ============================================================================
+
+/**
+ * Structured log format for cache errors
+ */
+export interface CacheErrorLog {
+  /** Operation type: get, put, or delete */
+  operation: 'get' | 'put' | 'delete';
+  /** Cache key (partition path or table identifier) */
+  key: string;
+  /** Error message */
+  error: string;
+  /** Timestamp of the error */
+  timestamp: number;
+}
+
+/**
+ * Metrics for cache errors
+ */
+export interface CacheErrorMetrics {
+  /** Total number of errors */
+  totalErrors: number;
+  /** Errors by operation type */
+  errorsByOperation: {
+    get: number;
+    put: number;
+    delete: number;
+  };
+}
+
+// ============================================================================
 // Internal State
 // ============================================================================
 
@@ -83,6 +115,18 @@ const cacheStatusMap = new Map<string, CacheStatus>();
 let fetchFn: FetchFunction = globalThis.fetch;
 
 /**
+ * Cache error metrics tracking
+ */
+let cacheErrorMetrics: CacheErrorMetrics = {
+  totalErrors: 0,
+  errorsByOperation: {
+    get: 0,
+    put: 0,
+    delete: 0,
+  },
+};
+
+/**
  * Set the fetch function (for testing)
  */
 export function setFetchFunction(fn: FetchFunction): void {
@@ -101,6 +145,68 @@ export function resetFetchFunction(): void {
  */
 export function clearCacheStatusMap(): void {
   cacheStatusMap.clear();
+}
+
+/**
+ * Get cache error metrics
+ */
+export function getCacheErrorMetrics(): CacheErrorMetrics {
+  return {
+    totalErrors: cacheErrorMetrics.totalErrors,
+    errorsByOperation: { ...cacheErrorMetrics.errorsByOperation },
+  };
+}
+
+/**
+ * Reset cache error metrics (for testing)
+ */
+export function resetCacheErrorMetrics(): void {
+  cacheErrorMetrics = {
+    totalErrors: 0,
+    errorsByOperation: {
+      get: 0,
+      put: 0,
+      delete: 0,
+    },
+  };
+}
+
+/**
+ * Log a cache error with structured format and increment metrics
+ *
+ * @param operation - The cache operation type (get, put, delete)
+ * @param key - The cache key (partition path or table identifier)
+ * @param error - The error that occurred
+ */
+function logCacheError(
+  operation: 'get' | 'put' | 'delete',
+  key: string,
+  error: unknown
+): void {
+  // Increment metrics
+  cacheErrorMetrics.totalErrors++;
+  cacheErrorMetrics.errorsByOperation[operation]++;
+
+  // Extract error message
+  let errorMessage: string;
+  if (error instanceof Error) {
+    errorMessage = error.message;
+  } else if (error === undefined || error === null) {
+    errorMessage = 'Unknown error';
+  } else {
+    errorMessage = String(error);
+  }
+
+  // Create structured log entry
+  const logEntry: CacheErrorLog = {
+    operation,
+    key,
+    error: errorMessage,
+    timestamp: Date.now(),
+  };
+
+  // Log the structured error
+  console.error(logEntry);
 }
 
 /**
@@ -326,6 +432,7 @@ async function warmPartitionInternal(
     });
 
     if (!response.ok) {
+      logCacheError('put', partitionPath, new Error(`HTTP ${response.status}: ${response.statusText}`));
       return false;
     }
 
@@ -346,7 +453,7 @@ async function warmPartitionInternal(
 
     return true;
   } catch (error) {
-    console.error(`Failed to warm partition ${partitionPath}:`, error);
+    logCacheError('put', partitionPath, error);
     return false;
   }
 }
@@ -406,6 +513,8 @@ export async function checkCacheStatus(partitionPath: string): Promise<CacheStat
 
     return status;
   } catch (error) {
+    // Log error with context and increment metrics
+    logCacheError('get', partitionPath, error);
     // Return uncached status on error
     const uncachedStatus: CacheStatus = { cached: false };
     setCacheStatusEntry(partitionPath, uncachedStatus);
@@ -440,9 +549,11 @@ export async function invalidatePartition(partitionPath: string): Promise<boolea
       return true;
     }
 
+    // Log error for non-ok response
+    logCacheError('delete', partitionPath, new Error(`HTTP ${response.status}: ${response.statusText}`));
     return false;
   } catch (error) {
-    console.error(`Failed to invalidate partition ${partitionPath}:`, error);
+    logCacheError('delete', partitionPath, error);
     return false;
   }
 }
@@ -494,7 +605,7 @@ export async function invalidateTable(table: string): Promise<number> {
 
     return count;
   } catch (error) {
-    console.error(`Failed to invalidate table ${table}:`, error);
+    logCacheError('delete', `table:${table}`, error);
     return 0;
   }
 }

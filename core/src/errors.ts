@@ -241,6 +241,65 @@ export class StorageError extends EvoDBError {
 }
 
 /**
+ * Error thrown when encoding validation fails
+ *
+ * Examples:
+ * - Invalid column type enum value
+ * - Null value in non-nullable column
+ * - Type mismatch (e.g., string in Int32 column)
+ * - Array column with non-array value
+ *
+ * @example
+ * ```typescript
+ * throw new EncodingValidationError(
+ *   'Type mismatch at index 2: expected Int32, got string',
+ *   'TYPE_MISMATCH',
+ *   { path: 'user.age', index: 2, expectedType: 'Int32', actualType: 'string' }
+ * );
+ * ```
+ */
+export class EncodingValidationError extends ValidationError {
+  /**
+   * Additional details about the validation failure for debugging
+   */
+  public readonly details?: EncodingValidationDetails;
+
+  /**
+   * Create a new EncodingValidationError
+   *
+   * @param message - Human-readable error message describing the validation failure
+   * @param code - Error code (default: 'ENCODING_VALIDATION_ERROR')
+   * @param details - Additional details about the validation failure
+   */
+  constructor(
+    message: string,
+    code: string = 'ENCODING_VALIDATION_ERROR',
+    details?: EncodingValidationDetails
+  ) {
+    super(message, code);
+    this.name = 'EncodingValidationError';
+    this.details = details;
+    captureStackTrace(this, EncodingValidationError);
+  }
+}
+
+/**
+ * Details about encoding validation failure for debugging and logging
+ */
+export interface EncodingValidationDetails {
+  /** Column path where the error occurred */
+  path?: string;
+  /** Index in the values array where the error was found */
+  index?: number;
+  /** Expected type name (e.g., 'Int32', 'String') */
+  expectedType?: string;
+  /** Actual type found (e.g., 'string', 'number') */
+  actualType?: string;
+  /** The actual value that caused the error (truncated for logging) */
+  actualValue?: unknown;
+}
+
+/**
  * Details about block corruption for debugging and logging
  */
 export interface CorruptedBlockDetails {

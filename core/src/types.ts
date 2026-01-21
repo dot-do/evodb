@@ -298,7 +298,31 @@ export interface BlockOptions {
   maxLsn?: bigint;
 }
 
-/** Storage adapter interface */
+/**
+ * Storage adapter interface for DO block storage.
+ *
+ * @deprecated Use StorageProvider from @evodb/core/storage instead.
+ * This interface is maintained for backward compatibility with existing
+ * DO block storage code.
+ *
+ * Migration guide:
+ * - writeBlock() -> put()
+ * - readBlock() -> get()
+ * - listBlocks() -> list()
+ * - deleteBlock() -> delete()
+ *
+ * @example
+ * ```typescript
+ * // Old code using StorageAdapter
+ * const adapter: StorageAdapter = createMemoryAdapter();
+ * await adapter.writeBlock('block-1', data);
+ *
+ * // New code using StorageProvider
+ * import { createInMemoryProvider, StorageProvider } from '@evodb/core';
+ * const provider: StorageProvider = createInMemoryProvider();
+ * await provider.put('block-1', data);
+ * ```
+ */
 export interface StorageAdapter {
   writeBlock(id: string, data: Uint8Array): Promise<void>;
   readBlock(id: string): Promise<Uint8Array | null>;

@@ -13,6 +13,69 @@ import type {
 export type { CoreTableSchema, CoreTableSchemaColumn, CoreColumnType };
 
 // =============================================================================
+// Manifest Versioning
+// =============================================================================
+
+/**
+ * Current manifest schema version.
+ *
+ * VERSION HISTORY:
+ * - Version 1: Initial manifest format with formatVersion, tableId, location,
+ *              schemas, partitionSpec, snapshots, stats, properties, timestamps.
+ *
+ * VERSION MIGRATION STRATEGY:
+ * 1. BACKWARD COMPATIBILITY: Readers MUST be able to read manifests written by
+ *    older versions. Missing fields (like schemaVersion in legacy manifests)
+ *    default to safe values (version 1).
+ *
+ * 2. FORWARD COMPATIBILITY REJECTION: Readers MUST reject manifests from newer
+ *    versions they don't understand (throw VersionMismatchError).
+ *
+ * 3. VERSION BUMPS: The schemaVersion is bumped when:
+ *    - Required fields are added (breaking change)
+ *    - Field semantics change in incompatible ways
+ *    - Structural changes require migration logic
+ *
+ * 4. MIGRATION PROCESS:
+ *    - Read old manifest (version N)
+ *    - Apply migration transforms: migrateManifest(manifest, fromVersion, toVersion)
+ *    - Write new manifest (version N+1)
+ *
+ * Example future migration (v1 -> v2):
+ * ```typescript
+ * function migrateV1ToV2(manifest: ManifestV1): ManifestV2 {
+ *   return {
+ *     ...manifest,
+ *     schemaVersion: 2,
+ *     newRequiredField: computeDefaultValue(manifest),
+ *   };
+ * }
+ * ```
+ */
+export const CURRENT_MANIFEST_VERSION = 1;
+
+/**
+ * Error thrown when attempting to read a manifest with an unsupported schema version.
+ * This typically happens when a newer manifest format is encountered by an older reader.
+ */
+export class VersionMismatchError extends Error {
+  public readonly name = 'VersionMismatchError';
+
+  constructor(
+    public readonly foundVersion: number,
+    public readonly supportedVersion: number
+  ) {
+    super(
+      `Unsupported manifest schema version ${foundVersion}. ` +
+      `This reader supports version ${supportedVersion}. ` +
+      `Please upgrade to a newer version of the lakehouse package.`
+    );
+    // Maintain proper prototype chain for instanceof checks
+    Object.setPrototypeOf(this, VersionMismatchError.prototype);
+  }
+}
+
+// =============================================================================
 // Core Table Types
 // =============================================================================
 
@@ -21,6 +84,13 @@ export type { CoreTableSchema, CoreTableSchemaColumn, CoreColumnType };
  * Designed for atomic JSON commits to R2
  */
 export interface TableManifest {
+  /**
+   * Manifest schema version for forward/backward compatibility.
+   * Used to detect incompatible manifest formats and trigger migrations.
+   * Defaults to 1 for legacy manifests that predate this field.
+   */
+  schemaVersion: number;
+
   /** Format version (always 1 for this implementation) */
   formatVersion: 1;
 
@@ -390,7 +460,34 @@ export interface CompactOptions {
 // =============================================================================
 
 /**
- * R2 storage adapter interface
+ * R2 storage adapter interface for lakehouse operations.
+ *
+ * @deprecated Use StorageProvider from @evodb/core instead.
+ * This interface is maintained for backward compatibility with existing
+ * lakehouse code. For JSON operations, wrap StorageProvider with JSON
+ * serialization/deserialization.
+ *
+ * Migration guide:
+ * - readBinary() -> provider.get()
+ * - writeBinary() -> provider.put()
+ * - readJson() -> JSON.parse(new TextDecoder().decode(await provider.get()))
+ * - writeJson() -> provider.put(path, new TextEncoder().encode(JSON.stringify()))
+ * - list() -> provider.list()
+ * - delete() -> provider.delete()
+ * - exists() -> provider.exists()
+ *
+ * @example
+ * ```typescript
+ * // Old code using R2StorageAdapter
+ * const adapter: R2StorageAdapter = ...;
+ * const manifest = await adapter.readJson<TableManifest>('_manifest.json');
+ *
+ * // New code using StorageProvider
+ * import { StorageProvider } from '@evodb/core';
+ * const provider: StorageProvider = ...;
+ * const data = await provider.get('_manifest.json');
+ * const manifest = data ? JSON.parse(new TextDecoder().decode(data)) : null;
+ * ```
  */
 export interface R2StorageAdapter {
   /** Read a file as JSON */

@@ -7,6 +7,7 @@ export default defineConfig({
       '@evodb/core': path.resolve(__dirname, '../core/dist/index.js'),
       '@evodb/rpc': path.resolve(__dirname, '../rpc/dist/index.js'),
       '@evodb/lakehouse': path.resolve(__dirname, '../lakehouse/dist/index.js'),
+      '@evodb/test-utils': path.resolve(__dirname, '../test-utils/dist/index.js'),
     },
   },
   test: {

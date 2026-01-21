@@ -41,6 +41,13 @@ export type BlockOptions = CoreBlockOptions;
 export type PartitionMode = 'do-sqlite' | 'edge-cache' | 'enterprise';
 
 /**
+ * Block index eviction policy when limit is reached:
+ * - 'lru': Evict oldest entries (least recently used)
+ * - 'none': Throw BlockIndexLimitError when limit is exceeded
+ */
+export type BlockIndexEvictionPolicy = 'lru' | 'none';
+
+/**
  * Partition mode configurations
  */
 export const PARTITION_MODES: Record<PartitionMode, PartitionModeConfig> = {
@@ -130,19 +137,35 @@ export interface WriterOptions {
   // Buffer overflow protection
   /** Hard limit on buffer size in bytes (default: 128MB) - throws BufferOverflowError when exceeded */
   maxBufferSize?: number;
+
+  // Block index limits
+  /** Maximum number of entries in the block index (default: 100,000) */
+  maxBlockIndexSize?: number;
+  /** Eviction policy when block index limit is reached: 'lru' evicts oldest, 'none' throws error (default: 'lru') */
+  blockIndexEvictionPolicy?: BlockIndexEvictionPolicy;
 }
 
 /**
  * Resolved writer options with partition mode applied
  */
-export interface ResolvedWriterOptions extends Omit<WriterOptions, 'partitionMode' | 'targetBlockSize' | 'maxBlockSize' | 'targetCompactSize' | 'maxBufferSize'> {
+export interface ResolvedWriterOptions extends Omit<WriterOptions, 'partitionMode' | 'targetBlockSize' | 'maxBlockSize' | 'targetCompactSize' | 'maxBufferSize' | 'maxBlockIndexSize' | 'blockIndexEvictionPolicy'> {
   targetBlockSize: number;
   maxBlockSize: number;
   targetCompactSize: number;
   partitionMode: PartitionMode;
   /** Hard limit on buffer size in bytes (default: 128MB) */
   maxBufferSize?: number;
+  /** Maximum number of entries in the block index (default: 100,000) */
+  maxBlockIndexSize: number;
+  /** Eviction policy when block index limit is reached (default: 'lru') */
+  blockIndexEvictionPolicy: BlockIndexEvictionPolicy;
 }
+
+/** Default maximum block index size (100,000 entries) */
+export const DEFAULT_MAX_BLOCK_INDEX_SIZE = 100_000;
+
+/** Default block index eviction policy */
+export const DEFAULT_BLOCK_INDEX_EVICTION_POLICY: BlockIndexEvictionPolicy = 'lru';
 
 /**
  * Default writer options
@@ -155,6 +178,8 @@ export const DEFAULT_WRITER_OPTIONS: Omit<WriterOptions, 'r2Bucket' | 'tableLoca
   minCompactBlocks: MIN_COMPACT_BLOCKS,
   maxRetries: DEFAULT_MAX_RETRIES,
   retryBackoffMs: TIMEOUT_100MS,
+  maxBlockIndexSize: DEFAULT_MAX_BLOCK_INDEX_SIZE,
+  blockIndexEvictionPolicy: DEFAULT_BLOCK_INDEX_EVICTION_POLICY,
 };
 
 /**
@@ -179,6 +204,8 @@ export function resolveWriterOptions(
     targetCompactSize: options.targetCompactSize ?? modeConfig.targetCompactSize,
     maxRetries: options.maxRetries ?? DEFAULT_WRITER_OPTIONS.maxRetries,
     retryBackoffMs: options.retryBackoffMs ?? DEFAULT_WRITER_OPTIONS.retryBackoffMs,
+    maxBlockIndexSize: options.maxBlockIndexSize ?? DEFAULT_WRITER_OPTIONS.maxBlockIndexSize ?? DEFAULT_MAX_BLOCK_INDEX_SIZE,
+    blockIndexEvictionPolicy: options.blockIndexEvictionPolicy ?? DEFAULT_WRITER_OPTIONS.blockIndexEvictionPolicy ?? DEFAULT_BLOCK_INDEX_EVICTION_POLICY,
   };
 }
 
@@ -383,6 +410,12 @@ export interface WriterStats {
     totalRows: number;
     /** Total bytes written to R2 */
     totalBytesR2: number;
+    /** Maximum block index size limit */
+    maxBlockIndexSize: number;
+    /** Current eviction policy */
+    evictionPolicy: BlockIndexEvictionPolicy;
+    /** Number of blocks evicted from index */
+    evictedCount: number;
   };
 
   /** Operation statistics */
@@ -505,6 +538,8 @@ export interface PersistentState {
     flushCount: number;
     compactCount: number;
     r2WriteFailures: number;
+    /** Number of blocks evicted from index due to size limits */
+    blockIndexEvictions?: number;
   };
 }
 

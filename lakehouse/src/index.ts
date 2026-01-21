@@ -58,7 +58,15 @@ export type {
   FileMetadata,
 } from './types.js';
 
-export { TablePaths, schemaPath, snapshotPath, dataFilePath } from './types.js';
+export {
+  TablePaths,
+  schemaPath,
+  snapshotPath,
+  dataFilePath,
+  // Manifest versioning
+  CURRENT_MANIFEST_VERSION,
+  VersionMismatchError,
+} from './types.js';
 
 // =============================================================================
 // Path Utilities

@@ -30,8 +30,10 @@ import type {
   SourceStats,
   PartitionMode,
   ResolvedWriterOptions,
+  BlockIndexEvictionPolicy,
 } from './types.js';
 import { resolveWriterOptions } from './types.js';
+import { BlockIndexLimitError } from './errors.js';
 import { CDCBuffer, BackpressureController } from './buffer.js';
 import { R2BlockWriter } from './r2-writer.js';
 import { BlockCompactor, CompactionScheduler } from './compactor.js';
@@ -104,6 +106,7 @@ export class LakehouseWriter {
   private compactCount = 0;
   private r2WriteFailures = 0;
   private retryCount = 0;
+  private blockIndexEvictions = 0;
   private flushDurations: number[] = [];
   private compactDurations: number[] = [];
   private lastFlushTime: number | null = null;
@@ -198,6 +201,7 @@ export class LakehouseWriter {
       this.flushCount = state.stats.flushCount;
       this.compactCount = state.stats.compactCount;
       this.r2WriteFailures = state.stats.r2WriteFailures;
+      this.blockIndexEvictions = state.stats.blockIndexEvictions ?? 0;
     }
   }
 
@@ -224,6 +228,7 @@ export class LakehouseWriter {
         flushCount: this.flushCount,
         compactCount: this.compactCount,
         r2WriteFailures: this.r2WriteFailures,
+        blockIndexEvictions: this.blockIndexEvictions,
       },
     };
 
@@ -308,6 +313,9 @@ export class LakehouseWriter {
     const durationMs = Date.now() - startTime;
 
     if (result.success) {
+      // Check block index limit before adding new block
+      await this.enforceBlockIndexLimit();
+
       // Success - update state
       this.blockIndex.push(result.metadata);
       this.flushCount++;
@@ -374,6 +382,36 @@ export class LakehouseWriter {
         retryScheduled: false,
         error: result.error,
       };
+    }
+  }
+
+  /**
+   * Enforce block index size limit by evicting or throwing error
+   * @throws BlockIndexLimitError if limit is exceeded and eviction policy is 'none'
+   */
+  private async enforceBlockIndexLimit(): Promise<void> {
+    const maxSize = this.options.maxBlockIndexSize;
+    const policy = this.options.blockIndexEvictionPolicy;
+
+    // Check if we need to evict (we're about to add one, so check if current >= max)
+    if (this.blockIndex.length >= maxSize) {
+      if (policy === 'none') {
+        throw new BlockIndexLimitError(this.blockIndex.length, maxSize);
+      }
+
+      // LRU eviction: remove oldest blocks (by createdAt timestamp)
+      // We need to remove at least 1 block to make room for the new one
+      const toEvict = this.blockIndex.length - maxSize + 1;
+      if (toEvict > 0) {
+        // Sort by createdAt to find oldest blocks
+        const sortedBlocks = [...this.blockIndex].sort((a, b) => a.createdAt - b.createdAt);
+        const blocksToEvict = sortedBlocks.slice(0, toEvict);
+        const evictIds = new Set(blocksToEvict.map(b => b.id));
+
+        // Remove evicted blocks from index
+        this.blockIndex = this.blockIndex.filter(b => !evictIds.has(b.id));
+        this.blockIndexEvictions += toEvict;
+      }
     }
   }
 
@@ -536,6 +574,9 @@ export class LakehouseWriter {
         smallBlockCount,
         totalRows: this.blockIndex.reduce((sum, b) => sum + b.rowCount, 0),
         totalBytesR2: this.blockIndex.reduce((sum, b) => sum + b.sizeBytes, 0),
+        maxBlockIndexSize: this.options.maxBlockIndexSize,
+        evictionPolicy: this.options.blockIndexEvictionPolicy,
+        evictedCount: this.blockIndexEvictions,
       },
       operations: {
         cdcEntriesReceived: this.cdcEntriesReceived,

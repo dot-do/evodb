@@ -28,6 +28,16 @@ export {
   isAllNull,
   hasNoNulls,
   SPARSE_NULL_THRESHOLD,
+  // Decode bounds validation (Issue: evodb-imj)
+  validateDecodeCount,
+  validateBufferCapacity,
+  MAX_DECODE_COUNT,
+  // Runtime type validation (Issue: evodb-4v3)
+  validateColumn,
+  isValueTypeValid,
+  getTypeName,
+  getActualTypeName,
+  VALID_TYPE_VALUES,
 } from '../encode.js';
 
 export {
