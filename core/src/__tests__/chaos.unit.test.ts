@@ -25,7 +25,7 @@ import {
   ConcurrencyConflictSimulator,
   MemoryPressureSimulator,
   ClockSkewSimulator,
-  TimeoutError,
+  ChaosTimeoutError,
   ETagMismatchError,
   type ChaosConfig,
   type FailureMode,
@@ -432,7 +432,7 @@ describe('DelayInjector - Timeout Simulation', () => {
       // Advance time past timeout but before delay completes
       await vi.advanceTimersByTimeAsync(1001);
 
-      await expect(readPromise).rejects.toThrow(TimeoutError);
+      await expect(readPromise).rejects.toThrow(ChaosTimeoutError);
     });
   });
 

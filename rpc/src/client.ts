@@ -872,7 +872,6 @@ export class EvoDBRpcClient {
   private handshakeResolver: ((status: unknown) => void) | null = null;
   private handshakeRejecter: ((error: Error) => void) | null = null;
   private handshakeTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
-  private handshakePromise: Promise<unknown> | null = null;
   private pendingBatchCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: EvoDBRpcClientConfig) {
@@ -1022,15 +1021,13 @@ export class EvoDBRpcClient {
           this.handshakeResolver = null;
           this.handshakeRejecter = null;
           this.handshakeTimeoutTimer = null;
-          this.handshakePromise = null;
+          // Note: Promise reference was previously tracked but is no longer stored
         }
       }, this.config.handshakeTimeoutMs);
     });
 
-    // Store the promise and add a no-op catch handler to prevent
-    // "unhandled rejection" warnings. The actual error will still
-    // propagate to callers who await this promise.
-    this.handshakePromise = promise;
+    // Add a no-op catch handler to prevent "unhandled rejection" warnings.
+    // The actual error will still propagate to callers who await this promise.
     // eslint-disable-next-line @typescript-eslint/no-empty-function
     promise.catch(() => {});
 
@@ -1055,7 +1052,7 @@ export class EvoDBRpcClient {
     const rejecter = this.handshakeRejecter;
     this.handshakeResolver = null;
     this.handshakeRejecter = null;
-    this.handshakePromise = null;
+    // Note: Promise reference was previously tracked but is no longer stored
 
     if (rejecter) {
       // Safe to reject synchronously because waitForHandshakeResponse attaches

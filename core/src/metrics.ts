@@ -295,337 +295,13 @@ function labelsToKey(labels: MetricLabels): string {
   return entries.map(([k, v]) => `${k}=${v}`).join(',');
 }
 
-/**
- * Create a counter metric (internal, replaced by enhanced version with internal access)
- */
-function _createCounter(registry: MetricsRegistry, config: CounterConfig): Counter {
-  const { name, help, labelNames = [] } = config;
-  const values = new Map<string, number>();
-  const labeledInstances = new Map<string, LabeledCounter>();
+// Note: The original _createCounter and _createGauge functions were replaced by
+// createCounterWithInternal and createGaugeWithInternal (defined below) which
+// provide internal access to metric values for Prometheus formatting.
 
-  // Initialize unlabeled value
-  if (labelNames.length === 0) {
-    values.set('', 0);
-  }
-
-  const createLabeledCounter = (labels: MetricLabels): LabeledCounter => {
-    const key = labelsToKey(labels);
-
-    const existing = labeledInstances.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    if (!values.has(key)) {
-      values.set(key, 0);
-    }
-
-    const labeled: LabeledCounter = {
-      inc(value = 1): void {
-        if (value < 0) {
-          throw new Error('Counter cannot be decremented');
-        }
-        values.set(key, (values.get(key) ?? 0) + value);
-      },
-      get(): number {
-        return values.get(key) ?? 0;
-      },
-    };
-
-    labeledInstances.set(key, labeled);
-    return labeled;
-  };
-
-  const counter: Counter = {
-    name,
-    help,
-    type: 'counter',
-
-    inc(value = 1): void {
-      if (value < 0) {
-        throw new Error('Counter cannot be decremented');
-      }
-      if (labelNames.length > 0) {
-        throw new Error('Counter with labels requires using .labels() method');
-      }
-      values.set('', (values.get('') ?? 0) + value);
-    },
-
-    get(): number {
-      if (labelNames.length > 0) {
-        throw new Error('Counter with labels requires using .labels() method');
-      }
-      return values.get('') ?? 0;
-    },
-
-    labels(labels: MetricLabels): LabeledCounter {
-      return createLabeledCounter(labels);
-    },
-
-    reset(): void {
-      for (const key of values.keys()) {
-        values.set(key, 0);
-      }
-    },
-  };
-
-  registry._register(counter);
-  return counter;
-}
-
-// =============================================================================
-// Gauge Implementation
-// =============================================================================
-
-/**
- * Create a gauge metric (internal, replaced by enhanced version with internal access)
- */
-function _createGauge(registry: MetricsRegistry, config: GaugeConfig): Gauge {
-  const { name, help, labelNames = [] } = config;
-  const values = new Map<string, number>();
-  const labeledInstances = new Map<string, LabeledGauge>();
-
-  // Initialize unlabeled value
-  if (labelNames.length === 0) {
-    values.set('', 0);
-  }
-
-  const createLabeledGauge = (labels: MetricLabels): LabeledGauge => {
-    const key = labelsToKey(labels);
-
-    const existing = labeledInstances.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    if (!values.has(key)) {
-      values.set(key, 0);
-    }
-
-    const labeled: LabeledGauge = {
-      set(value: number): void {
-        values.set(key, value);
-      },
-      inc(value = 1): void {
-        values.set(key, (values.get(key) ?? 0) + value);
-      },
-      dec(value = 1): void {
-        values.set(key, (values.get(key) ?? 0) - value);
-      },
-      setToCurrentTime(): void {
-        values.set(key, Date.now() / 1000);
-      },
-      get(): number {
-        return values.get(key) ?? 0;
-      },
-    };
-
-    labeledInstances.set(key, labeled);
-    return labeled;
-  };
-
-  const gauge: Gauge = {
-    name,
-    help,
-    type: 'gauge',
-
-    set(value: number): void {
-      if (labelNames.length > 0) {
-        throw new Error('Gauge with labels requires using .labels() method');
-      }
-      values.set('', value);
-    },
-
-    inc(value = 1): void {
-      if (labelNames.length > 0) {
-        throw new Error('Gauge with labels requires using .labels() method');
-      }
-      values.set('', (values.get('') ?? 0) + value);
-    },
-
-    dec(value = 1): void {
-      if (labelNames.length > 0) {
-        throw new Error('Gauge with labels requires using .labels() method');
-      }
-      values.set('', (values.get('') ?? 0) - value);
-    },
-
-    setToCurrentTime(): void {
-      if (labelNames.length > 0) {
-        throw new Error('Gauge with labels requires using .labels() method');
-      }
-      values.set('', Date.now() / 1000);
-    },
-
-    get(): number {
-      if (labelNames.length > 0) {
-        throw new Error('Gauge with labels requires using .labels() method');
-      }
-      return values.get('') ?? 0;
-    },
-
-    labels(labels: MetricLabels): LabeledGauge {
-      return createLabeledGauge(labels);
-    },
-
-    reset(): void {
-      for (const key of values.keys()) {
-        values.set(key, 0);
-      }
-    },
-  };
-
-  registry._register(gauge);
-  return gauge;
-}
-
-// =============================================================================
-// Histogram Implementation
-// =============================================================================
-
-interface HistogramInternalData {
-  count: number;
-  sum: number;
-  buckets: number[];
-}
-
-/**
- * Create a histogram metric (internal, replaced by enhanced version with internal access)
- */
-function _createHistogram(registry: MetricsRegistry, config: HistogramConfig): Histogram {
-  const { name, help, labelNames = [], buckets: configBuckets } = config;
-  const buckets = configBuckets
-    ? [...configBuckets].sort((a, b) => a - b)
-    : [...DEFAULT_BUCKETS];
-
-  const data = new Map<string, HistogramInternalData>();
-  const labeledInstances = new Map<string, LabeledHistogram>();
-
-  const createEmptyData = (): HistogramInternalData => ({
-    count: 0,
-    sum: 0,
-    buckets: buckets.map(() => 0),
-  });
-
-  // Initialize unlabeled value
-  if (labelNames.length === 0) {
-    data.set('', createEmptyData());
-  }
-
-  const observeValue = (key: string, value: number): void => {
-    let d = data.get(key);
-    if (!d) {
-      d = createEmptyData();
-      data.set(key, d);
-    }
-
-    d.count++;
-    d.sum += value;
-
-    // Update cumulative buckets
-    for (let i = 0; i < buckets.length; i++) {
-      if (value <= buckets[i]) {
-        d.buckets[i]++;
-      }
-    }
-  };
-
-  const getData = (key: string): HistogramData => {
-    const d = data.get(key) ?? createEmptyData();
-    const bucketData: Record<number, number> = {};
-
-    // Build cumulative bucket data
-    let cumulative = 0;
-    for (let i = 0; i < buckets.length; i++) {
-      cumulative += d.buckets[i];
-      bucketData[buckets[i]] = cumulative;
-    }
-
-    return {
-      count: d.count,
-      sum: d.sum,
-      buckets: bucketData,
-    };
-  };
-
-  const startTimerForKey = (key: string): TimerEnd => {
-    const start = performance.now();
-    return (): number => {
-      const duration = (performance.now() - start) / 1000;
-      observeValue(key, duration);
-      return duration;
-    };
-  };
-
-  const createLabeledHistogram = (labels: MetricLabels): LabeledHistogram => {
-    const key = labelsToKey(labels);
-
-    const existing = labeledInstances.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    if (!data.has(key)) {
-      data.set(key, createEmptyData());
-    }
-
-    const labeled: LabeledHistogram = {
-      observe(value: number): void {
-        observeValue(key, value);
-      },
-      startTimer(): TimerEnd {
-        return startTimerForKey(key);
-      },
-      get(): HistogramData {
-        return getData(key);
-      },
-    };
-
-    labeledInstances.set(key, labeled);
-    return labeled;
-  };
-
-  const histogram: Histogram = {
-    name,
-    help,
-    type: 'histogram',
-    buckets,
-
-    observe(value: number): void {
-      if (labelNames.length > 0) {
-        throw new Error('Histogram with labels requires using .labels() method');
-      }
-      observeValue('', value);
-    },
-
-    startTimer(): TimerEnd {
-      if (labelNames.length > 0) {
-        throw new Error('Histogram with labels requires using .labels() method');
-      }
-      return startTimerForKey('');
-    },
-
-    get(): HistogramData {
-      if (labelNames.length > 0) {
-        throw new Error('Histogram with labels requires using .labels() method');
-      }
-      return getData('');
-    },
-
-    labels(labels: MetricLabels): LabeledHistogram {
-      return createLabeledHistogram(labels);
-    },
-
-    reset(): void {
-      for (const key of data.keys()) {
-        data.set(key, createEmptyData());
-      }
-    },
-  };
-
-  registry._register(histogram);
-  return histogram;
-}
+// Note: The original _createHistogram function was replaced by
+// createHistogramWithInternal (defined below) which provides internal access
+// to histogram data for Prometheus formatting.
 
 // =============================================================================
 // Prometheus Format Export
@@ -768,8 +444,9 @@ function getAllMetricValues(metric: Counter | Gauge): Map<string, number> {
   // For metrics with labels, we need to access internal state
   // This is a workaround since we don't expose internal maps directly
   try {
-    if ((metric as InternalMetric)._values) {
-      return (metric as InternalMetric)._values;
+    const internalMetric = metric as unknown as InternalMetric;
+    if (internalMetric._values) {
+      return internalMetric._values;
     }
   } catch {
     // Fallback
@@ -792,8 +469,9 @@ function getAllHistogramData(histogram: Histogram): Map<string, HistogramData> {
   const result = new Map<string, HistogramData>();
 
   try {
-    if ((histogram as InternalHistogram)._data) {
-      const internalData = (histogram as InternalHistogram)._data;
+    const internalHistogram = histogram as unknown as InternalHistogram;
+    if (internalHistogram._data) {
+      const internalData = internalHistogram._data;
       const buckets = histogram.buckets;
 
       for (const [key, d] of internalData) {
@@ -828,6 +506,12 @@ function getAllHistogramData(histogram: Histogram): Map<string, HistogramData> {
 // Internal types for accessing private data (used only in formatPrometheus)
 interface InternalMetric {
   _values: Map<string, number>;
+}
+
+interface HistogramInternalData {
+  count: number;
+  sum: number;
+  buckets: number[];
 }
 
 interface InternalHistogram {

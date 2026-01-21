@@ -269,14 +269,17 @@ export class ETagMismatchError extends Error {
 }
 
 /**
- * Timeout error
+ * Chaos timeout error (for chaos testing utilities)
+ *
+ * Note: Named ChaosTimeoutError to avoid conflict with the general
+ * TimeoutError in @evodb/core/errors.
  */
-export class TimeoutError extends Error {
+export class ChaosTimeoutError extends Error {
   readonly timeoutMs: number;
 
   constructor(timeoutMs: number) {
     super(`Operation timed out after ${timeoutMs}ms`);
-    this.name = 'TimeoutError';
+    this.name = 'ChaosTimeoutError';
     this.timeoutMs = timeoutMs;
   }
 }
@@ -571,7 +574,7 @@ export class DelayInjector implements Storage {
     if (this.timeoutMs !== undefined && delayMs > this.timeoutMs) {
       // Create a promise that rejects after timeout
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new TimeoutError(this.timeoutMs!)), this.timeoutMs);
+        setTimeout(() => reject(new ChaosTimeoutError(this.timeoutMs!)), this.timeoutMs);
       });
       return Promise.race([timeoutPromise, this.delay(delayMs).then(fn)]);
     }
