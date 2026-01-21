@@ -63,6 +63,8 @@ export {
   getNestedValue,
   setNestedValue,
   likePatternToRegex,
+  // Column validation
+  validateColumnName,
   // All-in-one namespace
   queryOps,
 } from '../query-ops.js';

@@ -1827,3 +1827,78 @@ describe('Manifest JSON Validation', () => {
     });
   });
 });
+
+// ============================================================================
+// Filter Predicate Column Validation Tests
+// ============================================================================
+
+describe('Filter Predicate Column Validation', () => {
+  let bucket: R2Bucket;
+  let engine: QueryEngine;
+
+  beforeEach(() => {
+    const objects = new Map<string, unknown>([
+      ['manifest.json', SAMPLE_MANIFEST],
+      ['data/events/block_001.json', SAMPLE_BLOCK_1],
+      ['data/events/block_002.json', SAMPLE_BLOCK_2],
+    ]);
+    bucket = createMockR2Bucket(objects);
+    engine = createQueryEngine({ bucket });
+  });
+
+  it('should throw on malicious column names in query filters', async () => {
+    await expect(
+      engine.query({
+        table: 'events',
+        filters: [{ column: "'; DROP TABLE users; --", operator: 'eq', value: 'test' }],
+      })
+    ).rejects.toThrow();
+  });
+
+  it('should throw on SQL injection attempts via filter column', async () => {
+    await expect(
+      engine.query({
+        table: 'events',
+        filters: [{ column: 'status; DELETE FROM', operator: 'eq', value: 'active' }],
+      })
+    ).rejects.toThrow();
+  });
+
+  it('should throw on column names with special characters in filters', async () => {
+    await expect(
+      engine.query({
+        table: 'events',
+        filters: [{ column: 'id`test', operator: 'eq', value: 1 }],
+      })
+    ).rejects.toThrow();
+  });
+
+  it('should throw on column names with parentheses in filters', async () => {
+    await expect(
+      engine.query({
+        table: 'events',
+        filters: [{ column: 'SLEEP(5)', operator: 'eq', value: 1 }],
+      })
+    ).rejects.toThrow();
+  });
+
+  it('should allow valid column names in filters', async () => {
+    const result = await engine.query({
+      table: 'events',
+      filters: [{ column: 'status', operator: 'eq', value: 'active' }],
+    });
+
+    expect(result).toBeDefined();
+    expect(result.rows.length).toBeGreaterThan(0);
+  });
+
+  it('should throw on malicious column names in scanBlock filters', async () => {
+    await expect(
+      engine.scanBlock({
+        blockPath: 'data/events/block_001.json',
+        columns: ['id'],
+        filters: [{ column: "'; DROP TABLE users; --", operator: 'eq', value: 'test' }],
+      })
+    ).rejects.toThrow();
+  });
+});

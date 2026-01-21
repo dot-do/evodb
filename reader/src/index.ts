@@ -55,6 +55,7 @@ import {
   evaluateFilter as coreEvaluateFilter,
   sortRows as coreSortRows,
   computeAggregations as coreComputeAggregations,
+  validateColumnName,
   type FilterPredicate as CoreFilterPredicate,
   type SortSpec as CoreSortSpec,
   type AggregateSpec as CoreAggregateSpec,
@@ -210,6 +211,13 @@ export class QueryEngine {
    * Scan a single data block
    */
   async scanBlock(request: BlockScanRequest): Promise<BlockScanResult> {
+    // Validate filter column names to prevent injection attacks
+    if (request.filters) {
+      for (const filter of request.filters) {
+        validateColumnName(filter.column);
+      }
+    }
+
     const { data: buffer, fromCache } = await this.cache.get(
       this.config.bucket,
       request.blockPath
@@ -275,7 +283,7 @@ export class QueryEngine {
       }
     }
 
-    // Validate filter operators
+    // Validate filter operators and column names
     if (request.filters) {
       const validOperators = [
         'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'in', 'notIn',
@@ -285,6 +293,8 @@ export class QueryEngine {
         if (!validOperators.includes(filter.operator)) {
           throw new Error(`Invalid filter operator: ${filter.operator}`);
         }
+        // Validate column name to prevent injection attacks
+        validateColumnName(filter.column);
       }
     }
 
