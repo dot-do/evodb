@@ -8,6 +8,105 @@
 import type { StorageAdapter } from './types.js';
 
 // ==========================================
+// Path Traversal Prevention (Issue evodb-409)
+// ==========================================
+
+/**
+ * Validate a storage path to prevent path traversal attacks.
+ * Uses a whitelist approach: only allow known-safe characters and patterns.
+ *
+ * @param path - The storage path to validate
+ * @throws Error if path contains dangerous patterns
+ */
+function validateStoragePath(path: string): void {
+  // Check for empty or whitespace-only paths
+  if (!path || path.trim().length === 0) {
+    throw new Error('Storage path validation failed: path cannot be empty');
+  }
+
+  // Check for null bytes (can truncate paths in some systems)
+  if (path.includes('\x00')) {
+    throw new Error('Storage path validation failed: path contains null byte');
+  }
+
+  // Check for control characters (ASCII 0x00-0x1F)
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(path)) {
+    throw new Error('Storage path validation failed: path contains control character');
+  }
+
+  // Check for absolute paths (Unix-style)
+  if (path.startsWith('/')) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Check for Windows absolute paths (C:\ or C:/)
+  if (/^[a-zA-Z]:[/\\]/.test(path)) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Check for UNC paths (\\server\share or //server/share)
+  if (path.startsWith('\\\\') || path.startsWith('//')) {
+    throw new Error('Storage path validation failed: absolute path not allowed');
+  }
+
+  // Normalize the path for traversal detection (handle backslashes as path separators)
+  const normalizedPath = path.replace(/\\/g, '/');
+
+  // Check for path traversal patterns - must check BEFORE and AFTER URL decoding
+  const pathTraversalPatterns = [
+    /\.\./,           // Direct ..
+    /%2e%2e/i,        // URL-encoded .
+    /%252e%252e/i,    // Double URL-encoded .
+  ];
+
+  for (const pattern of pathTraversalPatterns) {
+    if (pattern.test(normalizedPath)) {
+      throw new Error('Storage path validation failed: path traversal detected');
+    }
+  }
+
+  // Try URL-decoding and check again (handles single URL-encoded attacks)
+  try {
+    const decoded = decodeURIComponent(normalizedPath);
+    if (decoded.includes('..')) {
+      throw new Error('Storage path validation failed: path traversal detected');
+    }
+    // Try double-decoding (handles double URL-encoded attacks)
+    try {
+      const doubleDecoded = decodeURIComponent(decoded);
+      if (doubleDecoded.includes('..')) {
+        throw new Error('Storage path validation failed: path traversal detected');
+      }
+    } catch {
+      // Double decoding failed, which is fine - the path is safe from double-encoding attacks
+    }
+  } catch (e) {
+    // If decoding fails with a non-path-traversal error, re-throw original path traversal errors
+    if (e instanceof Error && e.message.includes('path traversal')) {
+      throw e;
+    }
+    // Otherwise, decoding failed which means it's not a valid URL-encoded attack
+  }
+}
+
+/**
+ * Validate a key prefix used in storage constructors.
+ * Empty prefixes are allowed. Non-empty prefixes must pass path validation.
+ *
+ * @param keyPrefix - The key prefix to validate (can be empty string)
+ * @throws Error if prefix contains dangerous patterns
+ */
+function validateKeyPrefix(keyPrefix: string): void {
+  // Empty prefix is always valid
+  if (keyPrefix === '') {
+    return;
+  }
+  // Non-empty prefixes must pass full path validation
+  validateStoragePath(keyPrefix);
+}
+
+// ==========================================
 // R2 Type Definitions
 // ==========================================
 
@@ -135,8 +234,11 @@ export class R2StorageAdapter implements StorageAdapter {
    * Create an R2 storage adapter
    * @param bucket - R2 bucket binding
    * @param keyPrefix - Optional prefix to prepend to all keys
+   * @throws Error if keyPrefix contains path traversal patterns
    */
   constructor(bucket: R2Bucket, keyPrefix: string = '') {
+    // Validate keyPrefix to prevent path traversal attacks (Issue evodb-409)
+    validateKeyPrefix(keyPrefix);
     this.bucket = bucket;
     this.keyPrefix = keyPrefix;
   }
