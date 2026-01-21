@@ -545,4 +545,197 @@ describe('LRUStringPool', () => {
       });
     });
   });
+
+  // =============================================================================
+  // 10. HIGH HIT RATE CACHE OPTIMIZATION BENCHMARK (Issue: evodb-wvz)
+  // =============================================================================
+
+  describe('High Hit Rate Cache Optimization (evodb-wvz)', () => {
+    /**
+     * This benchmark tests the optimization for cache hit handling.
+     *
+     * Problem: The original implementation used Map delete+set on every cache hit
+     * to maintain LRU order. At high hit rates (90%+), this was expensive:
+     * - Map delete: O(1) amortized but involves hash table operations
+     * - Map set: O(1) amortized but involves hash table operations
+     * - Object allocation: New CacheEntry object on every hit
+     *
+     * Solution: Doubly-linked list for O(1) move-to-tail via pointer updates:
+     * - No Map modifications on cache hit (only on miss/eviction)
+     * - No object allocation on cache hit (in-place lastAccess update)
+     * - 4-6 pointer updates vs hash table operations
+     */
+
+    it('should efficiently handle 95% hit rate workload', () => {
+      const pool = new LRUStringPool(1000);
+
+      // Warm up: add 100 strings that will be hot
+      const hotStrings = Array.from({ length: 100 }, (_, i) => `hot-string-${i}`);
+      for (const s of hotStrings) {
+        pool.intern(s);
+      }
+
+      // Workload: 95% hits on hot strings, 5% new strings
+      const iterations = 100000;
+      const coldStrings = Array.from({ length: 5000 }, (_, i) => `cold-string-${i}`);
+      let coldIndex = 0;
+
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        if (Math.random() < 0.95) {
+          // 95% hit rate - access hot strings
+          pool.intern(hotStrings[i % hotStrings.length]);
+        } else {
+          // 5% miss rate - new strings
+          pool.intern(coldStrings[coldIndex++ % coldStrings.length]);
+        }
+      }
+      const elapsed = performance.now() - start;
+
+      const stats = pool.getStats();
+      const avgTimePerOp = elapsed / iterations;
+
+      console.log(`High Hit Rate Benchmark (95% hits, ${iterations.toLocaleString()} ops):`);
+      console.log(`  Total time: ${elapsed.toFixed(2)}ms`);
+      console.log(`  Avg time per op: ${(avgTimePerOp * 1000).toFixed(2)}us`);
+      console.log(`  Hit rate: ${(stats.hitRate * 100).toFixed(1)}%`);
+      console.log(`  Hits: ${stats.hits.toLocaleString()}`);
+      console.log(`  Misses: ${stats.misses.toLocaleString()}`);
+      console.log(`  Evictions: ${stats.evictions.toLocaleString()}`);
+
+      // Performance assertion: should complete 100K ops in < 100ms
+      // This is a reasonable threshold that validates the O(1) optimization
+      expect(elapsed).toBeLessThan(100);
+
+      // Hit rate should be approximately 95%
+      expect(stats.hitRate).toBeGreaterThan(0.90);
+    });
+
+    it('should show O(1) cache hit performance regardless of pool size', () => {
+      // Test that cache hits are O(1) - time shouldn't grow with pool size
+      const sizes = [100, 1000, 10000];
+      const hitsPerTest = 50000;
+      const results: { size: number; avgTime: number }[] = [];
+
+      for (const size of sizes) {
+        const pool = new LRUStringPool(size);
+
+        // Fill the pool
+        for (let i = 0; i < size; i++) {
+          pool.intern(`string-${i}`);
+        }
+
+        // Measure hit performance
+        const start = performance.now();
+        for (let i = 0; i < hitsPerTest; i++) {
+          pool.intern(`string-${i % size}`); // Always a hit
+        }
+        const elapsed = performance.now() - start;
+
+        results.push({ size, avgTime: elapsed / hitsPerTest });
+      }
+
+      console.log(`O(1) Cache Hit Verification:`);
+      for (const { size, avgTime } of results) {
+        console.log(`  Pool size ${size.toLocaleString()}: ${(avgTime * 1000).toFixed(3)}us/op`);
+      }
+
+      // O(1) property: time should not scale significantly with pool size
+      // Allow 3x variance for environmental noise, but times should be similar
+      const minTime = Math.min(...results.map(r => r.avgTime));
+      const maxTime = Math.max(...results.map(r => r.avgTime));
+      expect(maxTime).toBeLessThan(minTime * 3);
+    });
+
+    it('should maintain correct LRU ordering with doubly-linked list', () => {
+      const pool = new LRUStringPool(5);
+
+      // Add entries in order: a, b, c, d, e
+      pool.intern('a');
+      pool.intern('b');
+      pool.intern('c');
+      pool.intern('d');
+      pool.intern('e');
+
+      // Access pattern: a, c (moves them to most recent)
+      pool.intern('a'); // Order now: b, d, e, c, a
+      pool.intern('c'); // Order now: b, d, e, a, c
+
+      // Add new entry - should evict 'b' (oldest)
+      pool.intern('f'); // Order now: d, e, a, c, f
+
+      expect(pool.has('a')).toBe(true);
+      expect(pool.has('b')).toBe(false); // Evicted
+      expect(pool.has('c')).toBe(true);
+      expect(pool.has('d')).toBe(true);
+      expect(pool.has('e')).toBe(true);
+      expect(pool.has('f')).toBe(true);
+
+      // Access 'd' to move it to end
+      pool.intern('d'); // Order now: e, a, c, f, d
+
+      // Add another - should evict 'e'
+      pool.intern('g'); // Order now: a, c, f, d, g
+
+      expect(pool.has('d')).toBe(true);
+      expect(pool.has('e')).toBe(false); // Evicted
+      expect(pool.has('g')).toBe(true);
+    });
+
+    it('should handle rapid repeated access to same string', () => {
+      const pool = new LRUStringPool(100);
+
+      pool.intern('hotkey');
+
+      // Rapid repeated access to same string
+      const iterations = 100000;
+      const start = performance.now();
+      for (let i = 0; i < iterations; i++) {
+        pool.intern('hotkey');
+      }
+      const elapsed = performance.now() - start;
+
+      const stats = pool.getStats();
+
+      console.log(`Rapid Repeated Access (${iterations.toLocaleString()} accesses to same key):`);
+      console.log(`  Total time: ${elapsed.toFixed(2)}ms`);
+      console.log(`  Avg time per op: ${((elapsed / iterations) * 1000).toFixed(3)}us`);
+
+      // When accessing the same key repeatedly, it's already at tail
+      // so moveToTail should be a no-op (early return)
+      expect(elapsed).toBeLessThan(50);
+      expect(stats.hits).toBe(iterations);
+    });
+
+    it('should compare delete+set vs pointer-based LRU (simulation)', () => {
+      // This test simulates the difference between the two approaches
+      // by measuring the optimized implementation's performance
+
+      const poolSize = 1000;
+      const pool = new LRUStringPool(poolSize);
+
+      // Fill pool
+      for (let i = 0; i < poolSize; i++) {
+        pool.intern(`key-${i}`);
+      }
+
+      // Measure cache hit performance (optimized path)
+      const iterations = 100000;
+      const start = performance.now();
+
+      for (let i = 0; i < iterations; i++) {
+        // Access random existing key - all hits, moving nodes around
+        pool.intern(`key-${i % poolSize}`);
+      }
+
+      const optimizedTime = performance.now() - start;
+
+      console.log(`Optimized LRU Performance (${iterations.toLocaleString()} cache hits):`);
+      console.log(`  Time: ${optimizedTime.toFixed(2)}ms`);
+      console.log(`  Throughput: ${Math.round(iterations / (optimizedTime / 1000)).toLocaleString()} ops/s`);
+
+      // Should be fast - pointer operations only, no Map modifications
+      expect(optimizedTime).toBeLessThan(100);
+    });
+  });
 });

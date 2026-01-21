@@ -14,7 +14,7 @@
  *   SpanKinds,
  *   SpanStatusCode,
  *   formatOTEL,
- * } from '@evodb/core';
+ * } from '@evodb/observability';
  *
  * const tracer = createTracingContext({ serviceName: 'my-service' });
  *

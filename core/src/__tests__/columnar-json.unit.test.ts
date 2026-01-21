@@ -18,7 +18,6 @@ import {
   unshred,
   inferSchema,
   isCompatible,
-  migrateColumns,
   Type,
 } from '../index.js';
 
@@ -456,92 +455,10 @@ describe('Schema Evolution', () => {
     });
   });
 
-  describe('Column Migration', () => {
-    it('should fill new nullable columns with nulls', () => {
-      const columns = shred([{ name: 'Alice' }, { name: 'Bob' }]);
-      const oldSchema = inferSchema(columns);
-
-      const newSchema = {
-        ...oldSchema,
-        columns: [
-          ...oldSchema.columns,
-          { path: 'age', type: Type.Int32, nullable: true },
-        ],
-      };
-
-      const migrated = migrateColumns(columns, oldSchema, newSchema);
-
-      expect(migrated).toHaveLength(2);
-      expect(migrated.find(c => c.path === 'age')?.values).toEqual([null, null]);
-    });
-
-    it('should fill new columns with default values', () => {
-      const columns = shred([{ name: 'Alice' }, { name: 'Bob' }]);
-      const oldSchema = inferSchema(columns);
-
-      const newSchema = {
-        ...oldSchema,
-        columns: [
-          ...oldSchema.columns,
-          { path: 'age', type: Type.Int32, nullable: false, defaultValue: 0 },
-        ],
-      };
-
-      const migrated = migrateColumns(columns, oldSchema, newSchema);
-
-      expect(migrated.find(c => c.path === 'age')?.values).toEqual([0, 0]);
-    });
-
-    it('should promote Int32 values to Int64 during migration', () => {
-      const columns = shred([{ value: 42 }, { value: 100 }]);
-      const oldSchema = inferSchema(columns);
-      oldSchema.columns[0].type = Type.Int32;
-
-      const newSchema = {
-        ...oldSchema,
-        columns: [{ path: 'value', type: Type.Int64, nullable: false }],
-      };
-
-      const migrated = migrateColumns(columns, oldSchema, newSchema);
-
-      // Values should be converted to BigInt
-      expect(migrated[0].values).toEqual([42n, 100n]);
-      expect(migrated[0].type).toBe(Type.Int64);
-    });
-
-    it('should promote Int32 values to Float64 during migration', () => {
-      const columns = shred([{ value: 42 }, { value: 100 }]);
-      columns[0].type = Type.Int32; // Force Int32 type
-      const oldSchema = inferSchema(columns);
-
-      const newSchema = {
-        ...oldSchema,
-        columns: [{ path: 'value', type: Type.Float64, nullable: false }],
-      };
-
-      const migrated = migrateColumns(columns, oldSchema, newSchema);
-
-      // Values should remain numbers but column type should be Float64
-      expect(migrated[0].values).toEqual([42, 100]);
-      expect(migrated[0].type).toBe(Type.Float64);
-    });
-
-    it('should promote any type to String during migration', () => {
-      const columns = shred([{ value: 42 }, { value: 100 }]);
-      columns[0].type = Type.Int32;
-      const oldSchema = inferSchema(columns);
-
-      const newSchema = {
-        ...oldSchema,
-        columns: [{ path: 'value', type: Type.String, nullable: false }],
-      };
-
-      const migrated = migrateColumns(columns, oldSchema, newSchema);
-
-      expect(migrated[0].values).toEqual(['42', '100']);
-      expect(migrated[0].type).toBe(Type.String);
-    });
-  });
+  // NOTE: Column Migration tests removed
+  // Migration functions (migrateColumns, promoteColumn, promoteValue) removed from schema module
+  // Migration is now handled by the manifest layer
+  // See evodb-dlp: Simplify schema.ts to essential functions
 });
 
 // =============================================================================
@@ -827,19 +744,8 @@ describe('RED PHASE: Features requiring implementation', () => {
       expect(schema2.version).toBe(2);
     });
 
-    it('should support schema diff to show changes between versions', async () => {
-      const schema1 = inferSchema(shred([{ name: 'Alice' }]), 1, 1);
-      const schema2 = inferSchema(shred([{ name: 'Bob', age: 25 }]), 1, 2);
-      schema2.columns.find(c => c.path === 'age')!.nullable = true;
-
-      // @ts-expect-error - schemaDiff not yet implemented
-      const { schemaDiff } = await import('../index.js');
-
-      const diff = schemaDiff(schema1, schema2);
-      expect(diff.added).toContain('age');
-      expect(diff.removed).toEqual([]);
-      expect(diff.modified).toEqual([]);
-    });
+    // NOTE: schemaDiff test removed - function no longer in schema module
+    // See evodb-dlp: Simplify schema.ts to essential functions
   });
 
   describe('Timestamp and Date Types', () => {

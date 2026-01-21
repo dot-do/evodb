@@ -10,10 +10,17 @@ import {
   createManifestFile,
   createFileStats,
   appendFiles,
+  overwriteFiles,
+  queryFiles,
+  getSnapshot,
+  getSnapshotFiles,
   serializeManifest,
   deserializeManifest,
   validateManifest,
+  pruneFiles,
+  findSnapshotAsOf,
   type TableManifest,
+  type Snapshot,
 } from '../index.js';
 
 describe('Manifest CRUD Operations', () => {
@@ -179,6 +186,286 @@ describe('Manifest CRUD Operations', () => {
       expect(m2.stats.totalRows).toBe(300);
       expect(s2.manifestList).toHaveLength(2);
       expect(s2.parentSnapshotId).toBe(s1.snapshotId);
+    });
+  });
+
+  describe('overwriteFiles', () => {
+    it('should replace all files in a table', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      // First, add some files
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const file2 = createManifestFile('data/block-002.bin', 2048, [], createFileStats(200, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file1, file2]);
+
+      // Now overwrite with new files
+      const newFile = createManifestFile('data/block-new.bin', 4096, [], createFileStats(500, {}));
+      const { manifest: m2, snapshot: s2 } = overwriteFiles(m1, s1, [newFile]);
+
+      expect(m2.stats.totalFiles).toBe(1);
+      expect(m2.stats.totalRows).toBe(500);
+      expect(s2.manifestList).toHaveLength(1);
+      expect(s2.summary.operation).toBe('overwrite');
+      expect(s2.summary.addedFiles).toBe(1);
+      expect(s2.summary.deletedFiles).toBe(2);
+    });
+
+    it('should handle overwriting empty table', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file = createManifestFile('data/block.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: updated, snapshot } = overwriteFiles(manifest, null, [file]);
+
+      expect(updated.stats.totalFiles).toBe(1);
+      expect(snapshot.summary.operation).toBe('overwrite');
+      expect(snapshot.summary.deletedFiles).toBe(0);
+    });
+  });
+
+  describe('queryFiles', () => {
+    it('should return files from current snapshot', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const file2 = createManifestFile('data/block-002.bin', 2048, [], createFileStats(200, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file1, file2]);
+
+      // Create a snapshot loader
+      const snapshots = new Map<string, Snapshot>();
+      snapshots.set(s1.snapshotId, s1);
+
+      const files = queryFiles(m1, (id) => snapshots.get(id) ?? null);
+      expect(files).toHaveLength(2);
+    });
+
+    it('should return empty array for empty table', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const files = queryFiles(manifest, () => null);
+      expect(files).toHaveLength(0);
+    });
+
+    it('should support time-travel by snapshot ID', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file1]);
+
+      const file2 = createManifestFile('data/block-002.bin', 2048, [], createFileStats(200, {}));
+      const { manifest: m2, snapshot: s2 } = appendFiles(m1, s1, [file2]);
+
+      const snapshots = new Map<string, Snapshot>();
+      snapshots.set(s1.snapshotId, s1);
+      snapshots.set(s2.snapshotId, s2);
+
+      // Query at old snapshot
+      const oldFiles = queryFiles(m2, (id) => snapshots.get(id) ?? null, {
+        snapshotId: s1.snapshotId,
+      });
+      expect(oldFiles).toHaveLength(1);
+      expect(oldFiles[0].path).toBe('data/block-001.bin');
+
+      // Query at current snapshot
+      const currentFiles = queryFiles(m2, (id) => snapshots.get(id) ?? null);
+      expect(currentFiles).toHaveLength(2);
+    });
+
+    it('should throw error for non-existent snapshot', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1 } = appendFiles(manifest, null, [file1]);
+
+      expect(() => queryFiles(m1, () => null)).toThrow(/not found/);
+    });
+  });
+
+  describe('getSnapshot', () => {
+    it('should return current snapshot when no ID provided', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file = createManifestFile('data/block.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file]);
+
+      const snapshots = new Map<string, Snapshot>();
+      snapshots.set(s1.snapshotId, s1);
+
+      const snapshot = getSnapshot(m1, (id) => snapshots.get(id) ?? null);
+      expect(snapshot?.snapshotId).toBe(s1.snapshotId);
+    });
+
+    it('should return null for empty table', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const snapshot = getSnapshot(manifest, () => null);
+      expect(snapshot).toBeNull();
+    });
+
+    it('should support lookup by snapshot ID', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file1]);
+
+      const file2 = createManifestFile('data/block-002.bin', 2048, [], createFileStats(200, {}));
+      const { manifest: m2, snapshot: s2 } = appendFiles(m1, s1, [file2]);
+
+      const snapshots = new Map<string, Snapshot>();
+      snapshots.set(s1.snapshotId, s1);
+      snapshots.set(s2.snapshotId, s2);
+
+      const snapshot = getSnapshot(m2, (id) => snapshots.get(id) ?? null, s1.snapshotId);
+      expect(snapshot?.snapshotId).toBe(s1.snapshotId);
+      expect(snapshot?.manifestList).toHaveLength(1);
+    });
+  });
+
+  describe('getSnapshotFiles', () => {
+    it('should return files from snapshot', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile('data/block-001.bin', 1024, [], createFileStats(100, {}));
+      const file2 = createManifestFile('data/block-002.bin', 2048, [], createFileStats(200, {}));
+      const { snapshot } = appendFiles(manifest, null, [file1, file2]);
+
+      const files = getSnapshotFiles(snapshot);
+      expect(files).toHaveLength(2);
+    });
+
+    it('should support filtering', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file1 = createManifestFile(
+        'data/year=2025/block-001.bin',
+        1024,
+        [{ name: 'year', value: 2025 }],
+        createFileStats(100, {})
+      );
+      const file2 = createManifestFile(
+        'data/year=2026/block-002.bin',
+        2048,
+        [{ name: 'year', value: 2026 }],
+        createFileStats(200, {})
+      );
+      const { snapshot } = appendFiles(manifest, null, [file1, file2]);
+
+      const files = getSnapshotFiles(snapshot, {
+        partitions: { year: { eq: 2026 } },
+      });
+      expect(files).toHaveLength(1);
+      expect(files[0].partitions[0].value).toBe(2026);
+    });
+  });
+
+  describe('pruneFiles (re-exported)', () => {
+    it('should filter files by partition', () => {
+      const files = [
+        createManifestFile(
+          'data/year=2025/block.bin',
+          1024,
+          [{ name: 'year', value: 2025 }],
+          createFileStats(100, {})
+        ),
+        createManifestFile(
+          'data/year=2026/block.bin',
+          1024,
+          [{ name: 'year', value: 2026 }],
+          createFileStats(100, {})
+        ),
+      ];
+
+      const pruned = pruneFiles(files, {
+        partitions: { year: { eq: 2025 } },
+      });
+      expect(pruned).toHaveLength(1);
+    });
+  });
+
+  describe('findSnapshotAsOf (re-exported)', () => {
+    it('should find snapshot at given timestamp', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file = createManifestFile('data/block.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file]);
+
+      const ref = findSnapshotAsOf(m1, s1.timestamp + 1000);
+      expect(ref?.snapshotId).toBe(s1.snapshotId);
+    });
+
+    it('should return null if no snapshot exists before timestamp', () => {
+      const { manifest } = createTable({
+        location: 'com/example/users',
+        schema: {
+          columns: [{ name: 'id', type: 'int64', nullable: false }],
+        },
+      });
+
+      const file = createManifestFile('data/block.bin', 1024, [], createFileStats(100, {}));
+      const { manifest: m1, snapshot: s1 } = appendFiles(manifest, null, [file]);
+
+      // Query before the snapshot was created
+      const ref = findSnapshotAsOf(m1, s1.timestamp - 1000);
+      expect(ref).toBeNull();
     });
   });
 

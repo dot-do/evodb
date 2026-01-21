@@ -47,7 +47,15 @@ import {
   type AggregateSpec,
 } from './query-ops.js';
 import { ValidationError } from './errors.js';
-import { type Logger, createNoopLogger } from './logging.js';
+import type { Logger } from './logging-types.js';
+
+// Inline noop logger to avoid dependency on observability package
+const noopLogger: Logger = {
+  debug(): void {},
+  info(): void {},
+  warn(): void {},
+  error(): void {},
+};
 
 // =============================================================================
 // Types
@@ -601,7 +609,7 @@ export class EvoDB {
   public readonly schema: SchemaManager;
 
   constructor(config: EvoDBConfig) {
-    this.logger = config.logger ?? createNoopLogger();
+    this.logger = config.logger ?? noopLogger;
     this.config = {
       mode: config.mode,
       storage: config.storage as EvoDBStorageBucket,

@@ -2,29 +2,36 @@
  * Branded Types Tests
  * Tests for compile-time and runtime type safety of branded ID types.
  *
+ * After evodb-3ju simplification:
+ * - BlockId and TableId remain branded with validation
+ * - SnapshotId, BatchId, WalId, SchemaId are now plain string/number types
+ *
  * These tests verify:
- * 1. Runtime validation in constructor functions
- * 2. Format validation for each ID type
- * 3. Type guards work correctly
+ * 1. Runtime validation in constructor functions (BlockId, TableId only)
+ * 2. Format validation for branded ID types
+ * 3. Type guards work correctly (BlockId, TableId only)
  * 4. Integration with makeBlockId/makeWalId etc.
+ * 5. Plain type constructors pass through without validation
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-  // Branded types
+  // Branded types (still branded)
   type BlockId,
+  type TableId,
+  // Plain types (simplified from branded - evodb-3ju)
   type SnapshotId,
   type BatchId,
   type WalId,
   type SchemaId,
-  type TableId,
-  // Validated constructors
+  // Validated constructors (BlockId, TableId only)
   blockId,
+  tableId,
+  // Pass-through constructors (deprecated, no validation)
   snapshotId,
   batchId,
   walId,
   schemaId,
-  tableId,
   // Unsafe constructors
   unsafeBlockId,
   unsafeSnapshotId,
@@ -32,18 +39,14 @@ import {
   unsafeWalId,
   unsafeSchemaId,
   unsafeTableId,
-  // Type guards
+  // Type guards (BlockId, TableId only - evodb-3ju)
   isValidBlockId,
-  isValidSnapshotId,
-  isValidBatchId,
-  isValidWalId,
-  isValidSchemaId,
   isValidTableId,
 } from '../types.js';
 import { makeBlockId, parseBlockId, makeWalId, parseWalId } from '../storage.js';
 
 // =============================================================================
-// BlockId Tests
+// BlockId Tests (still branded with validation)
 // =============================================================================
 
 describe('BlockId', () => {
@@ -116,216 +119,7 @@ describe('BlockId', () => {
 });
 
 // =============================================================================
-// WalId Tests
-// =============================================================================
-
-describe('WalId', () => {
-  describe('walId() constructor', () => {
-    it('should accept valid WalId format', () => {
-      const id = walId('wal:000000000000');
-      expect(id).toBe('wal:000000000000');
-    });
-
-    it('should accept various LSN values', () => {
-      expect(walId('wal:00000000000z')).toBe('wal:00000000000z');
-      expect(walId('wal:abcdef123456')).toBe('wal:abcdef123456');
-    });
-
-    it('should throw on invalid prefix', () => {
-      expect(() => walId('wat:000000000000')).toThrow('Invalid WalId format');
-      expect(() => walId('WAL:000000000000')).not.toThrow(); // Case insensitive
-    });
-
-    it('should throw on missing prefix', () => {
-      expect(() => walId('000000000000')).toThrow('Invalid WalId format');
-    });
-
-    it('should throw on invalid characters', () => {
-      expect(() => walId('wal:!!!')).toThrow('Invalid WalId format');
-    });
-  });
-
-  describe('unsafeWalId() constructor', () => {
-    it('should bypass validation', () => {
-      const id = unsafeWalId('not-a-wal-id');
-      expect(id).toBe('not-a-wal-id');
-    });
-  });
-
-  describe('isValidWalId()', () => {
-    it('should return true for valid formats', () => {
-      expect(isValidWalId('wal:000000000000')).toBe(true);
-      expect(isValidWalId('wal:abcdef')).toBe(true);
-    });
-
-    it('should return false for invalid formats', () => {
-      expect(isValidWalId('invalid')).toBe(false);
-      expect(isValidWalId('wal:')).toBe(false);
-      expect(isValidWalId('')).toBe(false);
-    });
-  });
-
-  describe('integration with makeWalId()', () => {
-    it('should return WalId type from makeWalId', () => {
-      const id: WalId = makeWalId(12345n);
-      expect(id.startsWith('wal:')).toBe(true);
-    });
-
-    it('should roundtrip makeWalId -> parseWalId', () => {
-      const lsn = 9876543210n;
-      const id = makeWalId(lsn);
-      const parsed = parseWalId(id);
-      expect(parsed).toBe(lsn);
-    });
-  });
-});
-
-// =============================================================================
-// SnapshotId Tests
-// =============================================================================
-
-describe('SnapshotId', () => {
-  describe('snapshotId() constructor', () => {
-    it('should accept valid SnapshotId format (ULID-like)', () => {
-      const id = snapshotId('0000000001-abcdef12');
-      expect(id).toBe('0000000001-abcdef12');
-    });
-
-    it('should accept various timestamp-random formats', () => {
-      expect(snapshotId('abc123-xyz789')).toBe('abc123-xyz789');
-      expect(snapshotId('1234567890-random')).toBe('1234567890-random');
-    });
-
-    it('should throw on invalid format - no hyphen', () => {
-      expect(() => snapshotId('nohyphen')).toThrow('Invalid SnapshotId format');
-    });
-
-    it('should throw on empty parts', () => {
-      expect(() => snapshotId('-random')).toThrow('Invalid SnapshotId format');
-      expect(() => snapshotId('timestamp-')).toThrow('Invalid SnapshotId format');
-    });
-
-    it('should throw on invalid characters', () => {
-      expect(() => snapshotId('!!!-random')).toThrow('Invalid SnapshotId format');
-    });
-  });
-
-  describe('unsafeSnapshotId() constructor', () => {
-    it('should bypass validation', () => {
-      const id = unsafeSnapshotId('any-format');
-      expect(id).toBe('any-format');
-    });
-  });
-
-  describe('isValidSnapshotId()', () => {
-    it('should return true for valid formats', () => {
-      expect(isValidSnapshotId('timestamp-random')).toBe(true);
-      expect(isValidSnapshotId('abc123-def456')).toBe(true);
-    });
-
-    it('should return false for invalid formats', () => {
-      expect(isValidSnapshotId('nohyphen')).toBe(false);
-      expect(isValidSnapshotId('')).toBe(false);
-      expect(isValidSnapshotId('-')).toBe(false);
-    });
-  });
-});
-
-// =============================================================================
-// BatchId Tests
-// =============================================================================
-
-describe('BatchId', () => {
-  describe('batchId() constructor', () => {
-    it('should accept valid BatchId format', () => {
-      const id = batchId('abc12345_123_xyz789');
-      expect(id).toBe('abc12345_123_xyz789');
-    });
-
-    it('should accept various prefix_seq_timestamp formats', () => {
-      expect(batchId('source_1_timestamp')).toBe('source_1_timestamp');
-      expect(batchId('do123_999_abc')).toBe('do123_999_abc');
-    });
-
-    it('should throw on invalid format - missing parts', () => {
-      expect(() => batchId('only_one')).toThrow('Invalid BatchId format');
-    });
-
-    it('should throw on non-numeric sequence', () => {
-      // Sequence must be numeric
-      expect(() => batchId('prefix_abc_timestamp')).toThrow('Invalid BatchId format');
-    });
-  });
-
-  describe('unsafeBatchId() constructor', () => {
-    it('should bypass validation', () => {
-      const id = unsafeBatchId('custom-format');
-      expect(id).toBe('custom-format');
-    });
-  });
-
-  describe('isValidBatchId()', () => {
-    it('should return true for valid formats', () => {
-      expect(isValidBatchId('source_123_time')).toBe(true);
-      expect(isValidBatchId('abc_0_def')).toBe(true);
-    });
-
-    it('should return false for invalid formats', () => {
-      expect(isValidBatchId('invalid')).toBe(false);
-      expect(isValidBatchId('a_b_c_d')).toBe(false);
-      expect(isValidBatchId('')).toBe(false);
-    });
-  });
-});
-
-// =============================================================================
-// SchemaId Tests
-// =============================================================================
-
-describe('SchemaId', () => {
-  describe('schemaId() constructor', () => {
-    it('should accept valid non-negative integers', () => {
-      expect(schemaId(0)).toBe(0);
-      expect(schemaId(1)).toBe(1);
-      expect(schemaId(100)).toBe(100);
-    });
-
-    it('should throw on negative numbers', () => {
-      expect(() => schemaId(-1)).toThrow('Invalid SchemaId');
-      expect(() => schemaId(-100)).toThrow('Invalid SchemaId');
-    });
-
-    it('should throw on non-integers', () => {
-      expect(() => schemaId(1.5)).toThrow('Invalid SchemaId');
-      expect(() => schemaId(NaN)).toThrow('Invalid SchemaId');
-      expect(() => schemaId(Infinity)).toThrow('Invalid SchemaId');
-    });
-  });
-
-  describe('unsafeSchemaId() constructor', () => {
-    it('should bypass validation', () => {
-      const id = unsafeSchemaId(-999);
-      expect(id).toBe(-999);
-    });
-  });
-
-  describe('isValidSchemaId()', () => {
-    it('should return true for valid values', () => {
-      expect(isValidSchemaId(0)).toBe(true);
-      expect(isValidSchemaId(1)).toBe(true);
-      expect(isValidSchemaId(Number.MAX_SAFE_INTEGER)).toBe(true);
-    });
-
-    it('should return false for invalid values', () => {
-      expect(isValidSchemaId(-1)).toBe(false);
-      expect(isValidSchemaId(1.5)).toBe(false);
-      expect(isValidSchemaId(NaN)).toBe(false);
-    });
-  });
-});
-
-// =============================================================================
-// TableId Tests
+// TableId Tests (still branded with validation)
 // =============================================================================
 
 describe('TableId', () => {
@@ -374,34 +168,145 @@ describe('TableId', () => {
 });
 
 // =============================================================================
+// WalId Tests (simplified to plain string - evodb-3ju)
+// =============================================================================
+
+describe('WalId (plain string - evodb-3ju)', () => {
+  describe('walId() constructor (deprecated, pass-through)', () => {
+    it('should accept any string without validation', () => {
+      // No longer validates format
+      expect(walId('wal:000000000000')).toBe('wal:000000000000');
+      expect(walId('any-string')).toBe('any-string');
+      expect(walId('')).toBe('');
+    });
+  });
+
+  describe('unsafeWalId() constructor (deprecated)', () => {
+    it('should pass through any value', () => {
+      const id = unsafeWalId('not-a-wal-id');
+      expect(id).toBe('not-a-wal-id');
+    });
+  });
+
+  describe('integration with makeWalId()', () => {
+    it('should return WalId type from makeWalId', () => {
+      const id: WalId = makeWalId(12345n);
+      expect(id.startsWith('wal:')).toBe(true);
+    });
+
+    it('should roundtrip makeWalId -> parseWalId', () => {
+      const lsn = 9876543210n;
+      const id = makeWalId(lsn);
+      const parsed = parseWalId(id);
+      expect(parsed).toBe(lsn);
+    });
+  });
+});
+
+// =============================================================================
+// SnapshotId Tests (simplified to plain string - evodb-3ju)
+// =============================================================================
+
+describe('SnapshotId (plain string - evodb-3ju)', () => {
+  describe('snapshotId() constructor (deprecated, pass-through)', () => {
+    it('should accept any string without validation', () => {
+      // No longer validates format
+      expect(snapshotId('0000000001-abcdef12')).toBe('0000000001-abcdef12');
+      expect(snapshotId('any-string')).toBe('any-string');
+      expect(snapshotId('nohyphen')).toBe('nohyphen');
+      expect(snapshotId('')).toBe('');
+    });
+  });
+
+  describe('unsafeSnapshotId() constructor (deprecated)', () => {
+    it('should pass through any value', () => {
+      const id = unsafeSnapshotId('any-format');
+      expect(id).toBe('any-format');
+    });
+  });
+});
+
+// =============================================================================
+// BatchId Tests (simplified to plain string - evodb-3ju)
+// =============================================================================
+
+describe('BatchId (plain string - evodb-3ju)', () => {
+  describe('batchId() constructor (deprecated, pass-through)', () => {
+    it('should accept any string without validation', () => {
+      // No longer validates format
+      expect(batchId('abc12345_123_xyz789')).toBe('abc12345_123_xyz789');
+      expect(batchId('any-string')).toBe('any-string');
+      expect(batchId('only_one')).toBe('only_one');
+      expect(batchId('')).toBe('');
+    });
+  });
+
+  describe('unsafeBatchId() constructor (deprecated)', () => {
+    it('should pass through any value', () => {
+      const id = unsafeBatchId('custom-format');
+      expect(id).toBe('custom-format');
+    });
+  });
+});
+
+// =============================================================================
+// SchemaId Tests (simplified to plain number - evodb-3ju)
+// =============================================================================
+
+describe('SchemaId (plain number - evodb-3ju)', () => {
+  describe('schemaId() constructor (deprecated, pass-through)', () => {
+    it('should accept any number without validation', () => {
+      // No longer validates format
+      expect(schemaId(0)).toBe(0);
+      expect(schemaId(1)).toBe(1);
+      expect(schemaId(100)).toBe(100);
+      expect(schemaId(-1)).toBe(-1);  // Now allowed
+      expect(schemaId(1.5)).toBe(1.5); // Now allowed
+      expect(schemaId(NaN)).toBeNaN(); // Now allowed
+    });
+  });
+
+  describe('unsafeSchemaId() constructor (deprecated)', () => {
+    it('should pass through any value', () => {
+      const id = unsafeSchemaId(-999);
+      expect(id).toBe(-999);
+    });
+  });
+});
+
+// =============================================================================
 // Type Safety Tests (Compile-time behavior documented via test structure)
 // =============================================================================
 
 describe('Type Safety', () => {
-  it('branded types are assignable to their base types', () => {
-    // BlockId, WalId, SnapshotId, BatchId, TableId extend string
+  it('branded types (BlockId, TableId) are assignable to their base types', () => {
     const block: BlockId = makeBlockId('data', 0);
-    const wal: WalId = makeWalId(0n);
-    const snapshot: SnapshotId = snapshotId('ts-random');
-    const batch: BatchId = batchId('src_1_ts');
     const table: TableId = tableId('123e4567-e89b-12d3-a456-426614174000');
 
     // These work because branded types extend string
     const blockStr: string = block;
-    const walStr: string = wal;
-    const snapshotStr: string = snapshot;
-    const batchStr: string = batch;
     const tableStr: string = table;
 
     expect(typeof blockStr).toBe('string');
+    expect(typeof tableStr).toBe('string');
+  });
+
+  it('plain types (WalId, SnapshotId, BatchId, SchemaId) are just string/number', () => {
+    // These are now plain types, not branded (evodb-3ju)
+    const wal: WalId = makeWalId(0n);
+    const snapshot: SnapshotId = snapshotId('ts-random');
+    const batch: BatchId = batchId('src_1_ts');
+    const schema: SchemaId = schemaId(1);
+
+    // Direct string/number assignment works
+    const walStr: string = wal;
+    const snapshotStr: string = snapshot;
+    const batchStr: string = batch;
+    const schemaNum: number = schema;
+
     expect(typeof walStr).toBe('string');
     expect(typeof snapshotStr).toBe('string');
     expect(typeof batchStr).toBe('string');
-    expect(typeof tableStr).toBe('string');
-
-    // SchemaId extends number
-    const schema: SchemaId = schemaId(1);
-    const schemaNum: number = schema;
     expect(typeof schemaNum).toBe('number');
   });
 
@@ -411,74 +316,54 @@ describe('Type Safety', () => {
       return `Processing block: ${id}`;
     }
 
-    function processWal(id: WalId): string {
-      return `Processing WAL: ${id}`;
-    }
-
     const block = makeBlockId('data', 0);
-    const wal = makeWalId(0n);
 
     expect(processBlock(block)).toContain('Processing block');
-    expect(processWal(wal)).toContain('Processing WAL');
   });
 
   /**
    * NOTE: The following test documents compile-time behavior.
-   * TypeScript would catch these errors at compile time:
-   *
-   * // ERROR: Argument of type 'WalId' is not assignable to parameter of type 'BlockId'
-   * const wal = makeWalId(0n);
-   * processBlock(wal);
-   *
-   * // ERROR: Argument of type 'BlockId' is not assignable to parameter of type 'WalId'
-   * const block = makeBlockId('data', 0);
-   * processWal(block);
+   * TypeScript would catch these errors at compile time for branded types:
    *
    * // ERROR: Argument of type 'string' is not assignable to parameter of type 'BlockId'
    * processBlock('plain-string');
+   *
+   * // ERROR: Argument of type 'string' is not assignable to parameter of type 'TableId'
+   * tableId('not-a-function-result');
+   *
+   * However, for plain types (WalId, SnapshotId, etc.), any string/number can be assigned.
    */
   it('documents that plain strings cannot be assigned to branded types (compile-time)', () => {
     // At runtime, these would work because branded types are just strings
-    // But TypeScript prevents this at compile time
-    // This test just documents the expected behavior
+    // But TypeScript prevents this at compile time for BlockId and TableId
+    // WalId, SnapshotId, BatchId are now just strings, so they accept any string
+    // SchemaId is now just number, so it accepts any number
     expect(true).toBe(true);
   });
 });
 
 // =============================================================================
-// Edge Cases and Error Messages
+// Edge Cases and Error Messages (for branded types only)
 // =============================================================================
 
 describe('Error Messages', () => {
   it('blockId error includes the invalid value', () => {
     try {
       blockId('bad-format');
+      expect.fail('should have thrown');
     } catch (e) {
       expect((e as Error).message).toContain('bad-format');
-    }
-  });
-
-  it('walId error includes the invalid value', () => {
-    try {
-      walId('bad-format');
-    } catch (e) {
-      expect((e as Error).message).toContain('bad-format');
-    }
-  });
-
-  it('snapshotId error includes the invalid value', () => {
-    try {
-      snapshotId('bad');
-    } catch (e) {
-      expect((e as Error).message).toContain('bad');
     }
   });
 
   it('tableId error includes the invalid value', () => {
     try {
       tableId('not-uuid');
+      expect.fail('should have thrown');
     } catch (e) {
       expect((e as Error).message).toContain('not-uuid');
     }
   });
+
+  // Note: walId, snapshotId, batchId, schemaId no longer throw errors (evodb-3ju)
 });

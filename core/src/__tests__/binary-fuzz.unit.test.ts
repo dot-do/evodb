@@ -19,6 +19,9 @@ import {
   encode,
   decode,
   unpackBits,
+  unpackBitsDense,
+  toNullArray,
+  isNullAt,
   encodeDict,
   encodeDelta,
   fastDecodeInt32,
@@ -101,7 +104,8 @@ describe('Fuzz: Bitmap Encoding (encode.ts)', () => {
 
   it('bitmap handles edge case: empty array', () => {
     const bytes = new Uint8Array(0);
-    const unpacked = unpackBits(bytes, 0);
+    // unpackBits now returns NullBitmap, use toNullArray for comparison (evodb-80q)
+    const unpacked = toNullArray(unpackBits(bytes, 0));
     expect(unpacked).toEqual([]);
   });
 
@@ -110,7 +114,8 @@ describe('Fuzz: Bitmap Encoding (encode.ts)', () => {
       fc.property(fc.boolean(), (bit) => {
         const bytes = new Uint8Array(1);
         if (bit) bytes[0] = 1;
-        const unpacked = unpackBits(bytes, 1);
+        // unpackBits now returns NullBitmap, use toNullArray for comparison (evodb-80q)
+        const unpacked = toNullArray(unpackBits(bytes, 1));
         expect(unpacked).toEqual([bit]);
       }),
       { numRuns: 10 }
@@ -128,7 +133,8 @@ describe('Fuzz: Bitmap Encoding (encode.ts)', () => {
           for (let i = 0; i < bitCount; i++) {
             if (bits[i]) bytes[i >>> 3] |= 1 << (i & 7);
           }
-          const unpacked = unpackBits(bytes, bitCount);
+          // unpackBits now returns NullBitmap, use toNullArray for comparison (evodb-80q)
+          const unpacked = toNullArray(unpackBits(bytes, bitCount));
           expect(unpacked).toEqual(bits);
         }
       ),
@@ -144,7 +150,8 @@ describe('Fuzz: Bitmap Encoding (encode.ts)', () => {
         (bytes, count) => {
           // Ensure we don't request more bits than available
           const safeCount = Math.min(count, bytes.length * 8);
-          const unpacked = unpackBits(bytes, safeCount);
+          // unpackBits now returns NullBitmap, convert for array checks (evodb-80q)
+          const unpacked = toNullArray(unpackBits(bytes, safeCount));
           expect(unpacked.length).toBe(safeCount);
           expect(unpacked.every(v => typeof v === 'boolean')).toBe(true);
         }
@@ -175,10 +182,10 @@ describe('Fuzz: Dictionary Encoding (encode.ts)', () => {
           const [encoded] = encode([column]);
           const decoded = decode(encoded, values.length);
 
-          // Verify round-trip
+          // Verify round-trip (use isNullAt for NullBitmap - evodb-80q)
           for (let i = 0; i < values.length; i++) {
             if (nulls[i]) {
-              expect(decoded.nulls[i]).toBe(true);
+              expect(isNullAt(decoded.nulls, i)).toBe(true);
             } else {
               expect(decoded.values[i]).toBe(values[i]);
             }

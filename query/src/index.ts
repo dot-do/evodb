@@ -1,13 +1,40 @@
 /**
- * @evodb/query - EvoDB Query Engine
+ * @evodb/query - Unified Query Engine Package
  *
- * Execute queries against R2-stored columnar data with:
+ * This package provides two query modes:
+ *
+ * ## Simple Mode (formerly @evodb/reader)
+ * Lightweight query engine for basic filtering, projection, and aggregation:
+ * - R2 + Cache API integration
+ * - Manifest-based table discovery
+ * - Columnar JSON block reading
+ *
+ * ## Full Mode (advanced features)
+ * Full-featured query engine with:
  * - Zone map optimization for partition pruning
  * - Bloom filter support for point lookups
  * - Edge cache integration
  * - Streaming results for large queries
+ * - Query planning and cost estimation
  *
- * @example
+ * @example Simple Mode
+ * ```typescript
+ * import { SimpleQueryEngine, type SimpleQueryConfig } from '@evodb/query';
+ *
+ * const engine = new SimpleQueryEngine({
+ *   bucket: env.R2_BUCKET,
+ *   cache: { enableCacheApi: true },
+ * });
+ *
+ * const result = await engine.query({
+ *   table: 'users',
+ *   filters: [{ column: 'status', operator: 'eq', value: 'active' }],
+ *   columns: ['id', 'name'],
+ *   limit: 100,
+ * });
+ * ```
+ *
+ * @example Full Mode
  * ```typescript
  * import { createQueryEngine, type Query } from '@evodb/query';
  *
@@ -24,6 +51,23 @@
  *
  * const result = await engine.execute(query);
  * console.log(`Found ${result.totalRowCount} users`);
+ * ```
+ *
+ * @example Unified QueryExecutor Interface
+ * ```typescript
+ * import { createSimpleQueryEngine, createQueryExecutor, type QueryExecutor } from '@evodb/query';
+ *
+ * // Both engines implement QueryExecutor interface
+ * const simple: QueryExecutor = createSimpleQueryEngine({ bucket: env.R2_BUCKET });
+ * const full: QueryExecutor = createQueryExecutor({ bucket: env.R2_BUCKET });
+ *
+ * // Use unified interface
+ * const result = await simple.execute({
+ *   table: 'users',
+ *   predicates: [{ column: 'status', operator: 'eq', value: 'active' }],
+ *   columns: ['id', 'name'],
+ *   limit: 100,
+ * });
  * ```
  */
 
@@ -416,3 +460,109 @@ export function createQueryExecutor(config: QueryEngineConfig): QueryExecutorAda
   const engine = new QueryEngine(config);
   return new QueryExecutorAdapter(engine);
 }
+
+// =============================================================================
+// Simple Query Engine Exports (formerly @evodb/reader)
+// =============================================================================
+
+export {
+  // Main class
+  SimpleQueryEngine,
+  // Factory function
+  createSimpleQueryEngine,
+  // Cache tier
+  SimpleCacheTier,
+  // Validation utilities
+  validateBlockSize,
+  validateBlockData,
+  parseAndValidateBlockData,
+  validateManifest,
+  validateTableMetadata,
+  // Error classes
+  BlockSizeValidationError,
+  BlockDataValidationError,
+  ManifestValidationError,
+  // Error codes (enums)
+  BlockSizeValidationErrorCode,
+  BlockDataValidationErrorCode,
+  ManifestValidationErrorCode,
+  // Constants
+  DEFAULT_MAX_BLOCK_SIZE,
+} from './simple-engine.js';
+
+export type {
+  // Query types
+  SimpleQueryRequest,
+  SimpleQueryResult,
+  SimpleQueryStats,
+  SimpleFilterPredicate,
+  SimpleFilterOperator,
+  SimpleSortSpec,
+  SimpleSortDirection,
+  SimpleAggregateSpec,
+  SimpleAggregateFunction,
+  // Block types
+  SimpleBlockScanRequest,
+  SimpleBlockScanResult,
+  BlockData,
+  BlockDataValidationResult,
+  // Table types
+  SimpleTableMetadata,
+  SimpleColumnSchema,
+  SimpleColumnType,
+  // Config types
+  SimpleQueryConfig,
+  SimpleCacheTierConfig,
+  SimpleCacheStats,
+  // R2 types (inline)
+  SimpleR2Bucket,
+  SimpleR2Object,
+  SimpleR2ListOptions,
+  SimpleR2Objects,
+  // Manifest type
+  ValidatedManifest,
+} from './simple-engine.js';
+
+// =============================================================================
+// Backward Compatibility Aliases (for migration from @evodb/reader)
+// =============================================================================
+
+// Re-export SimpleQueryEngine as QueryEngine alias for @evodb/reader compatibility
+// Note: The full QueryEngine is also exported above, so importing needs to be explicit
+import { SimpleQueryEngine } from './simple-engine.js';
+import type {
+  SimpleQueryConfig,
+  SimpleQueryRequest,
+  SimpleQueryResult,
+  SimpleCacheTierConfig,
+} from './simple-engine.js';
+
+/**
+ * @deprecated Use SimpleQueryEngine instead for simple mode queries.
+ * This alias is provided for backward compatibility with @evodb/reader.
+ */
+export { SimpleQueryEngine as ReaderQueryEngine };
+
+/**
+ * @deprecated Use SimpleQueryConfig instead.
+ * This alias is provided for backward compatibility with @evodb/reader.
+ */
+export type ReaderConfig = SimpleQueryConfig;
+
+/**
+ * @deprecated Use SimpleQueryRequest instead.
+ * This alias is provided for backward compatibility with @evodb/reader.
+ */
+export type QueryRequest = SimpleQueryRequest;
+
+/**
+ * @deprecated Use SimpleQueryResult instead.
+ * This alias is provided for backward compatibility with @evodb/reader.
+ */
+export type ReaderQueryResult = SimpleQueryResult;
+
+/**
+ * @deprecated Use SimpleCacheTierConfig instead.
+ * This alias is provided for backward compatibility with @evodb/reader.
+ */
+export type CacheTierConfig = SimpleCacheTierConfig;

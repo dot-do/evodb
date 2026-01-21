@@ -15,6 +15,17 @@ import { EncodingValidationError } from './errors.js';
 import { isArray, isRecord, isBoolean, isBigInt, isNumber, isString, isNullish, isUint8Array, isDate } from './guards.js';
 
 // =============================================================================
+// MODULE-LEVEL CONSTANTS
+// =============================================================================
+
+/**
+ * Shared TextEncoder instance for all encoding operations.
+ * TextEncoder is stateless and thread-safe, so reusing a single instance
+ * avoids allocation overhead in hot paths.
+ */
+const sharedTextEncoder = new TextEncoder();
+
+// =============================================================================
 // DEBUG MODE RUNTIME CHECKS
 // =============================================================================
 
@@ -331,13 +342,103 @@ function packBits(bits: boolean[]): Uint8Array {
   return bytes;
 }
 
-/** Unpack bitmap to boolean array */
-export function unpackBits(bytes: Uint8Array, count: number): boolean[] {
+/**
+ * Unpack bitmap to dense boolean array.
+ * Use this when you need the full boolean array for backward compatibility.
+ *
+ * @param bytes - The packed bitmap
+ * @param count - Total number of elements
+ * @returns Dense boolean array where true means null
+ */
+export function unpackBitsDense(bytes: Uint8Array, count: number): boolean[] {
   const bits: boolean[] = new Array(count);
   for (let i = 0; i < count; i++) {
     bits[i] = (bytes[i >>> 3] & (1 << (i & 7))) !== 0;
   }
   return bits;
+}
+
+/**
+ * Smart bitmap unpacking - automatically selects sparse or dense representation.
+ * This is the DEFAULT unpacking function (Issue: evodb-80q).
+ *
+ * Selection logic:
+ * - If null rate < 10% (SPARSE_NULL_THRESHOLD): returns SparseNullSet for memory efficiency
+ * - Otherwise: returns dense boolean array for fast random access
+ *
+ * Memory comparison for 100K elements with 10 nulls:
+ * - Dense boolean[]: ~100KB
+ * - SparseNullSet: ~80 bytes
+ *
+ * @param bytes - The packed bitmap
+ * @param count - Total number of elements
+ * @returns SparseNullSet for sparse data, boolean[] for dense data
+ */
+export function unpackBits(bytes: Uint8Array, count: number): SparseNullSet | boolean[] {
+  return unpackBitsSparse(bytes, count);
+}
+
+// =============================================================================
+// LAZY BITMAP UNPACKING (Issue: evodb-a2x)
+// =============================================================================
+
+/**
+ * Lazy bitmap interface for on-demand bit access.
+ * Avoids allocating the full boolean array upfront - ideal for sparse access patterns
+ * where only a subset of bits are needed.
+ *
+ * Memory comparison for 100K elements:
+ * - Eager unpackBits: ~100KB (boolean array allocated upfront)
+ * - LazyBitmap: ~0KB (no allocation until toArray() is called)
+ *
+ * Use cases:
+ * - Checking specific indices without full unpacking
+ * - Early termination in scan operations
+ * - Memory-constrained environments (Cloudflare Snippets: 32MB RAM)
+ */
+export interface LazyBitmap {
+  /** Get the boolean value at index i */
+  get(i: number): boolean;
+  /** Convert to full boolean array for dense access patterns */
+  toArray(): boolean[];
+  /** Total number of elements in the bitmap */
+  readonly length: number;
+}
+
+/**
+ * Create a lazy bitmap from packed bytes.
+ * Returns an object with O(1) access without allocating the full array.
+ *
+ * Performance characteristics:
+ * - get(i): O(1) time, O(1) space
+ * - toArray(): O(n) time, O(n) space (delegates to unpackBits)
+ *
+ * @param bytes - The packed bitmap bytes
+ * @param count - Total number of elements
+ * @returns LazyBitmap with get(i) method for on-demand access
+ *
+ * @example
+ * ```typescript
+ * // Sparse access - only check specific indices
+ * const lazy = unpackBitsLazy(bitmap, 100000);
+ * if (lazy.get(42)) {
+ *   // Index 42 is null
+ * }
+ *
+ * // Dense access - convert to array when needed
+ * const bits = lazy.toArray();
+ * ```
+ */
+export function unpackBitsLazy(bytes: Uint8Array, count: number): LazyBitmap {
+  return {
+    length: count,
+    get(i: number): boolean {
+      return (bytes[i >>> 3] & (1 << (i & 7))) !== 0;
+    },
+    toArray(): boolean[] {
+      return unpackBitsDense(bytes, count);
+    },
+  };
 }
 
 // =============================================================================
@@ -413,6 +514,81 @@ export class SparseNullSet implements Iterable<boolean> {
   }
 }
 
+// =============================================================================
+// NULL BITMAP HELPER FUNCTIONS (Issue: evodb-80q)
+// =============================================================================
+
+/**
+ * Type alias for null bitmap - can be sparse or dense representation.
+ * Re-exported from types.ts for convenience.
+ */
+export type NullBitmap = SparseNullSet | boolean[];
+
+/**
+ * Check if a specific index is null in a NullBitmap.
+ * Works with both SparseNullSet and boolean[] representations.
+ *
+ * @param nulls - The null bitmap (sparse or dense)
+ * @param index - The index to check
+ * @returns true if the value at index is null
+ *
+ * @example
+ * ```typescript
+ * const nulls = unpackBits(bitmap, count);
+ * if (isNullAt(nulls, 42)) {
+ *   // Value at index 42 is null
+ * }
+ * ```
+ */
+export function isNullAt(nulls: NullBitmap, index: number): boolean {
+  if (nulls instanceof SparseNullSet) {
+    return nulls.isNull(index);
+  }
+  return nulls[index];
+}
+
+/**
+ * Convert a NullBitmap to a dense boolean array.
+ * If already a boolean[], returns as-is. If SparseNullSet, converts to array.
+ *
+ * @param nulls - The null bitmap (sparse or dense)
+ * @returns Dense boolean array
+ */
+export function toNullArray(nulls: NullBitmap): boolean[] {
+  if (nulls instanceof SparseNullSet) {
+    return nulls.toArray();
+  }
+  return nulls;
+}
+
+/**
+ * Check if any value in the null bitmap is null.
+ * Optimized for both sparse and dense representations.
+ *
+ * @param nulls - The null bitmap (sparse or dense)
+ * @returns true if at least one value is null
+ */
+export function hasAnyNulls(nulls: NullBitmap): boolean {
+  if (nulls instanceof SparseNullSet) {
+    return nulls.nullCount > 0;
+  }
+  return nulls.some(n => n);
+}
+
+/**
+ * Count the number of null values in a NullBitmap.
+ * Optimized for both sparse and dense representations.
+ *
+ * @param nulls - The null bitmap (sparse or dense)
+ * @returns Number of null values
+ */
+export function countNulls(nulls: NullBitmap): number {
+  if (nulls instanceof SparseNullSet) {
+    return nulls.nullCount;
+  }
+  return nulls.filter(n => n).length;
+}
+
 /**
  * Count nulls in bitmap efficiently (O(n/8) byte operations)
  */
@@ -479,7 +655,7 @@ export function unpackBitsSparse(bytes: Uint8Array, count: number): SparseNullSe
   }
 
   // Fall back to dense array for high null rates
-  return unpackBits(bytes, count);
+  return unpackBitsDense(bytes, count);
 }
 
 /**
@@ -605,8 +781,7 @@ function encodeDictOptimized(values: string[], nulls: boolean[]): Uint8Array {
   }
 
   const entries = [...dict.keys()];
-  const encoder = new TextEncoder();
-  const encoded = entries.map(s => encoder.encode(s));
+  const encoded = entries.map(s => sharedTextEncoder.encode(s));
   const totalLen = encoded.reduce((a, b) => a + b.length + 2, 0);
 
   const result = new Uint8Array(4 + totalLen + indices.length * 2);
@@ -662,7 +837,6 @@ export { encodeDeltaTypedArray as encodeDelta };
 function encodeRLE(col: Column): Uint8Array {
   const chunks: Uint8Array[] = [];
   let i = 0;
-  const encoder = new TextEncoder();
 
   while (i < col.values.length) {
     const v = col.values[i];
@@ -671,7 +845,7 @@ function encodeRLE(col: Column): Uint8Array {
       count++;
     }
 
-    const valueBytes = encodeValue(v, col.type, encoder);
+    const valueBytes = encodeValue(v, col.type, sharedTextEncoder);
     const chunk = new Uint8Array(4 + 1 + valueBytes.length);
     const view = new DataView(chunk.buffer);
     view.setUint32(0, count, true);
@@ -723,12 +897,11 @@ function encodePlainTypedArray(col: Column): Uint8Array {
 
 /** Plain encoding */
 function encodePlain(col: Column): Uint8Array {
-  const encoder = new TextEncoder();
   const chunks: Uint8Array[] = [];
 
   for (let i = 0; i < col.values.length; i++) {
     if (col.nulls[i]) continue;
-    chunks.push(encodeValue(col.values[i], col.type, encoder));
+    chunks.push(encodeValue(col.values[i], col.type, sharedTextEncoder));
   }
 
   return concatArrays(chunks);
@@ -854,18 +1027,22 @@ export function validateBufferCapacity(
   }
 }
 
-/** Decode column data */
+/**
+ * Decode column data.
+ * Uses smart null bitmap unpacking - returns SparseNullSet for sparse data (Issue: evodb-80q).
+ */
 export function decode(encoded: EncodedColumn, rowCount: number): Column {
   // Validate count parameter (Issue: evodb-imj)
   validateDecodeCount(rowCount, 'decode');
 
+  // Smart unpack: returns SparseNullSet for sparse data, boolean[] for dense (Issue: evodb-80q)
   const nulls = unpackBits(encoded.nullBitmap, rowCount);
   const values = decodeData(encoded.data, encoded.encoding, encoded.type, nulls, rowCount);
-  return { path: encoded.path, type: encoded.type, nullable: nulls.some(n => n), values, nulls };
+  return { path: encoded.path, type: encoded.type, nullable: hasAnyNulls(nulls), values, nulls };
 }
 
 /** Decode data based on encoding */
-function decodeData(data: Uint8Array, encoding: Encoding, type: Type, nulls: boolean[], rowCount: number): unknown[] {
+function decodeData(data: Uint8Array, encoding: Encoding, type: Type, nulls: NullBitmap, rowCount: number): unknown[] {
   if (data.length === 0) return new Array(rowCount).fill(null);
 
   switch (encoding) {
@@ -879,7 +1056,7 @@ function decodeData(data: Uint8Array, encoding: Encoding, type: Type, nulls: boo
 }
 
 /** Decode dictionary */
-function decodeDict(data: Uint8Array, _nulls: boolean[], rowCount: number): unknown[] {
+function decodeDict(data: Uint8Array, _nulls: NullBitmap, rowCount: number): unknown[] {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const decoder = new TextDecoder();
   let offset = 0;
@@ -922,7 +1099,7 @@ function decodeDict(data: Uint8Array, _nulls: boolean[], rowCount: number): unkn
 }
 
 /** Decode delta */
-function decodeDelta(data: Uint8Array, type: Type, nulls: boolean[], rowCount: number): unknown[] {
+function decodeDelta(data: Uint8Array, type: Type, nulls: NullBitmap, rowCount: number): unknown[] {
   if (data.length === 0) return new Array(rowCount).fill(null);
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -930,8 +1107,10 @@ function decodeDelta(data: Uint8Array, type: Type, nulls: boolean[], rowCount: n
   const values: unknown[] = [];
   let offset = 0;
 
-  // Count non-null values
-  const nonNullCount = nulls.filter(n => !n).length;
+  // Count non-null values (use helper for NullBitmap compatibility)
+  const nonNullCount = (nulls instanceof SparseNullSet)
+    ? nulls.totalCount - nulls.nullCount
+    : nulls.filter(n => !n).length;
   if (nonNullCount === 0) return new Array(rowCount).fill(null);
 
   // Read first value
@@ -940,7 +1119,7 @@ function decodeDelta(data: Uint8Array, type: Type, nulls: boolean[], rowCount: n
 
   let valueIdx = 0;
   for (let i = 0; i < rowCount; i++) {
-    if (nulls[i]) {
+    if (isNullAt(nulls, i)) {
       values.push(null);
       continue;
     }
@@ -980,14 +1159,14 @@ function decodeRLE(data: Uint8Array, type: Type, rowCount: number): unknown[] {
 }
 
 /** Decode plain */
-function decodePlain(data: Uint8Array, type: Type, nulls: boolean[], rowCount: number): unknown[] {
+function decodePlain(data: Uint8Array, type: Type, nulls: NullBitmap, rowCount: number): unknown[] {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const decoder = new TextDecoder();
   const values: unknown[] = [];
   let offset = 0;
 
   for (let i = 0; i < rowCount; i++) {
-    if (nulls[i]) { values.push(null); continue; }
+    if (isNullAt(nulls, i)) { values.push(null); continue; }
     values.push(decodeValue(data, offset, type, view, decoder));
     offset += valueSize(type, data, offset, view);
   }

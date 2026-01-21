@@ -49,6 +49,11 @@ export {
   evaluateFilter,
   evaluateFilters,
   createFilterEvaluator,
+  // Compiled filter operations (performance optimization)
+  type CompiledFilter,
+  compileFilters,
+  evaluateCompiledFilters,
+  getNestedValueFast,
   // Sort operations
   sortRows,
   limitRows,
@@ -99,15 +104,9 @@ export {
 // Query Engine Auto-Selection
 export {
   // Types
-  QueryComplexity,
   EngineType,
-  type QueryComplexityAnalysis,
   type EngineSelectionResult,
   // Core functions
-  analyzeQueryComplexity,
   selectQueryEngine,
-  // Utility functions
-  wouldBenefitFromZoneMaps,
-  wouldBenefitFromBloomFilters,
-  getSelectionDescription,
+  needsQueryEngine,
 } from '../query-engine-selector.js';

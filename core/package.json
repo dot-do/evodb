@@ -77,10 +77,15 @@
     "./tracing": {
       "types": "./dist/tracing/index.d.ts",
       "import": "./dist/tracing/index.js"
+    },
+    "./metrics-types": {
+      "types": "./dist/metrics-types.d.ts",
+      "import": "./dist/metrics-types.js"
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "README.md"
   ],
   "scripts": {
@@ -107,10 +112,12 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.41",
     "@cloudflare/workers-types": "^4.20260118.0",
+    "@evodb/test-utils": "workspace:*",
     "@vitest/coverage-istanbul": "^2.1.0",
     "fast-check": "^4.5.3",
     "typescript": "^5.3.0",
     "vitest": "^2.1.0",
     "wrangler": "^3.0.0"
-  }
+  },
+  "sideEffects": false
 }

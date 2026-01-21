@@ -21,6 +21,7 @@
   },
   "workspaces": [
     "core",
+    "observability",
     "rpc",
     "lakehouse",
     "writer",

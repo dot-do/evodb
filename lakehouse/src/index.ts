@@ -233,24 +233,10 @@ export {
   addSchema,
   setCurrentSchema,
 
-  // Compaction (basic)
-  selectFilesForCompaction,
-  compact,
-
-  // Enhanced compaction
-  generateCompactionPlan,
-  planGroupCompaction,
-  analyzeCompaction,
-  createCompactionCommit,
-  type CompactionPlan,
-  type CompactionGroup,
-  type CompactionPlanOptions,
-  type CompactionResult,
-  type CompactionAnalysis,
-
   // Query
   queryFiles,
   getSnapshot,
+  getSnapshotFiles,
 
   // Properties
   setProperty,
@@ -270,6 +256,27 @@ export {
   generateTimePartitionedPath,
   ManifestError,
 } from './manifest.js';
+
+// =============================================================================
+// Compaction Operations
+// =============================================================================
+
+export {
+  // Basic compaction
+  selectFilesForCompaction,
+  compact,
+
+  // Enhanced compaction
+  generateCompactionPlan,
+  planGroupCompaction,
+  analyzeCompaction,
+  createCompactionCommit,
+  type CompactionPlan,
+  type CompactionGroup,
+  type CompactionPlanOptions,
+  type CompactionResult,
+  type CompactionAnalysis,
+} from './compaction.js';
 
 // =============================================================================
 // R2 Storage

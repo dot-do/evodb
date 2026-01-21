@@ -40,6 +40,17 @@ describe('EvoDBError base class', () => {
     expect(error.stack).toBeDefined();
     expect(error.stack).toContain('EvoDBError');
   });
+
+  it('should support optional details property', () => {
+    const details = { path: 'users.name', index: 5 };
+    const error = new EvoDBError('Test error', 'TEST_ERROR', details);
+    expect(error.details).toEqual(details);
+  });
+
+  it('should have undefined details when not provided', () => {
+    const error = new EvoDBError('Test error', 'TEST_ERROR');
+    expect(error.details).toBeUndefined();
+  });
 });
 
 describe('QueryError', () => {
@@ -124,6 +135,20 @@ describe('ValidationError', () => {
     const error = new ValidationError("Field 'name' is required");
     expect(error.message).toBe("Field 'name' is required");
   });
+
+  it('should support encoding validation details', () => {
+    const details = {
+      path: 'user.age',
+      index: 2,
+      expectedType: 'Int32',
+      actualType: 'string',
+      actualValue: 'not a number',
+    };
+    const error = new ValidationError('Type mismatch at index 2', 'ENCODING_VALIDATION_ERROR', details);
+    expect(error.code).toBe('ENCODING_VALIDATION_ERROR');
+    expect(error.details).toEqual(details);
+    expect(error.details?.path).toBe('user.age');
+  });
 });
 
 describe('StorageError', () => {
@@ -151,6 +176,18 @@ describe('StorageError', () => {
   it('should have the correct message', () => {
     const error = new StorageError('Failed to write block to storage');
     expect(error.message).toBe('Failed to write block to storage');
+  });
+
+  it('should support corruption details', () => {
+    const details = {
+      expected: 0x434A4C42,
+      actual: 0x00000000,
+      offset: 0,
+    };
+    const error = new StorageError('Invalid magic number', 'INVALID_MAGIC', details);
+    expect(error.code).toBe('INVALID_MAGIC');
+    expect(error.details).toEqual(details);
+    expect(error.details?.expected).toBe(0x434A4C42);
   });
 });
 
@@ -309,6 +346,47 @@ describe('Error codes', () => {
   });
 });
 
+describe('Consolidated error hierarchy', () => {
+  it('should have 4 essential error types extending EvoDBError', () => {
+    // Core 4 types that extend EvoDBError directly
+    expect(new QueryError('test')).toBeInstanceOf(EvoDBError);
+    expect(new TimeoutError('test')).toBeInstanceOf(EvoDBError);
+    expect(new ValidationError('test')).toBeInstanceOf(EvoDBError);
+    expect(new StorageError('test')).toBeInstanceOf(EvoDBError);
+  });
+
+  it('should have EncodingValidationError as ValidationError alias', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const error = new EncodingValidationError('test');
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.code).toBe('ENCODING_VALIDATION_ERROR');
+  });
+
+  it('should have CorruptedBlockError as StorageError alias', () => {
+    const error = new CorruptedBlockError('test');
+    expect(error).toBeInstanceOf(StorageError);
+    expect(error.code).toBe('CORRUPTED_BLOCK');
+  });
+
+  it('should support details property on all error types', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+
+    const queryError = new QueryError('test', 'QUERY_ERROR', { table: 'users' });
+    const timeoutError = new TimeoutError('test', 'TIMEOUT_ERROR', { duration: 30000 });
+    const validationError = new ValidationError('test', 'VALIDATION_ERROR', { field: 'email' });
+    const storageError = new StorageError('test', 'STORAGE_ERROR', { path: '/data/block.bin' });
+    const encodingError = new EncodingValidationError('test', 'ENCODING_VALIDATION_ERROR', { path: 'user.age' });
+    const corruptedError = new CorruptedBlockError('test', 'CORRUPTED_BLOCK', { expected: 0x434A4C42 });
+
+    expect(queryError.details?.table).toBe('users');
+    expect(timeoutError.details?.duration).toBe(30000);
+    expect(validationError.details?.field).toBe('email');
+    expect(storageError.details?.path).toBe('/data/block.bin');
+    expect(encodingError.details?.path).toBe('user.age');
+    expect(corruptedError.details?.expected).toBe(0x434A4C42);
+  });
+});
+
 describe('CorruptedBlockError', () => {
   it('should extend StorageError', () => {
     const error = new CorruptedBlockError('Block corrupted');
@@ -364,5 +442,61 @@ describe('CorruptedBlockError', () => {
       }
     }
     expect(caughtAsStorage).toBe(true);
+  });
+});
+
+describe('EncodingValidationError', () => {
+  it('should extend ValidationError', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const error = new EncodingValidationError('Type mismatch');
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toBeInstanceOf(EvoDBError);
+    expect(error).toBeInstanceOf(Error);
+  });
+
+  it('should have name set to EncodingValidationError', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const error = new EncodingValidationError('Type mismatch');
+    expect(error.name).toBe('EncodingValidationError');
+  });
+
+  it('should have default code ENCODING_VALIDATION_ERROR', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const error = new EncodingValidationError('Type mismatch');
+    expect(error.code).toBe('ENCODING_VALIDATION_ERROR');
+  });
+
+  it('should allow custom error code', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const error = new EncodingValidationError('Null not allowed', 'NULL_NOT_ALLOWED');
+    expect(error.code).toBe('NULL_NOT_ALLOWED');
+  });
+
+  it('should support encoding validation details', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    const details = {
+      path: 'user.age',
+      index: 2,
+      expectedType: 'Int32',
+      actualType: 'string',
+      actualValue: 'not a number',
+    };
+    const error = new EncodingValidationError('Type mismatch at index 2', 'TYPE_MISMATCH', details);
+    expect(error.details).toEqual(details);
+    expect(error.details?.path).toBe('user.age');
+    expect(error.details?.expectedType).toBe('Int32');
+  });
+
+  it('should be catchable as ValidationError', async () => {
+    const { EncodingValidationError } = await import('../errors.js');
+    let caughtAsValidation = false;
+    try {
+      throw new EncodingValidationError('Type mismatch');
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        caughtAsValidation = true;
+      }
+    }
+    expect(caughtAsValidation).toBe(true);
   });
 });

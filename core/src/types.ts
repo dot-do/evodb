@@ -6,43 +6,42 @@
 
 /**
  * Branded type pattern for compile-time type safety.
- * Prevents accidentally passing a SnapshotId where BlockId is expected.
+ * Only used for the most critical identifiers (BlockId, TableId) where
+ * type confusion could cause data corruption or integrity issues.
+ *
+ * Other identifiers (SnapshotId, BatchId, WalId, SchemaId) use plain
+ * string/number types for simplicity - TDD issue evodb-3ju.
  */
 type Brand<T, B> = T & { readonly __brand: B };
 
-/** Block identifier (prefix:timestamp:seq format) */
+/** Block identifier (prefix:timestamp:seq format) - branded for data integrity */
 export type BlockId = Brand<string, 'BlockId'>;
 
-/** Snapshot identifier (ULID-like format) */
-export type SnapshotId = Brand<string, 'SnapshotId'>;
-
-/** Batch identifier for RPC tracking */
-export type BatchId = Brand<string, 'BatchId'>;
-
-/** WAL entry identifier (wal:lsn format) */
-export type WalId = Brand<string, 'WalId'>;
-
-/** Schema version identifier */
-export type SchemaId = Brand<number, 'SchemaId'>;
-
-/** Table identifier (UUID format) */
+/** Table identifier (UUID format) - branded for referential integrity */
 export type TableId = Brand<string, 'TableId'>;
 
 // =============================================================================
-// Branded Type Constructors
+// Plain Type Aliases (simplified from branded types - evodb-3ju)
+// =============================================================================
+
+/** Snapshot identifier (ULID-like format) */
+export type SnapshotId = string;
+
+/** Batch identifier for RPC tracking */
+export type BatchId = string;
+
+/** WAL entry identifier (wal:lsn format) */
+export type WalId = string;
+
+/** Schema version identifier */
+export type SchemaId = number;
+
+// =============================================================================
+// Branded Type Constructors (BlockId, TableId only - evodb-3ju)
 // =============================================================================
 
 /** BlockId format: prefix:timestamp(base36):seq(base36) */
 const BLOCK_ID_REGEX = /^[a-z0-9_-]+:[0-9a-z]+:[0-9a-z]+$/i;
-
-/** WalId format: wal:lsn(base36) */
-const WAL_ID_REGEX = /^wal:[0-9a-z]+$/i;
-
-/** SnapshotId format: timestamp(base36)-random */
-const SNAPSHOT_ID_REGEX = /^[0-9a-z]+-[0-9a-z]+$/i;
-
-/** BatchId format: sourcePrefix_seq_timestamp(base36) */
-const BATCH_ID_REGEX = /^[0-9a-z]+_[0-9]+_[0-9a-z]+$/i;
 
 /** UUID format for TableId */
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -67,78 +66,6 @@ export function unsafeBlockId(id: string): BlockId {
 }
 
 /**
- * Create a SnapshotId from a string.
- * Validates format: timestamp-random (ULID-like)
- */
-export function snapshotId(id: string): SnapshotId {
-  if (!SNAPSHOT_ID_REGEX.test(id)) {
-    throw new Error(`Invalid SnapshotId format: ${id}. Expected format: timestamp-random`);
-  }
-  return id as SnapshotId;
-}
-
-/**
- * Create a SnapshotId without validation (for internal use).
- */
-export function unsafeSnapshotId(id: string): SnapshotId {
-  return id as SnapshotId;
-}
-
-/**
- * Create a BatchId from a string.
- * Validates format: prefix_seq_timestamp
- */
-export function batchId(id: string): BatchId {
-  if (!BATCH_ID_REGEX.test(id)) {
-    throw new Error(`Invalid BatchId format: ${id}. Expected format: prefix_seq_timestamp`);
-  }
-  return id as BatchId;
-}
-
-/**
- * Create a BatchId without validation (for internal use).
- */
-export function unsafeBatchId(id: string): BatchId {
-  return id as BatchId;
-}
-
-/**
- * Create a WalId from a string.
- * Validates format: wal:lsn
- */
-export function walId(id: string): WalId {
-  if (!WAL_ID_REGEX.test(id)) {
-    throw new Error(`Invalid WalId format: ${id}. Expected format: wal:lsn`);
-  }
-  return id as WalId;
-}
-
-/**
- * Create a WalId without validation (for internal use).
- */
-export function unsafeWalId(id: string): WalId {
-  return id as WalId;
-}
-
-/**
- * Create a SchemaId from a number.
- * Validates that it's a non-negative integer.
- */
-export function schemaId(id: number): SchemaId {
-  if (!Number.isInteger(id) || id < 0) {
-    throw new Error(`Invalid SchemaId: ${id}. Must be a non-negative integer.`);
-  }
-  return id as SchemaId;
-}
-
-/**
- * Create a SchemaId without validation (for internal use).
- */
-export function unsafeSchemaId(id: number): SchemaId {
-  return id as SchemaId;
-}
-
-/**
  * Create a TableId from a string.
  * Validates UUID format.
  */
@@ -157,32 +84,83 @@ export function unsafeTableId(id: string): TableId {
 }
 
 // =============================================================================
-// Type Guards for Branded Types
+// Plain Type Constructors (simplified - evodb-3ju)
+// These functions are kept for backward compatibility but now just pass through
+// the input value without validation. The types are no longer branded.
+// =============================================================================
+
+/**
+ * Create a SnapshotId from a string.
+ * @deprecated No longer validates - SnapshotId is now a plain string type (evodb-3ju)
+ */
+export function snapshotId(id: string): SnapshotId {
+  return id;
+}
+
+/**
+ * Create a SnapshotId without validation (for internal use).
+ * @deprecated SnapshotId is now a plain string type (evodb-3ju)
+ */
+export function unsafeSnapshotId(id: string): SnapshotId {
+  return id;
+}
+
+/**
+ * Create a BatchId from a string.
+ * @deprecated No longer validates - BatchId is now a plain string type (evodb-3ju)
+ */
+export function batchId(id: string): BatchId {
+  return id;
+}
+
+/**
+ * Create a BatchId without validation (for internal use).
+ * @deprecated BatchId is now a plain string type (evodb-3ju)
+ */
+export function unsafeBatchId(id: string): BatchId {
+  return id;
+}
+
+/**
+ * Create a WalId from a string.
+ * @deprecated No longer validates - WalId is now a plain string type (evodb-3ju)
+ */
+export function walId(id: string): WalId {
+  return id;
+}
+
+/**
+ * Create a WalId without validation (for internal use).
+ * @deprecated WalId is now a plain string type (evodb-3ju)
+ */
+export function unsafeWalId(id: string): WalId {
+  return id;
+}
+
+/**
+ * Create a SchemaId from a number.
+ * @deprecated No longer validates - SchemaId is now a plain number type (evodb-3ju)
+ */
+export function schemaId(id: number): SchemaId {
+  return id;
+}
+
+/**
+ * Create a SchemaId without validation (for internal use).
+ * @deprecated SchemaId is now a plain number type (evodb-3ju)
+ */
+export function unsafeSchemaId(id: number): SchemaId {
+  return id;
+}
+
+// =============================================================================
+// Type Guards (BlockId, TableId only - evodb-3ju)
+// Validators for the simplified types are removed per TDD issue evodb-3ju.
 // =============================================================================
 
 /** Check if a string is a valid BlockId format */
 export function isValidBlockId(id: string): boolean {
   return BLOCK_ID_REGEX.test(id);
-}
-
-/** Check if a string is a valid SnapshotId format */
-export function isValidSnapshotId(id: string): boolean {
-  return SNAPSHOT_ID_REGEX.test(id);
-}
-
-/** Check if a string is a valid BatchId format */
-export function isValidBatchId(id: string): boolean {
-  return BATCH_ID_REGEX.test(id);
-}
-
-/** Check if a string is a valid WalId format */
-export function isValidWalId(id: string): boolean {
-  return WAL_ID_REGEX.test(id);
-}
-
-/** Check if a number is a valid SchemaId */
-export function isValidSchemaId(id: number): boolean {
-  return Number.isInteger(id) && id >= 0;
 }
 
 /** Check if a string is a valid TableId (UUID) format */
@@ -217,13 +195,28 @@ export const enum Encoding {
   Delta = 3,
 }
 
+/**
+ * Null bitmap representation - can be dense (boolean[]) or sparse (SparseNullSet).
+ * Sparse representation is used when null rate < 10% for memory efficiency.
+ * Both representations support index-based null checking:
+ * - boolean[]: nulls[i] returns true if null
+ * - SparseNullSet: nulls.isNull(i) returns true if null
+ *
+ * For iteration, both are Iterable<boolean>.
+ * For backward compatibility, SparseNullSet.toArray() converts to boolean[].
+ *
+ * @see SparseNullSet in encode.ts for sparse implementation
+ * @see SPARSE_NULL_THRESHOLD for the 10% threshold constant
+ */
+export type NullBitmap = boolean[] | { isNull(index: number): boolean; toArray(): boolean[]; length: number };
+
 /** Column definition */
 export interface Column {
   path: string;        // Dot-notation path (e.g., "user.name")
   type: Type;
   nullable: boolean;
   values: unknown[];   // Raw values before encoding
-  nulls: boolean[];    // Null bitmap
+  nulls: NullBitmap;   // Null bitmap (dense or sparse representation)
 }
 
 /** Encoded column */

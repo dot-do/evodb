@@ -21,6 +21,7 @@ export {
 
   // Core interfaces
   type Column,
+  type NullBitmap,  // Null bitmap type (sparse or dense representation - evodb-80q)
   type EncodedColumn,
   type ColumnStats,
   type BlockHeader,
@@ -54,12 +55,8 @@ export {
   unsafeSchemaId,
   unsafeTableId,
 
-  // Type guards for branded types
+  // Type guards for branded types (BlockId, TableId only - evodb-3ju)
   isValidBlockId,
-  isValidSnapshotId,
-  isValidBatchId,
-  isValidWalId,
-  isValidSchemaId,
   isValidTableId,
 
   // Exhaustiveness helper

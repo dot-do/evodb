@@ -1,35 +1,19 @@
 /**
- * @evodb/core/logging - Structured logging
+ * @evodb/core/logging - Logging Type Definitions
  *
- * This submodule exports structured logging utilities including:
- * - Logger interface
- * - Console logger
- * - Test logger (captures logs for assertions)
- * - No-op logger (for production)
+ * This submodule exports only type definitions for logging.
+ * Full implementation is available in @evodb/observability.
  *
  * @module logging
  */
 
-export {
-  // Types
-  type Logger,
-  type LogLevel,
-  type LogEntry,
-  type LoggerConfig,
-  type ConsoleLoggerConfig,
-  type TestLogger,
-  type LogContext,
-  type LogContextValue,
-  // Type guards
-  isLogContext,
-  isLogContextValue,
-  // Factory functions
-  createLogger,
-  createConsoleLogger,
-  createNoopLogger,
-  createTestLogger,
-  // Context helpers
-  withContext,
-  // Constants and utilities
-  LogLevels,
-} from '../logging.js';
+export type {
+  Logger,
+  LogLevel,
+  LogEntry,
+  LoggerConfig,
+  ConsoleLoggerConfig,
+  TestLogger,
+  LogContext,
+  LogContextValue,
+} from '../logging-types.js';

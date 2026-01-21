@@ -20,7 +20,7 @@
 //   import { KB, MB, GB } from '@evodb/core/constants';
 //   import { EvoDBError, QueryError } from '@evodb/core/errors';
 //   import { isArray, isRecord } from '@evodb/core/guards';
-//   import { createLogger } from '@evodb/core/logging';
+//   import { Logger } from '@evodb/core/logging'; // types only
 
 // =============================================================================
 // Errors (typed exception classes)
@@ -116,19 +116,70 @@ export * from './constants/index.js';
 export * from './guards/index.js';
 
 // =============================================================================
-// Structured Logging
+// Structured Logging Types
+// Types only - full implementation available in @evodb/observability
 // =============================================================================
 
-export * from './logging/index.js';
+export type {
+  Logger,
+  LogLevel,
+  LogEntry,
+  LoggerConfig,
+  ConsoleLoggerConfig,
+  TestLogger,
+  LogContext,
+  LogContextValue,
+} from './logging-types.js';
 
 // =============================================================================
-// Observability Metrics (Prometheus export)
+// Observability Metrics Types
+// Types only - full implementation available in @evodb/observability
 // =============================================================================
 
-export * from './metrics.js';
+export type {
+  MetricLabels,
+  MetricType,
+  Metric,
+  Counter,
+  LabeledCounter,
+  Gauge,
+  LabeledGauge,
+  HistogramData,
+  TimerEnd,
+  Histogram,
+  LabeledHistogram,
+  CounterConfig,
+  GaugeConfig,
+  HistogramConfig,
+  MetricsRegistry,
+  EvoDBMetricsCollection,
+} from './metrics-types.js';
 
 // =============================================================================
-// Distributed Tracing (OpenTelemetry compatible)
+// Distributed Tracing Types
+// Types only - full implementation available in @evodb/observability
 // =============================================================================
 
-export * from './tracing/index.js';
+export {
+  // Types
+  type Span,
+  type SpanContext,
+  type SpanStatus,
+  type SpanKind,
+  type SpanEvent,
+  type SpanOptions,
+  type AttributeValue,
+  type TracingConfig,
+  type TracingContext,
+  type TestTracingContext,
+  type TraceExporter,
+  type InjectOptions,
+  type SpanStatusCodeType,
+  // OTEL types
+  type OTELSpan,
+  type OTELAttribute,
+  type OTELEvent,
+  // Constants
+  SpanStatusCode,
+  SpanKinds,
+} from './tracing-types.js';

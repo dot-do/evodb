@@ -1,18 +1,14 @@
 /**
  * @evodb/core/schema - Schema operations
  *
- * This submodule exports schema inference, evolution, and migration
- * functionality.
+ * This submodule exports schema inference and validation functionality.
+ * Serialization/deserialization is handled by the manifest layer.
  *
  * @module schema
  */
 
 export {
   inferSchema,
-  serializeSchema,
-  deserializeSchema,
-  isCompatible,
-  migrateColumns,
-  schemaDiff,
-  type SchemaDiff,
+  isSchemaCompatible,
+  isCompatible, // deprecated alias
 } from '../schema.js';

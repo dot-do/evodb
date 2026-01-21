@@ -7,13 +7,17 @@
  * Issue: pocs-k52r - Previous implementation cleared entire pool at 10K entries,
  * causing performance degradation due to cache thrashing.
  *
- * Solution: LRU eviction using Map's insertion order (oldest first),
- * with move-to-end on access to maintain recency.
+ * Solution: LRU eviction using doubly-linked list for O(1) move-to-end on access.
  *
  * Issue: evodb-4dt - Memory leak prevention features added:
  * - maxStringLength: Reject strings exceeding this length (prevents unbounded memory)
  * - maxMemoryBytes: Limit total memory usage (not just entry count)
  * - ttlMs: Time-to-live for entries (prevents stale entry accumulation)
+ *
+ * Issue: evodb-wvz - Optimized cache hit handling:
+ * - Doubly-linked list for O(1) move-to-end (avoids Map delete+set pattern)
+ * - In-place lastAccess update (avoids creating new objects on hit)
+ * - At 90%+ hit rates, this significantly reduces overhead
  *
  * @module string-intern-pool
  */
@@ -55,15 +59,23 @@ export interface StringPoolStats {
 }
 
 /**
- * Internal cache entry with metadata for TTL support
+ * Node in the doubly-linked list for O(1) LRU operations
+ *
+ * Issue: evodb-wvz - Using a doubly-linked list avoids the Map delete+set
+ * pattern on cache hits. Moving a node to the tail is O(1) pointer updates
+ * instead of O(1) amortized rehashing.
  */
-interface CacheEntry {
-  /** The interned string value */
-  value: string;
+interface LRUNode {
+  /** The string key (same as the interned string value) */
+  key: string;
   /** Timestamp when the entry was last accessed (for TTL) */
   lastAccess: number;
   /** Size of the string in bytes (approximate) */
   byteSize: number;
+  /** Previous node in LRU order (more recently used) */
+  prev: LRUNode | null;
+  /** Next node in LRU order (less recently used) */
+  next: LRUNode | null;
 }
 
 /**
@@ -73,10 +85,10 @@ interface CacheEntry {
  * for identical strings. Uses LRU eviction when the pool reaches
  * maximum capacity.
  *
- * JavaScript's Map maintains insertion order, which we leverage for LRU:
- * - New entries go to the end
- * - Accessed entries are deleted and re-inserted (moved to end)
- * - Eviction removes from the beginning (oldest)
+ * Implementation uses a doubly-linked list for O(1) LRU operations:
+ * - New entries are added at the tail (most recent)
+ * - Accessed entries are moved to tail via pointer updates (no Map operations)
+ * - Eviction removes from head (least recent) in O(1)
  *
  * Memory Leak Prevention Features:
  * - maxStringLength: Skip interning strings that are too long
@@ -99,7 +111,15 @@ interface CacheEntry {
  * ```
  */
 export class LRUStringPool {
-  private cache: Map<string, CacheEntry>;
+  /** Map for O(1) lookup by string key */
+  private cache: Map<string, LRUNode>;
+
+  /** Head of doubly-linked list (least recently used) */
+  private head: LRUNode | null = null;
+
+  /** Tail of doubly-linked list (most recently used) */
+  private tail: LRUNode | null = null;
+
   private _maxSize: number;
   private _memoryBytes = 0;
 
@@ -140,6 +160,80 @@ export class LRUStringPool {
   }
 
   /**
+   * Move a node to the tail (most recently used position).
+   * O(1) pointer operations - no Map modifications needed.
+   *
+   * Issue: evodb-wvz - This is the key optimization. On cache hit,
+   * we only update 4-6 pointers instead of doing Map delete+set.
+   */
+  private moveToTail(node: LRUNode): void {
+    // Already at tail - nothing to do
+    if (node === this.tail) {
+      return;
+    }
+
+    // Remove node from current position
+    if (node.prev) {
+      node.prev.next = node.next;
+    } else {
+      // Node is head
+      this.head = node.next;
+    }
+
+    if (node.next) {
+      node.next.prev = node.prev;
+    }
+
+    // Add to tail
+    node.prev = this.tail;
+    node.next = null;
+
+    if (this.tail) {
+      this.tail.next = node;
+    }
+    this.tail = node;
+
+    // If list was empty, set head too
+    if (!this.head) {
+      this.head = node;
+    }
+  }
+
+  /**
+   * Add a new node at the tail (most recently used position).
+   */
+  private addToTail(node: LRUNode): void {
+    node.prev = this.tail;
+    node.next = null;
+
+    if (this.tail) {
+      this.tail.next = node;
+    }
+    this.tail = node;
+
+    if (!this.head) {
+      this.head = node;
+    }
+  }
+
+  /**
+   * Remove a node from the linked list.
+   */
+  private removeNode(node: LRUNode): void {
+    if (node.prev) {
+      node.prev.next = node.next;
+    } else {
+      this.head = node.next;
+    }
+
+    if (node.next) {
+      node.next.prev = node.prev;
+    } else {
+      this.tail = node.prev;
+    }
+  }
+
+  /**
    * Intern a string, returning a cached reference if available.
    *
    * If the string is already in the cache, its entry is moved to
@@ -150,6 +244,10 @@ export class LRUStringPool {
    * - Strings exceeding maxStringLength are returned but not cached
    * - Memory limit triggers eviction before count limit
    * - TTL is refreshed on access
+   *
+   * Performance (Issue: evodb-wvz):
+   * - Cache hit: O(1) move-to-tail via pointer updates (no Map rehashing)
+   * - In-place lastAccess update (no object allocation on hit)
    *
    * @param s The string to intern
    * @returns The interned string (may be same reference or cached reference)
@@ -166,15 +264,12 @@ export class LRUStringPool {
     const existing = this.cache.get(s);
 
     if (existing !== undefined) {
-      // Cache hit - move to end (most recently used) and refresh TTL
+      // Cache hit - move to tail (most recently used) via O(1) pointer update
+      // Issue: evodb-wvz - Optimized: no delete+set, no new object allocation
       this._hits++;
-      this.cache.delete(s);
-      this.cache.set(s, {
-        value: existing.value,
-        lastAccess: now,
-        byteSize: existing.byteSize,
-      });
-      return existing.value;
+      existing.lastAccess = now; // In-place update
+      this.moveToTail(existing); // O(1) pointer operations
+      return existing.key;
     }
 
     // Cache miss
@@ -194,28 +289,40 @@ export class LRUStringPool {
       this.evictOldest();
     }
 
-    // Add new entry
-    this.cache.set(s, {
-      value: s,
+    // Create new node and add to cache
+    const node: LRUNode = {
+      key: s,
       lastAccess: now,
       byteSize,
-    });
+      prev: null,
+      next: null,
+    };
+
+    this.cache.set(s, node);
+    this.addToTail(node);
     this._memoryBytes += byteSize;
 
     return s;
   }
 
   /**
-   * Evict the oldest (least recently used) entry
+   * Evict the oldest (least recently used) entry from head of list.
+   * O(1) operation - just remove head node and delete from Map.
    */
   private evictOldest(): void {
-    const oldest = this.cache.keys().next().value;
-    if (oldest !== undefined) {
-      const entry = this.cache.get(oldest);
-      if (entry) {
-        this._memoryBytes -= entry.byteSize;
+    const oldest = this.head;
+    if (oldest) {
+      // Remove from linked list
+      this.head = oldest.next;
+      if (this.head) {
+        this.head.prev = null;
+      } else {
+        this.tail = null; // List is now empty
       }
-      this.cache.delete(oldest);
+
+      // Remove from map and update memory tracking
+      this._memoryBytes -= oldest.byteSize;
+      this.cache.delete(oldest.key);
       this._evictions++;
     }
   }
@@ -232,22 +339,20 @@ export class LRUStringPool {
     const now = Date.now();
     const expireThreshold = now - this._ttlMs;
 
-    // Collect keys to delete (can't delete during iteration)
-    const toDelete: string[] = [];
+    // Collect nodes to delete (can't modify list during iteration)
+    const toDelete: LRUNode[] = [];
 
-    for (const [key, entry] of this.cache) {
-      if (entry.lastAccess < expireThreshold) {
-        toDelete.push(key);
+    for (const [, node] of this.cache) {
+      if (node.lastAccess < expireThreshold) {
+        toDelete.push(node);
       }
     }
 
     // Delete expired entries
-    for (const key of toDelete) {
-      const entry = this.cache.get(key);
-      if (entry) {
-        this._memoryBytes -= entry.byteSize;
-      }
-      this.cache.delete(key);
+    for (const node of toDelete) {
+      this.removeNode(node);
+      this._memoryBytes -= node.byteSize;
+      this.cache.delete(node.key);
       this._evictions++;
     }
   }
@@ -259,13 +364,13 @@ export class LRUStringPool {
    * @returns true if the string is cached
    */
   has(s: string): boolean {
-    if (!this.cache.has(s)) {
+    const node = this.cache.get(s);
+    if (!node) {
       return false;
     }
     // Check TTL if configured
     if (this._ttlMs !== undefined) {
-      const entry = this.cache.get(s);
-      if (entry && Date.now() - entry.lastAccess > this._ttlMs) {
+      if (Date.now() - node.lastAccess > this._ttlMs) {
         return false; // Entry exists but is expired
       }
     }
@@ -291,6 +396,8 @@ export class LRUStringPool {
    */
   clear(): void {
     this.cache.clear();
+    this.head = null;
+    this.tail = null;
     this._memoryBytes = 0;
   }
 

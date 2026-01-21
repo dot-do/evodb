@@ -1,15 +1,10 @@
 /**
  * Tests for observability metrics export (Prometheus format)
  *
- * TDD RED Phase: These tests define the expected behavior of the metrics framework.
- *
- * Metrics to implement:
- * - query_duration_seconds (histogram)
- * - blocks_scanned_total (counter)
- * - cache_hits_total (counter)
- * - cache_misses_total (counter)
- * - buffer_size_bytes (gauge)
- * - cdc_entries_processed_total (counter)
+ * Tests for the full metrics implementation including:
+ * - Counter, Gauge, and Histogram metric types
+ * - Prometheus text format export
+ * - Pre-defined EvoDB metrics collection
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';

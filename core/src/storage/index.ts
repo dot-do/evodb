@@ -110,44 +110,11 @@ export {
   createCircuitBreakerStorage,
   type CircuitBreakerOptions,
   type CircuitBreakerStats,
+  type MonotonicTimeProvider,
 } from '../circuit-breaker.js';
 
 // ==========================================================================
 // CHAOS TESTING UTILITIES (Issue evodb-187)
+// MOVED TO @evodb/test-utils (Issue evodb-6zh)
+// Import from '@evodb/test-utils' instead of '@evodb/core/storage'
 // ==========================================================================
-export {
-  // Chaos wrappers
-  ChaosR2Bucket,
-  ChaosStorage,
-  DelayInjector,
-  PartialWriteSimulator,
-  ConcurrencyConflictSimulator,
-  MemoryPressureSimulator,
-  ClockSkewSimulator,
-  // Seeded random for reproducibility
-  SeededRandom,
-  // Error classes
-  ChaosNetworkError,
-  PartialWriteError,
-  CorruptionDetectedError,
-  MemoryPressureError,
-  ConflictError,
-  ETagMismatchError,
-  TimeoutError,
-  // Factory function
-  createChaosStack,
-  // Types
-  type ChaosConfig,
-  type FailureMode,
-  type AffectedOperation,
-  type CorruptionMode,
-  type DelayMode,
-  type ConflictMode,
-  type ChaosR2BucketOptions,
-  type ChaosStorageOptions,
-  type DelayInjectorOptions,
-  type PartialWriteSimulatorOptions,
-  type ConcurrencyConflictSimulatorOptions,
-  type MemoryPressureSimulatorOptions,
-  type ClockSkewSimulatorOptions,
-} from '../chaos-testing.js';

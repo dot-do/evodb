@@ -489,18 +489,29 @@ function compressNullBitmap(col: Column & { nullBitmapCompressed?: Uint8Array; n
   }
 }
 
-/** Extract values at a single path from columns */
-export function extractPath(columns: Column[], path: string): unknown[] {
-  const col = columns.find(c => c.path === path);
+/** Extract values at a single path from columns
+ * @param columns - The columns to extract from
+ * @param path - The path to extract
+ * @param pathIndex - Optional pre-built path index for O(1) lookup. If not provided, uses O(n) linear search.
+ */
+export function extractPath(columns: Column[], path: string, pathIndex?: Map<string, Column>): unknown[] {
+  const col = pathIndex ? pathIndex.get(path) : columns.find(c => c.path === path);
   if (!col) return [];
   return col.values.map((v, i) => col.nulls[i] ? null : v);
 }
 
-/** Extract values at multiple paths from columns */
-export function extractPaths(columns: Column[], paths: string[]): Record<string, unknown[]> {
+/** Extract values at multiple paths from columns
+ * Uses path index for O(n) total complexity instead of O(n²) for multi-column operations.
+ * @param columns - The columns to extract from
+ * @param paths - The paths to extract
+ * @param pathIndex - Optional pre-built path index. If not provided, builds one internally for O(1) lookups.
+ */
+export function extractPaths(columns: Column[], paths: string[], pathIndex?: Map<string, Column>): Record<string, unknown[]> {
   const result: Record<string, unknown[]> = {};
+  // Build index once for O(1) lookups, avoiding O(n²) when extracting multiple paths
+  const index = pathIndex ?? buildPathIndex(columns);
   for (const path of paths) {
-    result[path] = extractPath(columns, path);
+    result[path] = extractPath(columns, path, index);
   }
   return result;
 }

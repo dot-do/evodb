@@ -26,7 +26,10 @@ import {
   getStringPoolStats,
   internString,
   LRUStringPool,
+  unpackBitsDense,
+  unpackBitsLazy,
   type Column,
+  type LazyBitmap,
 } from '../index.js';
 
 // =============================================================================
@@ -400,5 +403,159 @@ describe('String Interning Edge Cases', () => {
     expect(decoded.values[0]).toBe(longString);
     expect(decoded.values[1]).toBe(longString);
     expect(decoded.values[2]).toBe(longString);
+  });
+});
+
+// =============================================================================
+// 5. LAZY BITMAP UNPACKING TESTS (Issue: evodb-a2x)
+// =============================================================================
+
+describe('Lazy Bitmap Unpacking', () => {
+  /**
+   * Helper to create a packed bitmap from boolean array
+   */
+  function packBits(bits: boolean[]): Uint8Array {
+    const bytes = new Uint8Array(Math.ceil(bits.length / 8));
+    for (let i = 0; i < bits.length; i++) {
+      if (bits[i]) bytes[i >>> 3] |= 1 << (i & 7);
+    }
+    return bytes;
+  }
+
+  describe('Basic Functionality', () => {
+    it('should return correct values for get(i)', () => {
+      const bits = [true, false, true, false, true, true, false, false, true];
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      for (let i = 0; i < bits.length; i++) {
+        expect(lazy.get(i)).toBe(bits[i]);
+      }
+    });
+
+    it('should report correct length', () => {
+      const bits = new Array(100).fill(false);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      expect(lazy.length).toBe(100);
+    });
+
+    it('should match eager unpackBitsDense for toArray()', () => {
+      const bits = Array.from({ length: 256 }, (_, i) => i % 3 === 0);
+      const packed = packBits(bits);
+
+      const eager = unpackBitsDense(packed, bits.length);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      expect(lazy.toArray()).toEqual(eager);
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('should handle empty bitmap', () => {
+      const packed = new Uint8Array(0);
+      const lazy = unpackBitsLazy(packed, 0);
+
+      expect(lazy.length).toBe(0);
+      expect(lazy.toArray()).toEqual([]);
+    });
+
+    it('should handle all-true bitmap', () => {
+      const bits = new Array(64).fill(true);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      for (let i = 0; i < bits.length; i++) {
+        expect(lazy.get(i)).toBe(true);
+      }
+    });
+
+    it('should handle all-false bitmap', () => {
+      const bits = new Array(64).fill(false);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      for (let i = 0; i < bits.length; i++) {
+        expect(lazy.get(i)).toBe(false);
+      }
+    });
+
+    it('should handle non-byte-aligned count', () => {
+      // 13 bits - not a multiple of 8
+      const bits = [true, false, true, true, false, false, true, false, true, true, false, true, true];
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, bits.length);
+
+      expect(lazy.length).toBe(13);
+      for (let i = 0; i < bits.length; i++) {
+        expect(lazy.get(i)).toBe(bits[i]);
+      }
+    });
+
+    it('should handle large bitmap', () => {
+      const count = 100000;
+      const bits = Array.from({ length: count }, (_, i) => i % 7 === 0);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, count);
+
+      expect(lazy.length).toBe(count);
+
+      // Spot check some values
+      expect(lazy.get(0)).toBe(true);
+      expect(lazy.get(1)).toBe(false);
+      expect(lazy.get(7)).toBe(true);
+      expect(lazy.get(14)).toBe(true);
+      expect(lazy.get(99999)).toBe(bits[99999]);
+    });
+  });
+
+  describe('Sparse Access Pattern', () => {
+    it('should allow accessing specific indices without full unpacking', () => {
+      const count = 100000;
+      const bits = Array.from({ length: count }, (_, i) => i === 42 || i === 99999);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, count);
+
+      // Only access 2 specific indices
+      expect(lazy.get(42)).toBe(true);
+      expect(lazy.get(99999)).toBe(true);
+      expect(lazy.get(0)).toBe(false);
+      expect(lazy.get(50000)).toBe(false);
+
+      // Verify we haven't allocated the full array by checking length still works
+      expect(lazy.length).toBe(count);
+    });
+
+    it('should support early termination pattern', () => {
+      const count = 100000;
+      // First true at index 1000 (i >= 1000 AND i % 1000 === 0, so first match is 1000)
+      const bits = Array.from({ length: count }, (_, i) => i >= 1000 && i % 1000 === 0);
+      const packed = packBits(bits);
+      const lazy = unpackBitsLazy(packed, count);
+
+      // Find first true value (simulating scan with early exit)
+      let firstTrue = -1;
+      for (let i = 0; i < count; i++) {
+        if (lazy.get(i)) {
+          firstTrue = i;
+          break;
+        }
+      }
+
+      expect(firstTrue).toBe(1000);
+    });
+  });
+
+  describe('Type Contract', () => {
+    it('should satisfy LazyBitmap interface', () => {
+      const packed = new Uint8Array([0b10101010]);
+      const lazy: LazyBitmap = unpackBitsLazy(packed, 8);
+
+      // Check interface properties exist and have correct types
+      expect(typeof lazy.get).toBe('function');
+      expect(typeof lazy.toArray).toBe('function');
+      expect(typeof lazy.length).toBe('number');
+    });
   });
 });

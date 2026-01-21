@@ -1,6 +1,7 @@
 /**
  * Chaos Testing Utilities for EvoDB
  * Issue: evodb-187 - Add chaos testing suite
+ * Issue: evodb-6zh - Move chaos-testing.ts to test-utils package
  *
  * This module provides chaos engineering utilities for testing system resilience:
  * - ChaosR2Bucket: Wraps R2BucketLike with probabilistic failure injection
@@ -27,8 +28,16 @@
  * ```
  */
 
-import type { Storage, StorageMetadata, R2BucketLike, R2ObjectLike, R2ObjectsLike, R2PutOptionsLike, R2ListOptionsLike } from './storage.js';
-import type { MonotonicTimeProvider } from './circuit-breaker.js';
+import type {
+  Storage,
+  StorageMetadata,
+  R2BucketLike,
+  R2ObjectLike,
+  R2ObjectsLike,
+  R2PutOptionsLike,
+  R2ListOptionsLike,
+} from '@evodb/core';
+import type { MonotonicTimeProvider } from '@evodb/core/storage';
 
 // =============================================================================
 // Types and Configuration

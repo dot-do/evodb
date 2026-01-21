@@ -1,13 +1,22 @@
 /**
- * @evodb/core/tracing - Distributed tracing with OpenTelemetry support
+ * @evodb/core/tracing - Distributed tracing types
  *
- * This submodule exports distributed tracing utilities including:
- * - TracingContext for span management
- * - W3C Trace Context propagation
- * - OTEL export format
- * - Test utilities for tracing assertions
+ * This submodule exports tracing types and constants only.
+ * The full implementation is available in @evodb/observability.
  *
  * @module tracing
+ *
+ * @example
+ * ```typescript
+ * import type { Span, TracingContext } from '@evodb/core/tracing';
+ * import { SpanStatusCode, SpanKinds } from '@evodb/core/tracing';
+ * import { createTracingContext } from '@evodb/observability';
+ *
+ * const tracer: TracingContext = createTracingContext({ serviceName: 'my-service' });
+ * const span: Span = tracer.startSpan('operation', {
+ *   kind: SpanKinds.SERVER,
+ * });
+ * ```
  */
 
 export {
@@ -24,6 +33,7 @@ export {
   type TestTracingContext,
   type TraceExporter,
   type InjectOptions,
+  type SpanStatusCodeType,
   // OTEL types
   type OTELSpan,
   type OTELAttribute,
@@ -31,16 +41,4 @@ export {
   // Constants
   SpanStatusCode,
   SpanKinds,
-  // ID generation
-  generateTraceId,
-  generateSpanId,
-  // Factory functions
-  createTracingContext,
-  createNoopTracingContext,
-  createTestTracingContext,
-  // W3C Trace Context
-  parseW3CTraceParent,
-  createW3CTraceParent,
-  // OTEL export
-  formatOTEL,
-} from '../tracing.js';
+} from '../tracing-types.js';

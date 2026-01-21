@@ -1,28 +1,21 @@
 /**
- * Circuit Breaker for R2 Storage Operations
- * Issue: evodb-9t6 - TDD: Add R2 circuit breakers
+ * Simplified Circuit Breaker for Cloudflare Workers
+ * Issue: evodb-7d8 - Simplify circuit-breaker.ts for edge execution model
  *
- * Implements the circuit breaker pattern for resilient R2 storage operations.
- * Protects against cascading failures by opening the circuit after a threshold
- * of consecutive failures, then entering half-open state to probe for recovery.
+ * This is a lightweight circuit breaker optimized for Cloudflare Workers' ephemeral
+ * execution model. Instead of a full CLOSED -> OPEN -> HALF_OPEN state machine,
+ * it uses a simple failure counter with exponential backoff.
  *
- * States:
- * - CLOSED: Normal operation, requests pass through
- * - OPEN: Circuit tripped, requests fail fast without calling backend
- * - HALF_OPEN: Probing for recovery, limited requests allowed
+ * Key differences from traditional circuit breakers:
+ * - No HALF_OPEN state (Workers are ephemeral, complex recovery probing is overkill)
+ * - Simple exponential backoff instead of fixed reset timeout
+ * - Minimal state tracking (failures + backoffUntil)
+ * - ~150 lines instead of ~500 lines
  *
  * @example
  * ```typescript
- * // Wrap R2Storage with circuit breaker
- * const r2Storage = new R2Storage(env.MY_BUCKET);
- * const resilientStorage = createCircuitBreakerStorage(r2Storage, {
- *   failureThreshold: 5,
- *   resetTimeoutMs: 30000,
- * });
- *
- * // Use like normal Storage interface
- * await resilientStorage.write('data.bin', data);
- * const result = await resilientStorage.read('data.bin');
+ * const breaker = new CircuitBreaker({ failureThreshold: 5, maxBackoffMs: 30000 });
+ * const result = await breaker.execute(() => fetchFromR2(key));
  * ```
  */
 
@@ -30,7 +23,6 @@ import type { Storage, StorageMetadata } from './storage.js';
 import {
   DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
-  DEFAULT_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS,
 } from './constants.js';
 
 // =============================================================================
@@ -38,39 +30,25 @@ import {
 // =============================================================================
 
 /**
- * Circuit breaker states
+ * Circuit breaker states (simplified: only CLOSED and OPEN)
+ * HALF_OPEN is kept for backward compatibility but maps to CLOSED after backoff expires
  */
 export enum CircuitState {
   /** Normal operation - requests pass through */
   CLOSED = 'CLOSED',
-  /** Circuit tripped - requests fail fast */
+  /** Circuit tripped - requests fail fast during backoff period */
   OPEN = 'OPEN',
-  /** Probing for recovery - limited requests allowed */
+  /** @deprecated Kept for backward compatibility, behaves like CLOSED */
   HALF_OPEN = 'HALF_OPEN',
 }
 
 /**
- * Time provider interface for monotonic time.
- * This abstraction allows the circuit breaker to use monotonic time (performance.now())
- * in production while being testable with fake timers.
- *
- * Monotonic time is essential for circuit breakers because:
- * - It's immune to system clock changes (NTP sync, manual adjustment, etc.)
- * - It prevents the circuit from staying OPEN forever if the clock jumps backward
- * - It ensures consistent timeout behavior regardless of clock drift
+ * Time provider interface for testability
  */
 export interface MonotonicTimeProvider {
-  /** Returns monotonic time in milliseconds (like performance.now()) */
   now(): number;
 }
 
-/**
- * Default time provider using performance.now() for production use.
- * performance.now() provides monotonic time that:
- * - Is not affected by system clock adjustments
- * - Has sub-millisecond precision
- * - Is always non-decreasing
- */
 export const defaultMonotonicTimeProvider: MonotonicTimeProvider = {
   now: () => performance.now(),
 };
@@ -81,17 +59,15 @@ export const defaultMonotonicTimeProvider: MonotonicTimeProvider = {
 export interface CircuitBreakerOptions {
   /** Number of consecutive failures before opening circuit (default: 5) */
   failureThreshold?: number;
-  /** Time in ms to wait before transitioning from OPEN to HALF_OPEN (default: 30000) */
+  /** @deprecated Use maxBackoffMs instead. Kept for backward compatibility */
   resetTimeoutMs?: number;
-  /** Number of successful requests in HALF_OPEN before closing circuit (default: 1) */
+  /** Maximum backoff time in ms (default: 30000) */
+  maxBackoffMs?: number;
+  /** @deprecated Ignored in simplified implementation */
   halfOpenMaxAttempts?: number;
   /** Custom predicate to determine if an error should count as a failure */
   isFailure?: (error: unknown) => boolean;
-  /**
-   * Custom time provider for monotonic time.
-   * Defaults to performance.now() which is immune to system clock changes.
-   * Can be overridden for testing purposes.
-   */
+  /** Custom time provider (for testing) */
   timeProvider?: MonotonicTimeProvider;
 }
 
@@ -99,26 +75,14 @@ export interface CircuitBreakerOptions {
  * Circuit breaker statistics
  */
 export interface CircuitBreakerStats {
-  /** Current state of the circuit */
   state: CircuitState;
-  /** Current consecutive failure count */
   failureCount: number;
-  /** Total successful operations */
   successCount: number;
-  /** Total failed operations */
   totalFailureCount: number;
-  /** Operations rejected due to open circuit */
   rejectedCount: number;
-  /** Timestamp when circuit was last opened */
   lastOpenedAt?: number;
-  /** Timestamp when circuit was last closed */
   lastClosedAt?: number;
 }
-
-// Default configuration values (re-exported from constants.ts for backwards compatibility)
-const DEFAULT_FAILURE_THRESHOLD = DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD;
-const DEFAULT_RESET_TIMEOUT_MS = DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS;
-const DEFAULT_HALF_OPEN_MAX_ATTEMPTS = DEFAULT_CIRCUIT_BREAKER_HALF_OPEN_MAX_ATTEMPTS;
 
 // =============================================================================
 // CircuitBreakerError
@@ -143,95 +107,78 @@ export class CircuitBreakerError extends Error {
 // =============================================================================
 
 /**
- * Generic circuit breaker that can wrap any async operation.
- *
- * @example
- * ```typescript
- * const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 5000 });
- *
- * // Wrap operations
- * const result = await breaker.execute(() => fetchFromR2(key));
- * ```
+ * Simplified circuit breaker using failure counter + exponential backoff.
+ * Optimized for Cloudflare Workers' ephemeral execution model.
  */
 export class CircuitBreaker {
-  private state: CircuitState = CircuitState.CLOSED;
-  private failureCount = 0;
+  private failures = 0;
+  private backoffUntil = 0;
   private successCount = 0;
   private totalFailureCount = 0;
   private rejectedCount = 0;
   private lastOpenedAt?: number;
   private lastClosedAt?: number;
-  private halfOpenAttempts = 0;
-
-  /**
-   * Monotonic timestamp when circuit was opened.
-   * Used for elapsed time calculations to avoid issues with system clock changes.
-   * The time is obtained from the configured timeProvider, which defaults to
-   * performance.now() - a monotonically increasing clock immune to adjustments.
-   */
-  private openedAtMonotonic?: number;
 
   private readonly failureThreshold: number;
-  private readonly resetTimeoutMs: number;
-  private readonly halfOpenMaxAttempts: number;
+  private readonly maxBackoffMs: number;
   private readonly isFailure: (error: unknown) => boolean;
   private readonly timeProvider: MonotonicTimeProvider;
 
   constructor(options: CircuitBreakerOptions = {}) {
-    this.failureThreshold = options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
-    this.resetTimeoutMs = options.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS;
-    this.halfOpenMaxAttempts = options.halfOpenMaxAttempts ?? DEFAULT_HALF_OPEN_MAX_ATTEMPTS;
+    this.failureThreshold = options.failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD;
+    this.maxBackoffMs = options.maxBackoffMs ?? options.resetTimeoutMs ?? DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS;
     this.isFailure = options.isFailure ?? (() => true);
     this.timeProvider = options.timeProvider ?? defaultMonotonicTimeProvider;
   }
 
-  /**
-   * Execute an operation through the circuit breaker
-   */
   async execute<T>(operation: () => Promise<T>): Promise<T> {
-    // Check state before executing
-    this.updateState();
+    const now = this.timeProvider.now();
 
-    if (this.state === CircuitState.OPEN) {
+    // Check if we're in backoff period
+    if (now < this.backoffUntil) {
       this.rejectedCount++;
-      throw new CircuitBreakerError(
-        'Circuit breaker is open - request rejected',
-        this.state
-      );
+      throw new CircuitBreakerError('Circuit breaker is open - request rejected', CircuitState.OPEN);
     }
 
     try {
       const result = await operation();
-      this.onSuccess();
+      // Success - reset failure count
+      this.failures = 0;
+      this.backoffUntil = 0;
+      this.successCount++;
+      if (this.lastOpenedAt !== undefined) {
+        this.lastClosedAt = Date.now();
+      }
       return result;
     } catch (error) {
-      this.onFailure(error);
+      if (this.isFailure(error)) {
+        this.failures++;
+        this.totalFailureCount++;
+
+        if (this.failures >= this.failureThreshold) {
+          // Calculate exponential backoff: min(1000 * 2^failures, maxBackoffMs)
+          const backoffMs = Math.min(1000 * Math.pow(2, this.failures - this.failureThreshold), this.maxBackoffMs);
+          this.backoffUntil = now + backoffMs;
+          this.lastOpenedAt = Date.now();
+        }
+      }
       throw error;
     }
   }
 
-  /**
-   * Get current circuit state
-   */
   getState(): CircuitState {
-    this.updateState();
-    return this.state;
+    const now = this.timeProvider.now();
+    return now < this.backoffUntil ? CircuitState.OPEN : CircuitState.CLOSED;
   }
 
-  /**
-   * Get current failure count
-   */
   getFailureCount(): number {
-    return this.failureCount;
+    return this.failures;
   }
 
-  /**
-   * Get circuit breaker statistics
-   */
   getStats(): CircuitBreakerStats {
     return {
       state: this.getState(),
-      failureCount: this.failureCount,
+      failureCount: this.failures,
       successCount: this.successCount,
       totalFailureCount: this.totalFailureCount,
       rejectedCount: this.rejectedCount,
@@ -240,115 +187,15 @@ export class CircuitBreaker {
     };
   }
 
-  /**
-   * Manually reset the circuit breaker to CLOSED state
-   */
   reset(): void {
-    this.state = CircuitState.CLOSED;
-    this.failureCount = 0;
-    this.halfOpenAttempts = 0;
+    this.failures = 0;
+    this.backoffUntil = 0;
     this.lastClosedAt = Date.now();
-    this.openedAtMonotonic = undefined;
   }
 
-  /**
-   * Manually trip the circuit breaker to OPEN state
-   */
   trip(): void {
-    this.state = CircuitState.OPEN;
+    this.backoffUntil = this.timeProvider.now() + this.maxBackoffMs;
     this.lastOpenedAt = Date.now();
-    this.openedAtMonotonic = this.timeProvider.now();
-  }
-
-  // ===========================================================================
-  // Private Methods
-  // ===========================================================================
-
-  /**
-   * Update state based on time (OPEN -> HALF_OPEN transition)
-   *
-   * Uses monotonic time from the configured timeProvider for elapsed time
-   * calculation to ensure correct behavior even when the system clock changes
-   * (NTP sync, manual adjustment, etc.). This prevents the circuit from staying
-   * OPEN forever if the clock jumps backward, or transitioning prematurely if
-   * the clock jumps forward.
-   *
-   * Includes safeguards for edge cases:
-   * - Negative elapsed time: Treated as zero (shouldn't happen with monotonic time)
-   * - NaN/Infinity: Force transition to HALF_OPEN to prevent stuck circuit
-   */
-  private updateState(): void {
-    if (this.state === CircuitState.OPEN && this.openedAtMonotonic !== undefined) {
-      const now = this.timeProvider.now();
-      let elapsed = now - this.openedAtMonotonic;
-
-      // Safeguard: If elapsed is somehow negative (shouldn't happen with
-      // monotonic time, but defensive coding), treat as zero
-      if (elapsed < 0) {
-        elapsed = 0;
-      }
-
-      // Safeguard: If elapsed is NaN or Infinity (memory corruption, bugs),
-      // force transition to HALF_OPEN to prevent circuit from being stuck forever
-      if (!Number.isFinite(elapsed)) {
-        this.state = CircuitState.HALF_OPEN;
-        this.halfOpenAttempts = 0;
-        return;
-      }
-
-      if (elapsed >= this.resetTimeoutMs) {
-        this.state = CircuitState.HALF_OPEN;
-        this.halfOpenAttempts = 0;
-      }
-    }
-  }
-
-  /**
-   * Handle successful operation
-   */
-  private onSuccess(): void {
-    this.successCount++;
-
-    if (this.state === CircuitState.HALF_OPEN) {
-      this.halfOpenAttempts++;
-      if (this.halfOpenAttempts >= this.halfOpenMaxAttempts) {
-        // Successful recovery - close circuit
-        this.state = CircuitState.CLOSED;
-        this.failureCount = 0;
-        this.halfOpenAttempts = 0;
-        this.lastClosedAt = Date.now();
-      }
-    } else if (this.state === CircuitState.CLOSED) {
-      // Reset failure count on success in CLOSED state
-      this.failureCount = 0;
-    }
-  }
-
-  /**
-   * Handle failed operation
-   */
-  private onFailure(error: unknown): void {
-    // Check if this error should count as a failure
-    if (!this.isFailure(error)) {
-      return;
-    }
-
-    this.failureCount++;
-    this.totalFailureCount++;
-
-    if (this.state === CircuitState.HALF_OPEN) {
-      // Failed probe - return to OPEN state
-      this.state = CircuitState.OPEN;
-      this.lastOpenedAt = Date.now();
-      this.openedAtMonotonic = this.timeProvider.now();
-    } else if (this.state === CircuitState.CLOSED) {
-      // Check if we should trip the circuit
-      if (this.failureCount >= this.failureThreshold) {
-        this.state = CircuitState.OPEN;
-        this.lastOpenedAt = Date.now();
-        this.openedAtMonotonic = this.timeProvider.now();
-      }
-    }
   }
 }
 
@@ -357,20 +204,7 @@ export class CircuitBreaker {
 // =============================================================================
 
 /**
- * Storage implementation that wraps another Storage with circuit breaker protection.
- * Implements the full Storage interface and can be used as a drop-in replacement.
- *
- * @example
- * ```typescript
- * const r2Storage = new R2Storage(env.MY_BUCKET);
- * const protected = new CircuitBreakerStorage(r2Storage, {
- *   failureThreshold: 5,
- *   resetTimeoutMs: 30000,
- * });
- *
- * // Use like normal Storage
- * await protected.write('key', data);
- * ```
+ * Storage wrapper with circuit breaker protection
  */
 export class CircuitBreakerStorage implements Storage {
   private readonly storage: Storage;
@@ -380,10 +214,6 @@ export class CircuitBreakerStorage implements Storage {
     this.storage = storage;
     this.breaker = new CircuitBreaker(options);
   }
-
-  // ===========================================================================
-  // Storage Interface Implementation
-  // ===========================================================================
 
   async read(path: string): Promise<Uint8Array | null> {
     return this.breaker.execute(() => this.storage.read(path));
@@ -405,7 +235,6 @@ export class CircuitBreakerStorage implements Storage {
     if (this.storage.exists) {
       return this.breaker.execute(() => this.storage.exists!(path));
     }
-    // Fallback: read and check if null
     const data = await this.read(path);
     return data !== null;
   }
@@ -421,53 +250,28 @@ export class CircuitBreakerStorage implements Storage {
     if (this.storage.readRange) {
       return this.breaker.execute(() => this.storage.readRange!(path, offset, length));
     }
-    // Fallback: read full file and slice
     const data = await this.read(path);
-    if (!data) {
-      throw new Error(`Object not found: ${path}`);
-    }
-    let start = offset;
-    if (start < 0) {
-      start = data.length + offset;
-    }
+    if (!data) throw new Error(`Object not found: ${path}`);
+    const start = offset < 0 ? data.length + offset : offset;
     return data.slice(start, start + length);
   }
 
-  // ===========================================================================
-  // Circuit Breaker Controls
-  // ===========================================================================
-
-  /**
-   * Get current circuit state
-   */
   getCircuitState(): CircuitState {
     return this.breaker.getState();
   }
 
-  /**
-   * Get current failure count
-   */
   getFailureCount(): number {
     return this.breaker.getFailureCount();
   }
 
-  /**
-   * Get circuit breaker statistics
-   */
   getStats(): CircuitBreakerStats {
     return this.breaker.getStats();
   }
 
-  /**
-   * Manually reset the circuit breaker
-   */
   resetCircuit(): void {
     this.breaker.reset();
   }
 
-  /**
-   * Manually trip the circuit breaker
-   */
   tripCircuit(): void {
     this.breaker.trip();
   }
@@ -477,18 +281,6 @@ export class CircuitBreakerStorage implements Storage {
 // Factory Function
 // =============================================================================
 
-/**
- * Create a CircuitBreakerStorage wrapping the given storage
- *
- * @example
- * ```typescript
- * const r2Storage = new R2Storage(env.MY_BUCKET);
- * const resilientStorage = createCircuitBreakerStorage(r2Storage, {
- *   failureThreshold: 5,
- *   resetTimeoutMs: 30000,
- * });
- * ```
- */
 export function createCircuitBreakerStorage(
   storage: Storage,
   options?: CircuitBreakerOptions

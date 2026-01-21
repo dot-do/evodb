@@ -1,0 +1,51 @@
+{
+  "name": "@evodb/observability",
+  "version": "0.1.0-rc.1",
+  "description": "Prometheus metrics and observability framework for EvoDB",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./metrics": {
+      "types": "./dist/metrics.d.ts",
+      "import": "./dist/metrics.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "observability",
+    "metrics",
+    "prometheus",
+    "cloudflare",
+    "workers"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "observability"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
+  },
+  "sideEffects": false
+}

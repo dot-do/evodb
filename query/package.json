@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "README.md"
   ],
   "scripts": {
@@ -49,5 +50,6 @@
     "typescript": "^5.3.0",
     "vitest": "^2.1.0",
     "wrangler": "^3.0.0"
-  }
+  },
+  "sideEffects": false
 }

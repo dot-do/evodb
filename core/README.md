@@ -109,6 +109,48 @@ await registry.observe('users', { name: 123 });
 npm install @evodb/core
 ```
 
+## Focused Imports (Tree-Shaking)
+
+For optimal bundle size, use focused entry points instead of the barrel export:
+
+```typescript
+// Focused imports - only import what you need (~8KB each)
+import { encode, decode } from '@evodb/core/encoding';
+import { shred, unshred } from '@evodb/core/shredding';
+import { evaluateFilters, sortRows } from '@evodb/core/query';
+import { createDOAdapter } from '@evodb/core/storage';
+import { Type, BlockId } from '@evodb/core/types';
+import { EvoDBError, QueryError } from '@evodb/core/errors';
+import { KB, MB, GB } from '@evodb/core/constants';
+import { isArray, isRecord } from '@evodb/core/guards';
+
+// Barrel export - includes everything (~460KB)
+import { encode, decode } from '@evodb/core';
+```
+
+### Available Entry Points
+
+| Entry Point | Description | Key Exports |
+|-------------|-------------|-------------|
+| `@evodb/core` | Full barrel (backward compat) | Everything |
+| `@evodb/core/types` | Type definitions | `Type`, `Encoding`, `BlockId`, `SchemaId` |
+| `@evodb/core/encoding` | Encoding operations | `encode`, `decode`, `SparseNullSet` |
+| `@evodb/core/shredding` | JSON shredding | `shred`, `unshred`, `extractPath` |
+| `@evodb/core/query` | Query operations | `evaluateFilters`, `sortRows`, `computeAggregations` |
+| `@evodb/core/storage` | Storage adapters | `createDOAdapter`, `R2StorageProvider` |
+| `@evodb/core/block` | Block format | `writeBlock`, `readBlock` |
+| `@evodb/core/wal` | Write-ahead log | `createWalEntry` |
+| `@evodb/core/schema` | Schema operations | `inferSchema` |
+| `@evodb/core/errors` | Error classes | `EvoDBError`, `QueryError`, `StorageError` |
+| `@evodb/core/constants` | Size constants | `KB`, `MB`, `GB` |
+| `@evodb/core/guards` | Type guards | `isArray`, `isRecord` |
+| `@evodb/core/evodb` | High-level facade | `EvoDB`, `QueryBuilder` |
+| `@evodb/core/snippet` | Snippets format | Cloudflare Snippets optimized |
+| `@evodb/core/partition` | Partition modes | DO-SQLite, Standard, Enterprise |
+| `@evodb/core/merge` | Compaction | `mergeBlocks` |
+| `@evodb/core/logging` | Logging types | Logger interfaces |
+| `@evodb/core/tracing` | Tracing types | Span interfaces |
+
 ## Quick Start
 
 ```typescript

@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
 import { shred, unshred } from '../shred.js';
-import { encode, decode } from '../encode.js';
+import { encode, decode, isNullAt, toNullArray } from '../encode.js';
 import { Type, Encoding, type Column } from '../types.js';
 import {
   calculatePartitions,
@@ -300,9 +300,10 @@ describe('Property: Encode/Decode Round-Trip', () => {
           const [encoded] = encode([column]);
           const decoded = decode(encoded, values.length);
 
+          // Use isNullAt for NullBitmap compatibility (evodb-80q)
           for (let i = 0; i < values.length; i++) {
             if (values[i] === null) {
-              expect(decoded.nulls[i]).toBe(true);
+              expect(isNullAt(decoded.nulls, i)).toBe(true);
             } else {
               expect(decoded.values[i]).toBeCloseTo(values[i] as number, 10);
             }
@@ -325,9 +326,10 @@ describe('Property: Encode/Decode Round-Trip', () => {
           const [encoded] = encode([column]);
           const decoded = decode(encoded, values.length);
 
+          // Use isNullAt for NullBitmap compatibility (evodb-80q)
           for (let i = 0; i < values.length; i++) {
             if (values[i] === null) {
-              expect(decoded.nulls[i]).toBe(true);
+              expect(isNullAt(decoded.nulls, i)).toBe(true);
             } else {
               expect(decoded.values[i]).toBe(values[i]);
             }
@@ -350,9 +352,10 @@ describe('Property: Encode/Decode Round-Trip', () => {
           const [encoded] = encode([column]);
           const decoded = decode(encoded, values.length);
 
+          // Use isNullAt for NullBitmap compatibility (evodb-80q)
           for (let i = 0; i < values.length; i++) {
             if (values[i] === null) {
-              expect(decoded.nulls[i]).toBe(true);
+              expect(isNullAt(decoded.nulls, i)).toBe(true);
             } else {
               expect(decoded.values[i]).toBe(values[i]);
             }
@@ -461,8 +464,8 @@ describe('Property: Encode/Decode Round-Trip', () => {
           const [encoded] = encode([column]);
           const decoded = decode(encoded, values.length);
 
-          // Null pattern should be exactly preserved
-          expect(decoded.nulls).toEqual(nullPattern);
+          // Null pattern should be exactly preserved (use toNullArray for NullBitmap - evodb-80q)
+          expect(toNullArray(decoded.nulls)).toEqual(nullPattern);
         }
       ),
       { numRuns: 100 }

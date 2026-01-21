@@ -70,5 +70,6 @@
   },
   "peerDependencies": {
     "@cloudflare/workers-types": "^4.0.0"
-  }
+  },
+  "sideEffects": false
 }

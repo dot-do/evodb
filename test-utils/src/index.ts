@@ -971,3 +971,45 @@ export function randomTimestamp(daysBack: number = 30): number {
   const msBack = daysBack * 24 * 60 * 60 * 1000;
   return now - Math.floor(Math.random() * msBack);
 }
+
+// =============================================================================
+// Chaos Testing Utilities (Issue evodb-187, evodb-6zh)
+// Moved from @evodb/core to reduce production bundle size
+// =============================================================================
+
+export {
+  // Chaos wrappers
+  ChaosR2Bucket,
+  ChaosStorage,
+  DelayInjector,
+  PartialWriteSimulator,
+  ConcurrencyConflictSimulator,
+  MemoryPressureSimulator,
+  ClockSkewSimulator,
+  // Seeded random for reproducibility
+  SeededRandom,
+  // Error classes
+  ChaosNetworkError,
+  PartialWriteError,
+  CorruptionDetectedError,
+  MemoryPressureError,
+  ConflictError,
+  ETagMismatchError,
+  TimeoutError,
+  // Factory function
+  createChaosStack,
+  // Types
+  type ChaosConfig,
+  type FailureMode,
+  type AffectedOperation,
+  type CorruptionMode,
+  type DelayMode,
+  type ConflictMode,
+  type ChaosR2BucketOptions,
+  type ChaosStorageOptions,
+  type DelayInjectorOptions,
+  type PartialWriteSimulatorOptions,
+  type ConcurrencyConflictSimulatorOptions,
+  type MemoryPressureSimulatorOptions,
+  type ClockSkewSimulatorOptions,
+} from './chaos-testing.js';

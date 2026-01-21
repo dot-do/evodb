@@ -17,10 +17,8 @@ import {
   shred,
   unshred,
   inferSchema,
-  serializeSchema,
-  deserializeSchema,
   isCompatible,
-  schemaDiff,
+  isNullAt,
   Type,
   Encoding,
   type Column,
@@ -252,14 +250,14 @@ describe('Property-Based Tests: Encoding/Decoding Roundtrips', () => {
             const [encoded] = encode([column]);
             const decoded = decode(encoded, items.length);
 
-            // Check null positions are preserved
+            // Check null positions are preserved (use isNullAt for NullBitmap - evodb-80q)
             for (let i = 0; i < items.length; i++) {
-              expect(decoded.nulls[i]).toBe(nulls[i]);
+              expect(isNullAt(decoded.nulls, i)).toBe(nulls[i]);
             }
 
             // Check non-null values in order
             const originalNonNull = items.filter(i => !i.isNull).map(i => i.value);
-            const decodedNonNull = decoded.values.filter((_, i) => !decoded.nulls[i]);
+            const decodedNonNull = decoded.values.filter((_, i) => !isNullAt(decoded.nulls, i));
             expect(decodedNonNull).toEqual(originalNonNull);
           }
         ),
@@ -449,33 +447,9 @@ describe('Property-Based Tests: Schema Inference Invariants', () => {
     });
   });
 
-  describe('Schema Serialization Invariants', () => {
-    it('Schema survives serialize/deserialize cycle', () => {
-      fc.assert(
-        fc.property(
-          documentArrayArbitrary,
-          (docs) => {
-            const columns = shred(docs);
-            const schema = inferSchema(columns);
-
-            const serialized = serializeSchema(schema);
-            const deserialized = deserializeSchema(serialized);
-
-            expect(deserialized.id).toBe(schema.id);
-            expect(deserialized.version).toBe(schema.version);
-            expect(deserialized.columns.length).toBe(schema.columns.length);
-
-            for (let i = 0; i < schema.columns.length; i++) {
-              expect(deserialized.columns[i].path).toBe(schema.columns[i].path);
-              expect(deserialized.columns[i].type).toBe(schema.columns[i].type);
-              expect(deserialized.columns[i].nullable).toBe(schema.columns[i].nullable);
-            }
-          }
-        ),
-        { numRuns: 100 }
-      );
-    });
-  });
+  // NOTE: Schema serialization invariants removed
+  // Serialization is now handled by the manifest layer
+  // See evodb-dlp: Simplify schema.ts to essential functions
 
   describe('Schema Compatibility Invariants', () => {
     it('Schema is always compatible with itself', () => {
@@ -493,24 +467,8 @@ describe('Property-Based Tests: Schema Inference Invariants', () => {
       );
     });
 
-    it('Schema diff with itself returns no changes', () => {
-      fc.assert(
-        fc.property(
-          documentArrayArbitrary,
-          (docs) => {
-            const columns = shred(docs);
-            const schema = inferSchema(columns);
-
-            const diff = schemaDiff(schema, schema);
-
-            expect(diff.added).toEqual([]);
-            expect(diff.removed).toEqual([]);
-            expect(diff.modified).toEqual([]);
-          }
-        ),
-        { numRuns: 100 }
-      );
-    });
+    // NOTE: schemaDiff test removed - function no longer in schema module
+    // See evodb-dlp: Simplify schema.ts to essential functions
 
     it('Adding nullable columns maintains compatibility', () => {
       fc.assert(

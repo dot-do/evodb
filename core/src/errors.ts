@@ -1,13 +1,23 @@
 /**
  * Typed exception classes for EvoDB
  *
- * Provides a standardized error hierarchy for consistent error handling
- * across the codebase. Each error class has a code property for programmatic
- * error identification.
+ * Consolidated error hierarchy with 4 essential types:
+ * - EvoDBError: Base error class
+ * - QueryError: Query-related issues
+ * - ValidationError: Input/schema/encoding validation
+ * - TimeoutError: Timeout issues
+ *
+ * Plus StorageError for backward compatibility (extends EvoDBError).
+ *
+ * Use error codes for fine-grained programmatic error handling:
+ * - QUERY_ERROR, TABLE_NOT_FOUND, etc.
+ * - VALIDATION_ERROR, ENCODING_VALIDATION_ERROR, TYPE_MISMATCH, etc.
+ * - TIMEOUT_ERROR, CONNECTION_TIMEOUT, QUERY_TIMEOUT, etc.
+ * - STORAGE_ERROR, NOT_FOUND, CORRUPTED_BLOCK, CHECKSUM_MISMATCH, etc.
  *
  * @example
  * ```typescript
- * import { QueryError, ValidationError, StorageError, TimeoutError } from '@evodb/core';
+ * import { QueryError, ValidationError, TimeoutError } from '@evodb/core';
  *
  * try {
  *   await db.query('users').where('invalid').execute();
@@ -30,6 +40,7 @@ import { captureStackTrace } from './stack-trace.js';
  * - Catching all EvoDB errors with a single catch block
  * - Programmatic error identification via the `code` property
  * - Proper stack traces and error inheritance
+ * - Optional details object for additional debugging info
  */
 export class EvoDBError extends Error {
   /**
@@ -44,15 +55,22 @@ export class EvoDBError extends Error {
   public readonly code: string;
 
   /**
+   * Optional details for debugging (used by validation and storage errors)
+   */
+  public readonly details?: Record<string, unknown>;
+
+  /**
    * Create a new EvoDBError
    *
    * @param message - Human-readable error message
    * @param code - Error code for programmatic identification
+   * @param details - Optional additional details for debugging
    */
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'EvoDBError';
     this.code = code;
+    this.details = details;
 
     // Maintains proper stack trace for where our error was thrown (only available on V8)
     captureStackTrace(this, EvoDBError);
@@ -67,6 +85,8 @@ export class EvoDBError extends Error {
  * - Query execution failure
  * - Unsupported query operation
  *
+ * Common codes: QUERY_ERROR, TABLE_NOT_FOUND, QUERY_SYNTAX_ERROR
+ *
  * @example
  * ```typescript
  * throw new QueryError('Invalid filter operator: unknown');
@@ -79,9 +99,10 @@ export class QueryError extends EvoDBError {
    *
    * @param message - Human-readable error message
    * @param code - Error code (default: 'QUERY_ERROR')
+   * @param details - Optional additional details for debugging
    */
-  constructor(message: string, code: string = 'QUERY_ERROR') {
-    super(message, code);
+  constructor(message: string, code: string = 'QUERY_ERROR', details?: Record<string, unknown>) {
+    super(message, code, details);
     this.name = 'QueryError';
     captureStackTrace(this, QueryError);
   }
@@ -95,6 +116,8 @@ export class QueryError extends EvoDBError {
  * - Storage operation timeout
  * - Connection timeout
  *
+ * Common codes: TIMEOUT_ERROR, QUERY_TIMEOUT, CONNECTION_TIMEOUT
+ *
  * @example
  * ```typescript
  * throw new TimeoutError('Query execution timed out after 30s');
@@ -107,9 +130,10 @@ export class TimeoutError extends EvoDBError {
    *
    * @param message - Human-readable error message
    * @param code - Error code (default: 'TIMEOUT_ERROR')
+   * @param details - Optional additional details for debugging
    */
-  constructor(message: string, code: string = 'TIMEOUT_ERROR') {
-    super(message, code);
+  constructor(message: string, code: string = 'TIMEOUT_ERROR', details?: Record<string, unknown>) {
+    super(message, code, details);
     this.name = 'TimeoutError';
     captureStackTrace(this, TimeoutError);
   }
@@ -123,11 +147,19 @@ export class TimeoutError extends EvoDBError {
  * - Type mismatch
  * - Schema constraint violation
  * - Format validation failure (email, URL, etc.)
+ * - Encoding validation errors (invalid column type, null in non-nullable)
+ *
+ * Common codes: VALIDATION_ERROR, TYPE_MISMATCH, SCHEMA_VALIDATION_ERROR,
+ * ENCODING_VALIDATION_ERROR, NULL_NOT_ALLOWED
  *
  * @example
  * ```typescript
  * throw new ValidationError("Required field 'email' is missing");
  * throw new ValidationError('Schema mismatch: expected number, got string', 'TYPE_MISMATCH');
+ * // Encoding validation with details
+ * throw new ValidationError('Type mismatch at index 2', 'ENCODING_VALIDATION_ERROR', {
+ *   path: 'user.age', index: 2, expectedType: 'Int32', actualType: 'string'
+ * });
  * ```
  */
 export class ValidationError extends EvoDBError {
@@ -136,9 +168,10 @@ export class ValidationError extends EvoDBError {
    *
    * @param message - Human-readable error message
    * @param code - Error code (default: 'VALIDATION_ERROR')
+   * @param details - Optional additional details for debugging (e.g., path, index, expectedType)
    */
-  constructor(message: string, code: string = 'VALIDATION_ERROR') {
-    super(message, code);
+  constructor(message: string, code: string = 'VALIDATION_ERROR', details?: Record<string, unknown>) {
+    super(message, code, details);
     this.name = 'ValidationError';
     captureStackTrace(this, ValidationError);
   }
@@ -218,12 +251,20 @@ export function isStorageErrorCode(code: string): code is StorageErrorCode {
  * - Storage quota exceeded
  * - Permission denied
  * - Network errors during storage operations
+ * - Block corruption (invalid magic, checksum mismatch, etc.)
+ *
+ * Common codes: STORAGE_ERROR, NOT_FOUND, PERMISSION_DENIED, QUOTA_EXCEEDED,
+ * CORRUPTED_BLOCK, INVALID_MAGIC, CHECKSUM_MISMATCH, TRUNCATED_DATA
  *
  * @example
  * ```typescript
  * throw new StorageError('Failed to write block to R2');
  * throw new StorageError('Storage quota exceeded', StorageErrorCode.QUOTA_EXCEEDED);
  * throw new StorageError('Custom error', 'CUSTOM_CODE'); // backward compatible
+ * // Block corruption with details
+ * throw new StorageError('Invalid magic number', 'INVALID_MAGIC', {
+ *   expected: 0x434A4C42, actual: 0x00000000, offset: 0
+ * });
  * ```
  */
 export class StorageError extends EvoDBError {
@@ -232,16 +273,36 @@ export class StorageError extends EvoDBError {
    *
    * @param message - Human-readable error message
    * @param code - Error code (default: 'STORAGE_ERROR'). Can be a StorageErrorCode enum value or a custom string.
+   * @param details - Optional additional details for debugging (e.g., expected/actual values, offset)
    */
-  constructor(message: string, code: string | StorageErrorCode = 'STORAGE_ERROR') {
-    super(message, code);
+  constructor(message: string, code: string | StorageErrorCode = 'STORAGE_ERROR', details?: Record<string, unknown>) {
+    super(message, code, details);
     this.name = 'StorageError';
     captureStackTrace(this, StorageError);
   }
 }
 
 /**
+ * Details about encoding validation failure for debugging and logging
+ */
+export interface EncodingValidationDetails {
+  /** Column path where the error occurred */
+  path?: string;
+  /** Index in the values array where the error was found */
+  index?: number;
+  /** Expected type name (e.g., 'Int32', 'String') */
+  expectedType?: string;
+  /** Actual type found (e.g., 'string', 'number') */
+  actualType?: string;
+  /** The actual value that caused the error (truncated for logging) */
+  actualValue?: unknown;
+}
+
+/**
  * Error thrown when encoding validation fails
+ *
+ * This is a convenience alias for ValidationError with encoding-specific defaults.
+ * For new code, prefer using ValidationError directly with ENCODING_* codes.
  *
  * Examples:
  * - Invalid column type enum value
@@ -260,11 +321,6 @@ export class StorageError extends EvoDBError {
  */
 export class EncodingValidationError extends ValidationError {
   /**
-   * Additional details about the validation failure for debugging
-   */
-  public readonly details?: EncodingValidationDetails;
-
-  /**
    * Create a new EncodingValidationError
    *
    * @param message - Human-readable error message describing the validation failure
@@ -276,27 +332,10 @@ export class EncodingValidationError extends ValidationError {
     code: string = 'ENCODING_VALIDATION_ERROR',
     details?: EncodingValidationDetails
   ) {
-    super(message, code);
+    super(message, code, details as Record<string, unknown>);
     this.name = 'EncodingValidationError';
-    this.details = details;
     captureStackTrace(this, EncodingValidationError);
   }
-}
-
-/**
- * Details about encoding validation failure for debugging and logging
- */
-export interface EncodingValidationDetails {
-  /** Column path where the error occurred */
-  path?: string;
-  /** Index in the values array where the error was found */
-  index?: number;
-  /** Expected type name (e.g., 'Int32', 'String') */
-  expectedType?: string;
-  /** Actual type found (e.g., 'string', 'number') */
-  actualType?: string;
-  /** The actual value that caused the error (truncated for logging) */
-  actualValue?: unknown;
 }
 
 /**
@@ -322,6 +361,9 @@ export interface CorruptedBlockDetails {
 /**
  * Error thrown when block data is corrupted
  *
+ * This is a convenience alias for StorageError with corruption-specific defaults.
+ * For new code, prefer using StorageError directly with CORRUPTED_* codes.
+ *
  * This error is thrown when reading block data that has been corrupted,
  * such as when R2 returns corrupted data due to storage issues, network
  * transmission errors, or other data integrity problems.
@@ -344,11 +386,6 @@ export interface CorruptedBlockDetails {
  */
 export class CorruptedBlockError extends StorageError {
   /**
-   * Additional details about the corruption for debugging
-   */
-  public readonly details?: CorruptedBlockDetails;
-
-  /**
    * Create a new CorruptedBlockError
    *
    * @param message - Human-readable error message describing the corruption
@@ -360,9 +397,8 @@ export class CorruptedBlockError extends StorageError {
     code: string = 'CORRUPTED_BLOCK',
     details?: CorruptedBlockDetails
   ) {
-    super(message, code);
+    super(message, code, details as Record<string, unknown>);
     this.name = 'CorruptedBlockError';
-    this.details = details;
     captureStackTrace(this, CorruptedBlockError);
   }
 }

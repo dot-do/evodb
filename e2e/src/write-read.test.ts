@@ -15,7 +15,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { MockR2Bucket } from './mock-r2.js';
 import { InMemoryBlockWriter } from '@evodb/writer';
 import { createWalEntry, WalOp, type WalEntry } from '@evodb/core';
-import { QueryEngine, type ReaderConfig } from '@evodb/reader';
+import { SimpleQueryEngine, type SimpleQueryConfig } from '@evodb/query';
+
+// Backward compatibility aliases (for migration)
+const QueryEngine = SimpleQueryEngine;
+type ReaderConfig = SimpleQueryConfig;
 
 // =============================================================================
 // Test Fixtures

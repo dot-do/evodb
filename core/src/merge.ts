@@ -2,7 +2,7 @@
 
 import { type Column, type StorageAdapter } from './types.js';
 import { readBlock, writeBlock } from './block.js';
-import { encode } from './encode.js';
+import { encode, isNullAt } from './encode.js';
 import { makeBlockId, parseBlockId } from './storage.js';
 import {
   DEFAULT_TARGET_ROWS_PER_BLOCK,
@@ -131,14 +131,21 @@ function mergeColumns(columnSets: Column[][]): Column[] {
 
     if (columns.length === 0) continue;
 
-    // Concatenate values
-    const values: unknown[] = [];
-    const nulls: boolean[] = [];
+    // Pre-allocate based on total size (evodb-jo7: avoid spread operator memory overhead)
+    const totalRows = columns.reduce((sum, c) => sum + c.values.length, 0);
+    const values = new Array(totalRows);
+    const nulls = new Array(totalRows);
     let nullable = false;
+    let offset = 0;
 
     for (const col of columns) {
-      values.push(...col.values);
-      nulls.push(...col.nulls);
+      const len = col.values.length;
+      for (let i = 0; i < len; i++) {
+        values[offset + i] = col.values[i];
+        // Use isNullAt helper for NullBitmap compatibility (evodb-80q)
+        nulls[offset + i] = isNullAt(col.nulls, i);
+      }
+      offset += len;
       if (col.nullable) nullable = true;
     }
 

@@ -9,7 +9,7 @@
  *
  * @example
  * ```typescript
- * import { createLogger, createConsoleLogger, withContext } from '@evodb/core';
+ * import { createLogger, createConsoleLogger, withContext } from '@evodb/observability';
  *
  * // Create a console logger
  * const logger = createConsoleLogger({ format: 'json' });
@@ -27,74 +27,20 @@
  * ```
  */
 
+import type {
+  Logger,
+  LogLevel,
+  LogContext,
+  LogContextValue,
+  LogEntry,
+  LoggerConfig,
+  ConsoleLoggerConfig,
+  TestLogger,
+} from '@evodb/core';
+
 // =============================================================================
-// Types
+// Type Guards
 // =============================================================================
-
-/**
- * Log level types
- */
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-/**
- * Allowed value types in log context.
- *
- * Log context values are serialized to JSON, so only JSON-compatible
- * types are allowed. This provides type safety while still allowing
- * flexible structured logging.
- */
-export type LogContextValue =
-  | string
-  | number
-  | boolean
-  | null
-  | LogContextValue[]
-  | { [key: string]: LogContextValue };
-
-/**
- * Structured context data attached to log entries.
- *
- * LogContext provides type-safe structured logging with common fields
- * used for observability and debugging. All values must be JSON-serializable.
- *
- * @example
- * ```typescript
- * const context: LogContext = {
- *   requestId: 'req-123',
- *   userId: 'user-456',
- *   table: 'events',
- *   rowsProcessed: 1000,
- *   durationMs: 42.5,
- *   metadata: { region: 'us-east-1' },
- * };
- *
- * logger.info('Query completed', context);
- * ```
- */
-export interface LogContext {
-  /** Request or correlation ID for tracing */
-  requestId?: string;
-  /** User identifier */
-  userId?: string;
-  /** Session identifier */
-  sessionId?: string;
-  /** Service or component name */
-  service?: string;
-  /** Operation being performed */
-  operation?: string;
-  /** Table or resource name */
-  table?: string;
-  /** Duration in milliseconds */
-  durationMs?: number;
-  /** Number of rows processed/returned */
-  rowsProcessed?: number;
-  /** Number of bytes processed */
-  bytesProcessed?: number;
-  /** Error code for error logs */
-  errorCode?: string;
-  /** Additional custom fields */
-  [key: string]: LogContextValue | undefined;
-}
 
 /**
  * Type guard to check if a value is a valid LogContextValue.
@@ -129,80 +75,6 @@ export function isLogContext(value: unknown): value is LogContext {
   return Object.values(value as LogContext).every(
     v => v === undefined || isLogContextValue(v)
   );
-}
-
-/**
- * A single log entry with all metadata
- */
-export interface LogEntry {
-  /** Log level */
-  level: LogLevel;
-  /** Log message */
-  message: string;
-  /** Unix timestamp in milliseconds */
-  timestamp: number;
-  /** Structured context data */
-  context?: LogContext;
-  /** Error object (for error level logs) */
-  error?: Error;
-}
-
-/**
- * Logger interface - the core abstraction for logging
- */
-export interface Logger {
-  /**
-   * Log a debug message (lowest priority, typically filtered in production)
-   */
-  debug(message: string, context?: LogContext): void;
-
-  /**
-   * Log an info message (general information)
-   */
-  info(message: string, context?: LogContext): void;
-
-  /**
-   * Log a warning message (potential issues)
-   */
-  warn(message: string, context?: LogContext): void;
-
-  /**
-   * Log an error message (errors and exceptions)
-   * @param message - Error description
-   * @param error - Optional Error object
-   * @param context - Optional structured context
-   */
-  error(message: string, error?: Error, context?: LogContext): void;
-}
-
-/**
- * Configuration options for creating a logger
- */
-export interface LoggerConfig {
-  /** Minimum log level to emit (default: 'debug') */
-  minLevel?: LogLevel;
-  /** Custom output function for log entries */
-  output?: (entry: LogEntry) => void;
-}
-
-/**
- * Configuration options for console logger
- */
-export interface ConsoleLoggerConfig extends LoggerConfig {
-  /** Output format: 'json' for structured logs, 'pretty' for human-readable */
-  format?: 'json' | 'pretty';
-}
-
-/**
- * Test logger with additional methods for assertions
- */
-export interface TestLogger extends Logger {
-  /** Get all captured log entries */
-  getLogs(): LogEntry[];
-  /** Get log entries filtered by level */
-  getLogsByLevel(level: LogLevel): LogEntry[];
-  /** Clear all captured logs */
-  clear(): void;
 }
 
 // =============================================================================

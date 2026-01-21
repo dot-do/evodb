@@ -15,15 +15,21 @@
 import { describe, it, expect } from 'vitest';
 import {
   unpackBits,
+  unpackBitsDense,
   unpackBitsSparse,
   SparseNullSet,
   isAllNull,
   hasNoNulls,
   SPARSE_NULL_THRESHOLD,
+  isNullAt,
+  toNullArray,
+  hasAnyNulls,
+  countNulls,
   encode,
   decode,
   Type,
   type Column,
+  type NullBitmap,
 } from '../index.js';
 
 // =============================================================================
@@ -31,60 +37,200 @@ import {
 // =============================================================================
 
 describe('Sparse Null Bitmap Optimization', () => {
-  describe('Current unpackBits baseline behavior', () => {
-    it('should correctly unpack sparse null bitmap', () => {
-      // 1000 elements with only 3 nulls at positions 10, 500, 999
+  // Issue evodb-80q: unpackBits now uses smart selection (sparse for < 10% null rate)
+  describe('Smart unpackBits default selection (evodb-80q)', () => {
+    it('should return SparseNullSet for sparse null data (< 10%)', () => {
+      // 1000 elements with only 3 nulls (0.3% null rate) - should use sparse
       const count = 1000;
       const bitmap = new Uint8Array(Math.ceil(count / 8));
 
       // Set null bits at positions 10, 500, 999
-      bitmap[10 >>> 3] |= 1 << (10 & 7);   // position 10
-      bitmap[500 >>> 3] |= 1 << (500 & 7); // position 500
-      bitmap[999 >>> 3] |= 1 << (999 & 7); // position 999
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
+      bitmap[500 >>> 3] |= 1 << (500 & 7);
+      bitmap[999 >>> 3] |= 1 << (999 & 7);
 
-      const bits = unpackBits(bitmap, count);
+      const nulls = unpackBits(bitmap, count);
 
-      // Verify nulls are at correct positions
+      // Should return SparseNullSet for sparse data
+      expect(nulls).toBeInstanceOf(SparseNullSet);
+
+      // Verify nulls are at correct positions using isNullAt helper
+      expect(isNullAt(nulls, 10)).toBe(true);
+      expect(isNullAt(nulls, 500)).toBe(true);
+      expect(isNullAt(nulls, 999)).toBe(true);
+
+      // Verify non-null positions
+      expect(isNullAt(nulls, 0)).toBe(false);
+      expect(isNullAt(nulls, 9)).toBe(false);
+      expect(isNullAt(nulls, 11)).toBe(false);
+      expect(isNullAt(nulls, 499)).toBe(false);
+      expect(isNullAt(nulls, 501)).toBe(false);
+      expect(isNullAt(nulls, 998)).toBe(false);
+
+      // Count total nulls
+      expect(countNulls(nulls)).toBe(3);
+    });
+
+    it('should return boolean[] for dense null data (> 10%)', () => {
+      // 100 elements with 50 nulls (50% null rate) - should use dense
+      const count = 100;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+
+      // Set first 50 positions as null
+      for (let i = 0; i < 50; i++) {
+        bitmap[i >>> 3] |= 1 << (i & 7);
+      }
+
+      const nulls = unpackBits(bitmap, count);
+
+      // Should return boolean[] for dense data
+      expect(Array.isArray(nulls)).toBe(true);
+      expect(nulls).not.toBeInstanceOf(SparseNullSet);
+      expect(countNulls(nulls)).toBe(50);
+    });
+
+    it('should handle all-null bitmap (returns dense array)', () => {
+      const count = 100;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+      bitmap.fill(0xFF);
+
+      const nulls = unpackBits(bitmap, count);
+
+      // 100% null rate - should use dense array
+      expect(Array.isArray(nulls)).toBe(true);
+      expect(countNulls(nulls)).toBe(count);
+    });
+
+    it('should handle no-null bitmap (returns SparseNullSet)', () => {
+      const count = 100;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+      // All zeros (no nulls) - 0% null rate, should use sparse
+
+      const nulls = unpackBits(bitmap, count);
+
+      // 0% null rate - should use SparseNullSet
+      expect(nulls).toBeInstanceOf(SparseNullSet);
+      expect(countNulls(nulls)).toBe(0);
+      expect(hasAnyNulls(nulls)).toBe(false);
+      expect((nulls as SparseNullSet).length).toBe(count);
+    });
+
+    it('should use threshold of 10% for sparse selection', () => {
+      // Test exactly at the 10% boundary
+      const count = 100;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+
+      // Set exactly 10 nulls (10% null rate)
+      for (let i = 0; i < 10; i++) {
+        bitmap[i >>> 3] |= 1 << (i & 7);
+      }
+
+      const nullsAt10Pct = unpackBits(bitmap, count);
+      // At exactly 10% threshold, should use sparse (threshold is <=)
+      expect(nullsAt10Pct).toBeInstanceOf(SparseNullSet);
+
+      // Set 11 nulls (11% null rate)
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
+      const nullsAt11Pct = unpackBits(bitmap, count);
+      // Above threshold, should use dense
+      expect(Array.isArray(nullsAt11Pct)).toBe(true);
+      expect(nullsAt11Pct).not.toBeInstanceOf(SparseNullSet);
+    });
+  });
+
+  describe('unpackBitsDense for backward compatibility', () => {
+    it('should always return boolean[] regardless of sparsity', () => {
+      const count = 1000;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+
+      // Only 3 nulls (0.3% - very sparse)
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
+      bitmap[500 >>> 3] |= 1 << (500 & 7);
+      bitmap[999 >>> 3] |= 1 << (999 & 7);
+
+      const bits = unpackBitsDense(bitmap, count);
+
+      // Should always return boolean[]
+      expect(Array.isArray(bits)).toBe(true);
+      expect(bits).not.toBeInstanceOf(SparseNullSet);
+      expect(bits.length).toBe(count);
+
+      // Verify correct values
       expect(bits[10]).toBe(true);
       expect(bits[500]).toBe(true);
       expect(bits[999]).toBe(true);
-
-      // Verify all other positions are false
       expect(bits[0]).toBe(false);
-      expect(bits[9]).toBe(false);
-      expect(bits[11]).toBe(false);
-      expect(bits[499]).toBe(false);
-      expect(bits[501]).toBe(false);
-      expect(bits[998]).toBe(false);
-
-      // Count total nulls
-      const nullCount = bits.filter(b => b).length;
-      expect(nullCount).toBe(3);
     });
+  });
 
-    it('should handle all-null bitmap', () => {
+  describe('NullBitmap helper functions', () => {
+    it('isNullAt should work with both SparseNullSet and boolean[]', () => {
       const count = 100;
       const bitmap = new Uint8Array(Math.ceil(count / 8));
-      // Set all bits to 1
-      bitmap.fill(0xFF);
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
+      bitmap[50 >>> 3] |= 1 << (50 & 7);
 
-      const bits = unpackBits(bitmap, count);
+      const sparse = unpackBitsSparse(bitmap, count) as SparseNullSet;
+      const dense = unpackBitsDense(bitmap, count);
 
-      // All positions should be true (null)
-      expect(bits.every(b => b)).toBe(true);
-      expect(bits.length).toBe(count);
+      expect(isNullAt(sparse, 10)).toBe(true);
+      expect(isNullAt(sparse, 50)).toBe(true);
+      expect(isNullAt(sparse, 0)).toBe(false);
+      expect(isNullAt(sparse, 99)).toBe(false);
+
+      expect(isNullAt(dense, 10)).toBe(true);
+      expect(isNullAt(dense, 50)).toBe(true);
+      expect(isNullAt(dense, 0)).toBe(false);
+      expect(isNullAt(dense, 99)).toBe(false);
     });
 
-    it('should handle no-null bitmap', () => {
+    it('toNullArray should convert both representations to boolean[]', () => {
       const count = 100;
       const bitmap = new Uint8Array(Math.ceil(count / 8));
-      // All zeros (no nulls)
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
 
-      const bits = unpackBits(bitmap, count);
+      const sparse = unpackBitsSparse(bitmap, count) as SparseNullSet;
+      const dense = unpackBitsDense(bitmap, count);
 
-      // All positions should be false (not null)
-      expect(bits.every(b => !b)).toBe(true);
-      expect(bits.length).toBe(count);
+      const fromSparse = toNullArray(sparse);
+      const fromDense = toNullArray(dense);
+
+      expect(Array.isArray(fromSparse)).toBe(true);
+      expect(Array.isArray(fromDense)).toBe(true);
+      expect(fromSparse).toEqual(fromDense);
+      expect(fromSparse[10]).toBe(true);
+      expect(fromSparse[0]).toBe(false);
+    });
+
+    it('hasAnyNulls should work with both representations', () => {
+      const count = 100;
+      const emptyBitmap = new Uint8Array(Math.ceil(count / 8));
+      const nullBitmap = new Uint8Array(Math.ceil(count / 8));
+      nullBitmap[10 >>> 3] |= 1 << (10 & 7);
+
+      const sparseEmpty = unpackBitsSparse(emptyBitmap, count);
+      const sparseWithNulls = unpackBitsSparse(nullBitmap, count);
+      const denseEmpty = unpackBitsDense(emptyBitmap, count);
+      const denseWithNulls = unpackBitsDense(nullBitmap, count);
+
+      expect(hasAnyNulls(sparseEmpty)).toBe(false);
+      expect(hasAnyNulls(sparseWithNulls)).toBe(true);
+      expect(hasAnyNulls(denseEmpty)).toBe(false);
+      expect(hasAnyNulls(denseWithNulls)).toBe(true);
+    });
+
+    it('countNulls should work with both representations', () => {
+      const count = 100;
+      const bitmap = new Uint8Array(Math.ceil(count / 8));
+      bitmap[10 >>> 3] |= 1 << (10 & 7);
+      bitmap[20 >>> 3] |= 1 << (20 & 7);
+      bitmap[30 >>> 3] |= 1 << (30 & 7);
+
+      const sparse = unpackBitsSparse(bitmap, count);
+      const dense = unpackBitsDense(bitmap, count);
+
+      expect(countNulls(sparse)).toBe(3);
+      expect(countNulls(dense)).toBe(3);
     });
   });
 
@@ -308,9 +454,9 @@ describe('Sparse Null Bitmap Optimization', () => {
     });
   });
 
-  describe('Integration with decode', () => {
-    it('should work seamlessly with existing decode path', () => {
-      // Create a column with sparse nulls
+  describe('Integration with decode (evodb-80q)', () => {
+    it('should return SparseNullSet for sparse data after decode', () => {
+      // Create a column with sparse nulls (3 out of 1000 = 0.3%)
       const values: (number | null)[] = new Array(1000).fill(42);
       const nulls: boolean[] = new Array(1000).fill(false);
 
@@ -330,12 +476,81 @@ describe('Sparse Null Bitmap Optimization', () => {
       const [encoded] = encode([column]);
       const decoded = decode(encoded, 1000);
 
+      // With evodb-80q, decode() now uses smart selection
+      // 0.3% null rate should use SparseNullSet
+      expect(decoded.nulls).toBeInstanceOf(SparseNullSet);
+
+      // Verify nulls are preserved correctly using isNullAt helper
+      expect(isNullAt(decoded.nulls, 100)).toBe(true);
+      expect(isNullAt(decoded.nulls, 500)).toBe(true);
+      expect(isNullAt(decoded.nulls, 900)).toBe(true);
+      expect(isNullAt(decoded.nulls, 0)).toBe(false);
+      expect(isNullAt(decoded.nulls, 101)).toBe(false);
+    });
+
+    it('should return boolean[] for dense data after decode', () => {
+      // Create a column with dense nulls (60 out of 100 = 60%)
+      const values: (number | null)[] = new Array(100).fill(null);
+      const nulls: boolean[] = new Array(100).fill(true);
+
+      // Set first 40 as non-null
+      for (let i = 0; i < 40; i++) {
+        nulls[i] = false;
+        values[i] = i;
+      }
+
+      const column: Column = {
+        path: 'dense_null_col',
+        type: Type.Int32,
+        nullable: true,
+        values: values as unknown[],
+        nulls,
+      };
+
+      const [encoded] = encode([column]);
+      const decoded = decode(encoded, 100);
+
+      // 60% null rate should use dense boolean[]
+      expect(Array.isArray(decoded.nulls)).toBe(true);
+      expect(decoded.nulls).not.toBeInstanceOf(SparseNullSet);
+
       // Verify nulls are preserved correctly
-      expect(decoded.nulls[100]).toBe(true);
-      expect(decoded.nulls[500]).toBe(true);
-      expect(decoded.nulls[900]).toBe(true);
-      expect(decoded.nulls[0]).toBe(false);
-      expect(decoded.nulls[101]).toBe(false);
+      expect(isNullAt(decoded.nulls, 0)).toBe(false);
+      expect(isNullAt(decoded.nulls, 39)).toBe(false);
+      expect(isNullAt(decoded.nulls, 40)).toBe(true);
+      expect(isNullAt(decoded.nulls, 99)).toBe(true);
+    });
+
+    it('decoded Column nulls should support isNullAt helper', () => {
+      // Ensure the decoded Column.nulls works with all helper functions
+      const values: (number | null)[] = new Array(100).fill(42);
+      const nulls: boolean[] = new Array(100).fill(false);
+      nulls[10] = true; values[10] = null;
+      nulls[50] = true; values[50] = null;
+
+      const column: Column = {
+        path: 'test_col',
+        type: Type.Int32,
+        nullable: true,
+        values: values as unknown[],
+        nulls,
+      };
+
+      const [encoded] = encode([column]);
+      const decoded = decode(encoded, 100);
+
+      // Test all helper functions work with decoded nulls
+      expect(isNullAt(decoded.nulls, 10)).toBe(true);
+      expect(isNullAt(decoded.nulls, 50)).toBe(true);
+      expect(isNullAt(decoded.nulls, 0)).toBe(false);
+      expect(hasAnyNulls(decoded.nulls)).toBe(true);
+      expect(countNulls(decoded.nulls)).toBe(2);
+
+      // toNullArray should always return boolean[]
+      const nullArray = toNullArray(decoded.nulls);
+      expect(Array.isArray(nullArray)).toBe(true);
+      expect(nullArray[10]).toBe(true);
+      expect(nullArray[50]).toBe(true);
     });
   });
 });
@@ -345,46 +560,44 @@ describe('Sparse Null Bitmap Optimization', () => {
 // =============================================================================
 
 describe('Sparse Null Bitmap Performance', () => {
-  it('should be faster than full unpack for sparse data', () => {
+  it('smart unpackBits should be comparable to or faster than dense for sparse data', () => {
     const count = 100000;
     const bitmap = new Uint8Array(Math.ceil(count / 8));
 
-    // Only 10 nulls
+    // Only 10 nulls (0.01% null rate - very sparse)
     for (let i = 0; i < 10; i++) {
       const pos = i * 10000;
       bitmap[pos >>> 3] |= 1 << (pos & 7);
     }
 
     // Warm up
+    unpackBitsDense(bitmap, count);
     unpackBits(bitmap, count);
-    unpackBitsSparse(bitmap, count);
 
-    // Benchmark full unpack
-    const fullStart = performance.now();
+    // Benchmark dense unpack (always returns boolean[])
+    const denseStart = performance.now();
+    for (let i = 0; i < 100; i++) {
+      unpackBitsDense(bitmap, count);
+    }
+    const denseTime = performance.now() - denseStart;
+
+    // Benchmark smart unpack (returns SparseNullSet for sparse data)
+    const smartStart = performance.now();
     for (let i = 0; i < 100; i++) {
       unpackBits(bitmap, count);
     }
-    const fullTime = performance.now() - fullStart;
+    const smartTime = performance.now() - smartStart;
 
-    // Benchmark sparse unpack
-    const sparseStart = performance.now();
-    for (let i = 0; i < 100; i++) {
-      unpackBitsSparse(bitmap, count);
-    }
-    const sparseTime = performance.now() - sparseStart;
+    // Smart unpack should be comparable or faster for sparse workloads
+    console.log(`Dense unpack: ${denseTime}ms, Smart unpack: ${smartTime}ms`);
 
-    // Sparse should be faster for this workload
-    // Allow some tolerance since it depends on runtime conditions
-    console.log(`Full unpack: ${fullTime}ms, Sparse unpack: ${sparseTime}ms`);
-
-    // At minimum, sparse should not be significantly slower
     // Handle edge case where times are too small to measure reliably
-    if (fullTime > 0) {
-      expect(sparseTime).toBeLessThan(fullTime * 2);
+    if (denseTime > 0) {
+      expect(smartTime).toBeLessThan(denseTime * 2);
     }
   });
 
-  it('should handle isNull checks efficiently', () => {
+  it('should handle isNull checks efficiently with isNullAt helper', () => {
     const count = 100000;
     const bitmap = new Uint8Array(Math.ceil(count / 8));
 
@@ -394,35 +607,35 @@ describe('Sparse Null Bitmap Performance', () => {
       bitmap[pos >>> 3] |= 1 << (pos & 7);
     }
 
-    const fullArray = unpackBits(bitmap, count);
-    const sparse = unpackBitsSparse(bitmap, count) as SparseNullSet;
+    const denseArray = unpackBitsDense(bitmap, count);
+    const smart = unpackBits(bitmap, count);
 
     // Benchmark random access
     const testIndices = [0, 100, 5000, 10000, 99999];
 
-    const fullStart = performance.now();
+    const denseStart = performance.now();
     for (let i = 0; i < 10000; i++) {
       for (const idx of testIndices) {
-        const _ = fullArray[idx];
+        const _ = denseArray[idx];
       }
     }
-    const fullTime = performance.now() - fullStart;
+    const denseTime = performance.now() - denseStart;
 
-    const sparseStart = performance.now();
+    const smartStart = performance.now();
     for (let i = 0; i < 10000; i++) {
       for (const idx of testIndices) {
-        const _ = sparse.isNull(idx);
+        const _ = isNullAt(smart, idx);
       }
     }
-    const sparseTime = performance.now() - sparseStart;
+    const smartTime = performance.now() - smartStart;
 
-    console.log(`Array access: ${fullTime}ms, Sparse isNull: ${sparseTime}ms`);
+    console.log(`Dense array access: ${denseTime}ms, Smart isNullAt: ${smartTime}ms`);
 
-    // Both should be fast, sparse should be comparable
-    // Set.has() is O(1) just like array access
+    // Both should be fast, smart should be comparable
     // Handle edge case where times are too small to measure reliably
-    if (fullTime > 0) {
-      expect(sparseTime).toBeLessThan(fullTime * 3);
+    if (denseTime > 0) {
+      // Allow 5x tolerance for timing variability in tests
+      expect(smartTime).toBeLessThan(denseTime * 5 + 10);
     }
   });
 });

@@ -12,7 +12,8 @@
     }
   },
   "files": [
-    "dist",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "README.md"
   ],
   "scripts": {
@@ -45,5 +46,6 @@
     "@vitest/coverage-v8": "^1.0.0",
     "typescript": "^5.9.3",
     "vitest": "^1.0.0"
-  }
+  },
+  "sideEffects": false
 }

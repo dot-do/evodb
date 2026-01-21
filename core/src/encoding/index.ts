@@ -13,6 +13,11 @@ export {
   encode,
   decode,
   unpackBits,
+  // Dense bitmap unpacking for backward compatibility
+  unpackBitsDense,
+  // Lazy bitmap unpacking (Issue: evodb-a2x)
+  unpackBitsLazy,
+  type LazyBitmap,
   encodeDict,
   encodeDelta,
   // Fast decode paths for snippet constraints
@@ -22,12 +27,18 @@ export {
   iterateNonNullIndices,
   batchDecode,
   type FastDecodeOptions,
-  // Sparse null bitmap optimization (Issue: evodb-qp6)
+  // Sparse null bitmap optimization (Issue: evodb-qp6, evodb-80q)
   SparseNullSet,
   unpackBitsSparse,
   isAllNull,
   hasNoNulls,
   SPARSE_NULL_THRESHOLD,
+  // NullBitmap helper functions (Issue: evodb-80q)
+  type NullBitmap,
+  isNullAt,
+  toNullArray,
+  hasAnyNulls,
+  countNulls,
   // Decode bounds validation (Issue: evodb-imj)
   validateDecodeCount,
   validateBufferCapacity,

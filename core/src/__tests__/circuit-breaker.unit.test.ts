@@ -1,15 +1,9 @@
 /**
- * Circuit Breaker Tests for R2 Operations
- * Issue: evodb-9t6 - TDD: Add R2 circuit breakers
+ * Simplified Circuit Breaker Tests
+ * Issue: evodb-7d8 - Simplify circuit-breaker.ts for edge execution model
  *
- * Circuit breaker pattern implementation for resilient R2 storage operations.
- * Protects against cascading failures by opening the circuit after a threshold
- * of consecutive failures, then entering half-open state to probe for recovery.
- *
- * States:
- * - CLOSED: Normal operation, requests pass through
- * - OPEN: Circuit tripped, requests fail fast without calling backend
- * - HALF_OPEN: Probing for recovery, limited requests allowed
+ * Tests for the simplified circuit breaker using failure counter + exponential backoff.
+ * Optimized for Cloudflare Workers' ephemeral execution model.
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
@@ -25,9 +19,7 @@ import {
 import { MemoryStorage, type Storage } from '../storage.ts';
 
 /**
- * Creates a mock time provider that can be controlled in tests.
- * This allows us to simulate monotonic time progression without relying on
- * vitest's fake timers affecting performance.now().
+ * Creates a mock time provider for testing
  */
 function createMockTimeProvider(initialTime = 0): MonotonicTimeProvider & { advance: (ms: number) => void; setTime: (ms: number) => void } {
   let currentTime = initialTime;
@@ -42,23 +34,17 @@ function createMockTimeProvider(initialTime = 0): MonotonicTimeProvider & { adva
   };
 }
 
-describe('CircuitBreaker', () => {
+describe('CircuitBreaker (Simplified)', () => {
   let breaker: CircuitBreaker;
   let mockTimeProvider: ReturnType<typeof createMockTimeProvider>;
 
   beforeEach(() => {
-    vi.useFakeTimers();
     mockTimeProvider = createMockTimeProvider();
     breaker = new CircuitBreaker({
       failureThreshold: 3,
-      resetTimeoutMs: 5000,
-      halfOpenMaxAttempts: 1,
+      maxBackoffMs: 5000,
       timeProvider: mockTimeProvider,
     });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   describe('initial state', () => {
@@ -71,7 +57,7 @@ describe('CircuitBreaker', () => {
     });
   });
 
-  describe('CLOSED state', () => {
+  describe('CLOSED state behavior', () => {
     it('should allow operations to pass through', async () => {
       const result = await breaker.execute(() => Promise.resolve('success'));
       expect(result).toBe('success');
@@ -137,7 +123,7 @@ describe('CircuitBreaker', () => {
     });
   });
 
-  describe('OPEN state', () => {
+  describe('OPEN state behavior', () => {
     beforeEach(async () => {
       // Trip the circuit
       for (let i = 0; i < 3; i++) {
@@ -175,21 +161,18 @@ describe('CircuitBreaker', () => {
       }
     });
 
-    it('should transition to HALF_OPEN after reset timeout', async () => {
+    it('should transition to CLOSED after backoff expires', async () => {
       expect(breaker.getState()).toBe(CircuitState.OPEN);
 
-      // Advance monotonic time past reset timeout
-      mockTimeProvider.advance(5001);
-      vi.advanceTimersByTime(5001);
-
-      // Next call should attempt execution (half-open)
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+      // Advance time past backoff period
+      mockTimeProvider.advance(2000); // Initial backoff is 1000ms * 2^0 = 1000ms
+      expect(breaker.getState()).toBe(CircuitState.CLOSED);
     });
   });
 
-  describe('HALF_OPEN state', () => {
-    beforeEach(async () => {
-      // Trip the circuit
+  describe('exponential backoff', () => {
+    it('should increase backoff time with consecutive failures', async () => {
+      // Trip the circuit with 3 failures (threshold)
       for (let i = 0; i < 3; i++) {
         try {
           await breaker.execute(() => Promise.reject(new Error('fail')));
@@ -198,62 +181,47 @@ describe('CircuitBreaker', () => {
         }
       }
 
-      // Move to half-open state
-      mockTimeProvider.advance(5001);
-      vi.advanceTimersByTime(5001);
-    });
+      // First backoff: 1000 * 2^0 = 1000ms
+      expect(breaker.getState()).toBe(CircuitState.OPEN);
+      mockTimeProvider.advance(1001);
+      expect(breaker.getState()).toBe(CircuitState.CLOSED);
 
-    it('should be in HALF_OPEN state', () => {
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-    });
+      // Fail again to trigger longer backoff
+      try {
+        await breaker.execute(() => Promise.reject(new Error('fail')));
+      } catch {
+        // expected
+      }
 
-    it('should allow limited probe requests', async () => {
-      const operation = vi.fn(() => Promise.resolve('probe success'));
-      const result = await breaker.execute(operation);
-
-      expect(operation).toHaveBeenCalledOnce();
-      expect(result).toBe('probe success');
-    });
-
-    it('should transition to CLOSED on successful probe', async () => {
-      await breaker.execute(() => Promise.resolve('success'));
+      // Second backoff: 1000 * 2^1 = 2000ms
+      expect(breaker.getState()).toBe(CircuitState.OPEN);
+      mockTimeProvider.advance(1500);
+      expect(breaker.getState()).toBe(CircuitState.OPEN); // Still in backoff
+      mockTimeProvider.advance(600);
       expect(breaker.getState()).toBe(CircuitState.CLOSED);
     });
 
-    it('should reset failure count on successful recovery', async () => {
-      expect(breaker.getFailureCount()).toBe(3);
-      await breaker.execute(() => Promise.resolve('success'));
-      expect(breaker.getFailureCount()).toBe(0);
-    });
+    it('should cap backoff at maxBackoffMs', async () => {
+      const cappedBreaker = new CircuitBreaker({
+        failureThreshold: 1,
+        maxBackoffMs: 2000,
+        timeProvider: mockTimeProvider,
+      });
 
-    it('should transition back to OPEN on failed probe', async () => {
-      try {
-        await breaker.execute(() => Promise.reject(new Error('probe fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-    });
-
-    it('should reset the open timestamp on failed probe', async () => {
-      // First time in HALF_OPEN
-      try {
-        await breaker.execute(() => Promise.reject(new Error('probe fail')));
-      } catch {
-        // expected
+      // Trip many times to exceed cap
+      for (let i = 0; i < 10; i++) {
+        // Wait for backoff to expire before each failure
+        mockTimeProvider.advance(3000);
+        try {
+          await cappedBreaker.execute(() => Promise.reject(new Error('fail')));
+        } catch {
+          // expected
+        }
       }
 
-      // Should be OPEN again
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Need to wait full timeout again
-      mockTimeProvider.advance(4000);
-      vi.advanceTimersByTime(4000);
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      mockTimeProvider.advance(1001);
-      vi.advanceTimersByTime(1001);
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+      // Backoff should be capped at 2000ms, not exponentially huge
+      mockTimeProvider.advance(2001);
+      expect(cappedBreaker.getState()).toBe(CircuitState.CLOSED);
     });
   });
 
@@ -261,7 +229,8 @@ describe('CircuitBreaker', () => {
     it('should use custom failure threshold', async () => {
       const customBreaker = new CircuitBreaker({
         failureThreshold: 5,
-        resetTimeoutMs: 1000,
+        maxBackoffMs: 1000,
+        timeProvider: mockTimeProvider,
       });
 
       // 4 failures should not trip
@@ -283,36 +252,25 @@ describe('CircuitBreaker', () => {
       expect(customBreaker.getState()).toBe(CircuitState.OPEN);
     });
 
-    it('should use custom reset timeout', async () => {
-      const customTimeProvider = createMockTimeProvider();
-      const customBreaker = new CircuitBreaker({
+    it('should accept resetTimeoutMs for backward compatibility', async () => {
+      const backCompatBreaker = new CircuitBreaker({
         failureThreshold: 1,
-        resetTimeoutMs: 10000,
-        timeProvider: customTimeProvider,
+        resetTimeoutMs: 10000, // Should be used as maxBackoffMs
+        timeProvider: mockTimeProvider,
       });
 
-      // Trip the circuit
       try {
-        await customBreaker.execute(() => Promise.reject(new Error('fail')));
+        await backCompatBreaker.execute(() => Promise.reject(new Error('fail')));
       } catch {
         // expected
       }
-      expect(customBreaker.getState()).toBe(CircuitState.OPEN);
 
-      // 5 seconds should not be enough
-      customTimeProvider.advance(5000);
-      vi.advanceTimersByTime(5000);
-      expect(customBreaker.getState()).toBe(CircuitState.OPEN);
-
-      // 10+ seconds should trigger half-open
-      customTimeProvider.advance(5001);
-      vi.advanceTimersByTime(5001);
-      expect(customBreaker.getState()).toBe(CircuitState.HALF_OPEN);
+      // Should respect resetTimeoutMs as max backoff
+      expect(backCompatBreaker.getState()).toBe(CircuitState.OPEN);
     });
 
     it('should use default options when not specified', () => {
       const defaultBreaker = new CircuitBreaker();
-      // Default threshold is 5
       expect(defaultBreaker.getFailureCount()).toBe(0);
     });
   });
@@ -344,8 +302,7 @@ describe('CircuitBreaker', () => {
   });
 
   describe('error handling', () => {
-    it('should not count non-Error rejections as failures by default', async () => {
-      // String rejection
+    it('should count all rejections as failures by default', async () => {
       try {
         await breaker.execute(() => Promise.reject('string error'));
       } catch {
@@ -357,11 +314,11 @@ describe('CircuitBreaker', () => {
     it('should support custom failure predicate', async () => {
       const selectiveBreaker = new CircuitBreaker({
         failureThreshold: 2,
-        resetTimeoutMs: 5000,
+        maxBackoffMs: 5000,
         isFailure: (error) => {
-          // Only count network errors as failures
           return error instanceof Error && error.message.includes('network');
         },
+        timeProvider: mockTimeProvider,
       });
 
       // Business logic error - should not count
@@ -436,18 +393,16 @@ describe('CircuitBreaker', () => {
 describe('CircuitBreakerStorage', () => {
   let baseStorage: MemoryStorage;
   let storage: CircuitBreakerStorage;
+  let mockTimeProvider: ReturnType<typeof createMockTimeProvider>;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    mockTimeProvider = createMockTimeProvider();
     baseStorage = new MemoryStorage();
     storage = new CircuitBreakerStorage(baseStorage, {
       failureThreshold: 2,
-      resetTimeoutMs: 3000,
+      maxBackoffMs: 3000,
+      timeProvider: mockTimeProvider,
     });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   describe('normal operations (circuit closed)', () => {
@@ -505,7 +460,6 @@ describe('CircuitBreakerStorage', () => {
 
   describe('failure tracking', () => {
     it('should track failures on read errors', async () => {
-      // Create a failing storage
       const failingStorage: Storage = {
         async read() {
           throw new Error('R2 unavailable');
@@ -518,7 +472,8 @@ describe('CircuitBreakerStorage', () => {
       };
       const cbStorage = new CircuitBreakerStorage(failingStorage, {
         failureThreshold: 2,
-        resetTimeoutMs: 3000,
+        maxBackoffMs: 3000,
+        timeProvider: mockTimeProvider,
       });
 
       try {
@@ -546,7 +501,8 @@ describe('CircuitBreakerStorage', () => {
       };
       const cbStorage = new CircuitBreakerStorage(failingStorage, {
         failureThreshold: 2,
-        resetTimeoutMs: 3000,
+        maxBackoffMs: 3000,
+        timeProvider: mockTimeProvider,
       });
 
       // First failure
@@ -592,7 +548,8 @@ describe('CircuitBreakerStorage', () => {
       };
       cbStorage = new CircuitBreakerStorage(failingStorage, {
         failureThreshold: 2,
-        resetTimeoutMs: 3000,
+        maxBackoffMs: 3000,
+        timeProvider: mockTimeProvider,
       });
 
       // Trip the circuit
@@ -634,9 +591,8 @@ describe('CircuitBreakerStorage', () => {
     });
   });
 
-  describe('recovery (half-open state)', () => {
-    it('should recover after successful probe', async () => {
-      const recoveryTimeProvider = createMockTimeProvider();
+  describe('recovery after backoff', () => {
+    it('should recover after backoff expires and operation succeeds', async () => {
       let shouldFail = true;
       const conditionalStorage: Storage = {
         async read() {
@@ -651,8 +607,8 @@ describe('CircuitBreakerStorage', () => {
       };
       const cbStorage = new CircuitBreakerStorage(conditionalStorage, {
         failureThreshold: 2,
-        resetTimeoutMs: 3000,
-        timeProvider: recoveryTimeProvider,
+        maxBackoffMs: 3000,
+        timeProvider: mockTimeProvider,
       });
 
       // Trip the circuit
@@ -668,22 +624,21 @@ describe('CircuitBreakerStorage', () => {
       }
       expect(cbStorage.getCircuitState()).toBe(CircuitState.OPEN);
 
-      // Advance time to half-open
-      recoveryTimeProvider.advance(3001);
-      vi.advanceTimersByTime(3001);
-      expect(cbStorage.getCircuitState()).toBe(CircuitState.HALF_OPEN);
+      // Advance time past backoff (initial backoff is 1000ms)
+      mockTimeProvider.advance(1500);
+      expect(cbStorage.getCircuitState()).toBe(CircuitState.CLOSED);
 
       // Fix the backend
       shouldFail = false;
 
-      // Successful probe should close circuit
+      // Successful operation should reset failure count
       const result = await cbStorage.read('test.bin');
       expect(result).toEqual(new Uint8Array([1, 2, 3]));
       expect(cbStorage.getCircuitState()).toBe(CircuitState.CLOSED);
+      expect(cbStorage.getFailureCount()).toBe(0);
     });
 
-    it('should return to OPEN on failed probe', async () => {
-      const probeTimeProvider = createMockTimeProvider();
+    it('should increase backoff on continued failures', async () => {
       const failingStorage: Storage = {
         async read() {
           throw new Error('still failing');
@@ -696,8 +651,8 @@ describe('CircuitBreakerStorage', () => {
       };
       const cbStorage = new CircuitBreakerStorage(failingStorage, {
         failureThreshold: 1,
-        resetTimeoutMs: 3000,
-        timeProvider: probeTimeProvider,
+        maxBackoffMs: 10000,
+        timeProvider: mockTimeProvider,
       });
 
       // Trip the circuit
@@ -708,12 +663,11 @@ describe('CircuitBreakerStorage', () => {
       }
       expect(cbStorage.getCircuitState()).toBe(CircuitState.OPEN);
 
-      // Advance time to half-open
-      probeTimeProvider.advance(3001);
-      vi.advanceTimersByTime(3001);
-      expect(cbStorage.getCircuitState()).toBe(CircuitState.HALF_OPEN);
+      // Advance time past first backoff
+      mockTimeProvider.advance(1001);
+      expect(cbStorage.getCircuitState()).toBe(CircuitState.CLOSED);
 
-      // Failed probe
+      // Fail again - should trigger longer backoff
       try {
         await cbStorage.read('test.bin');
       } catch {
@@ -721,6 +675,12 @@ describe('CircuitBreakerStorage', () => {
       }
 
       expect(cbStorage.getCircuitState()).toBe(CircuitState.OPEN);
+
+      // First backoff expired, second backoff is 2000ms
+      mockTimeProvider.advance(1500);
+      expect(cbStorage.getCircuitState()).toBe(CircuitState.OPEN); // Still in second backoff
+      mockTimeProvider.advance(600);
+      expect(cbStorage.getCircuitState()).toBe(CircuitState.CLOSED); // Second backoff expired
     });
   });
 
@@ -728,7 +688,7 @@ describe('CircuitBreakerStorage', () => {
     it('should create CircuitBreakerStorage with createCircuitBreakerStorage', async () => {
       const storage = createCircuitBreakerStorage(baseStorage, {
         failureThreshold: 3,
-        resetTimeoutMs: 5000,
+        maxBackoffMs: 5000,
       });
 
       expect(storage).toBeInstanceOf(CircuitBreakerStorage);
@@ -747,7 +707,6 @@ describe('CircuitBreakerStorage', () => {
 
   describe('integration with Storage interface', () => {
     it('should implement Storage interface correctly', () => {
-      // Type check - CircuitBreakerStorage should be assignable to Storage
       const storageInterface: Storage = storage;
 
       expect(typeof storageInterface.read).toBe('function');
@@ -760,268 +719,51 @@ describe('CircuitBreakerStorage', () => {
     });
 
     it('should be usable as a drop-in replacement', async () => {
-      // Function that expects Storage interface
       async function writeAndRead(s: Storage, path: string, data: Uint8Array) {
         await s.write(path, data);
         return s.read(path);
       }
 
-      // Should work with CircuitBreakerStorage
       const result = await writeAndRead(storage, 'test.bin', new Uint8Array([1, 2, 3]));
       expect(result).toEqual(new Uint8Array([1, 2, 3]));
     });
   });
 });
 
-/**
- * Tests for monotonic time handling in circuit breaker
- * Issue: evodb-jc1 - TDD: Use monotonic time in circuit breaker
- *
- * These tests verify that the circuit breaker correctly handles system clock
- * changes by using monotonic time (via configurable timeProvider) instead of
- * wall-clock time (Date.now()).
- *
- * The tests use a mock time provider to simulate clock behavior, proving that
- * the circuit breaker's elapsed time calculations are immune to wall-clock
- * changes like NTP sync, manual adjustments, or leap seconds.
- */
-describe('CircuitBreaker monotonic time handling', () => {
-  afterEach(() => {
-    vi.useRealTimers();
+describe('Backward Compatibility', () => {
+  it('should export CircuitState.HALF_OPEN for backward compatibility', () => {
+    expect(CircuitState.HALF_OPEN).toBe('HALF_OPEN');
   });
 
-  describe('backward clock jump immunity', () => {
-    it('should transition to HALF_OPEN based on monotonic time even when wall clock jumps backward', async () => {
-      // This test proves the circuit breaker uses monotonic time:
-      // - We simulate a scenario where the wall clock (Date.now) could jump backward
-      // - The circuit should still transition to HALF_OPEN after the timeout
-      //   based on monotonic time, not wall-clock time
-
-      vi.useFakeTimers();
-      const monotonicTime = createMockTimeProvider();
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: monotonicTime,
-      });
-
-      // Trip the circuit
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Advance monotonic time past the timeout (6 seconds > 5 second timeout)
-      // Even if the wall clock jumped backward, this should work
-      monotonicTime.advance(6000);
-
-      // Circuit should transition to HALF_OPEN based on monotonic time
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+  it('should accept halfOpenMaxAttempts option without error', () => {
+    const mockTimeProvider = createMockTimeProvider();
+    // This should not throw
+    const breaker = new CircuitBreaker({
+      failureThreshold: 3,
+      resetTimeoutMs: 5000,
+      halfOpenMaxAttempts: 1,
+      timeProvider: mockTimeProvider,
     });
-
-    it('should NOT transition to HALF_OPEN if only wall clock advances but monotonic time does not', async () => {
-      // This proves that wall-clock changes don't affect the circuit breaker
-      vi.useFakeTimers();
-      const monotonicTime = createMockTimeProvider();
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: monotonicTime,
-      });
-
-      // Trip the circuit
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Advance wall clock (Date.now) but NOT monotonic time
-      vi.advanceTimersByTime(10000);
-
-      // Monotonic time hasn't advanced, so circuit should still be OPEN
-      // (only 0ms elapsed in monotonic time)
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Now advance monotonic time
-      monotonicTime.advance(5001);
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-    });
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
   });
 
-  describe('forward clock jump handling', () => {
-    it('should handle large time jumps correctly', async () => {
-      vi.useFakeTimers();
-      const monotonicTime = createMockTimeProvider();
+  it('should work with chaos test patterns', async () => {
+    const mockTimeProvider = createMockTimeProvider();
+    const breaker = new CircuitBreaker({
+      failureThreshold: 3,
+      resetTimeoutMs: 5000,
+      timeProvider: mockTimeProvider,
+    });
 
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: monotonicTime,
-      });
-
-      // Trip the circuit
+    // Pattern from chaos.unit.test.ts
+    for (let i = 0; i < 3; i++) {
       try {
         await breaker.execute(() => Promise.reject(new Error('fail')));
       } catch {
         // expected
       }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
+    }
 
-      // Simulate a large time jump (e.g., 24 hours)
-      monotonicTime.advance(86400000);
-
-      // Should correctly transition to HALF_OPEN
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-    });
-  });
-
-  describe('clock stability during state transitions', () => {
-    it('should correctly track elapsed time across multiple state transitions', async () => {
-      vi.useFakeTimers();
-      const monotonicTime = createMockTimeProvider();
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        halfOpenMaxAttempts: 1,
-        timeProvider: monotonicTime,
-      });
-
-      // Trip the circuit (t=0)
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Advance partial time (t=2000)
-      monotonicTime.advance(2000);
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Advance to timeout (t=5001)
-      monotonicTime.advance(3001);
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-
-      // Failed probe - returns to OPEN with new timestamp
-      try {
-        await breaker.execute(() => Promise.reject(new Error('probe fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Need to wait full timeout again from the new open time
-      monotonicTime.advance(4000);
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      monotonicTime.advance(1001);
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-    });
-
-    it('should store lastOpenedAt using Date.now for logging/debugging purposes', async () => {
-      vi.useFakeTimers();
-      const monotonicTime = createMockTimeProvider();
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: monotonicTime,
-      });
-
-      const beforeTrip = Date.now();
-
-      // Trip the circuit
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-
-      const stats = breaker.getStats();
-      // lastOpenedAt should use Date.now() for human-readable timestamps
-      expect(stats.lastOpenedAt).toBeDefined();
-      expect(stats.lastOpenedAt).toBeGreaterThanOrEqual(beforeTrip);
-    });
-  });
-
-  describe('edge case safeguards', () => {
-    it('should handle negative elapsed time gracefully', async () => {
-      // This tests the safeguard against negative elapsed time
-      // (shouldn't happen with monotonic time, but defensive coding)
-      vi.useFakeTimers();
-
-      // Create a time provider that returns decreasing values (simulating corruption)
-      let time = 1000;
-      const decreasingTimeProvider: MonotonicTimeProvider = {
-        now: () => {
-          const result = time;
-          time -= 100; // Decrease each call
-          return result;
-        },
-      };
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: decreasingTimeProvider,
-      });
-
-      // Trip the circuit (recorded at t=1000)
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Next call to timeProvider.now() returns 900, then 800, etc.
-      // Elapsed would be negative, but safeguard treats it as 0
-      // So circuit should remain OPEN (not crash or behave unexpectedly)
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-    });
-
-    it('should force transition to HALF_OPEN on NaN/Infinity elapsed time', async () => {
-      vi.useFakeTimers();
-
-      // Create a time provider that returns valid time initially,
-      // then NaN on subsequent calls (simulating corruption)
-      let callCount = 0;
-      const nanTimeProvider: MonotonicTimeProvider = {
-        now: () => {
-          callCount++;
-          // Return valid time for first two calls (trip and initial check)
-          if (callCount <= 2) return 1000;
-          // Return NaN afterward (simulating memory corruption)
-          return NaN;
-        },
-      };
-
-      const breaker = new CircuitBreaker({
-        failureThreshold: 1,
-        resetTimeoutMs: 5000,
-        timeProvider: nanTimeProvider,
-      });
-
-      // Trip the circuit (call 1: records openedAtMonotonic = 1000)
-      try {
-        await breaker.execute(() => Promise.reject(new Error('fail')));
-      } catch {
-        // expected
-      }
-      // First getState call (call 2: now() returns 1000, elapsed = 0, stays OPEN)
-      expect(breaker.getState()).toBe(CircuitState.OPEN);
-
-      // Second getState call (call 3: now() returns NaN)
-      // Elapsed would be NaN, safeguard forces transition to HALF_OPEN
-      // to prevent circuit from being stuck forever
-      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-    });
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
   });
 });

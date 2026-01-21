@@ -5,7 +5,12 @@
  * Implements the R2Bucket interface with full functionality.
  */
 
-import type { R2Bucket, R2Object, R2ListOptions, R2Objects } from '@evodb/reader';
+import type {
+  SimpleR2Bucket as R2Bucket,
+  SimpleR2Object as R2Object,
+  SimpleR2ListOptions as R2ListOptions,
+  SimpleR2Objects as R2Objects,
+} from '@evodb/query';
 
 /**
  * In-memory R2 object implementation

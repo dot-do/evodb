@@ -20,6 +20,8 @@ import {
   writeBlock,
   readBlock,
   Type,
+  unpackBitsDense,
+  unpackBitsLazy,
 } from '../index.js';
 
 // Generate test data
@@ -217,6 +219,53 @@ describe('Performance Benchmarks', () => {
       expect(buildTime).toBeLessThan(10);
       expect(lookupTime).toBeLessThan(50);
     });
+
+    it('should compare linear search vs indexed lookup for multi-column operations', () => {
+      // Generate a dataset with many columns to emphasize the O(n²) vs O(n) difference
+      const manyColumnDocs = Array.from({ length: 1000 }, (_, i) => {
+        const doc: Record<string, unknown> = { id: i };
+        // Create 50 columns to make the linear search more expensive
+        for (let j = 0; j < 50; j++) {
+          doc[`field_${j}`] = `value_${i}_${j}`;
+        }
+        return doc;
+      });
+      const manyColumns = shred(manyColumnDocs);
+      const allPaths = manyColumns.map(c => c.path);
+
+      // Measure linear search approach (simulating old behavior)
+      const linearStart = performance.now();
+      const linearResult: Record<string, unknown[]> = {};
+      for (const path of allPaths) {
+        // This simulates the old O(n) linear search per path = O(n²) total
+        const col = manyColumns.find(c => c.path === path);
+        if (col) {
+          linearResult[path] = col.values.map((v, i) => col.nulls[i] ? null : v);
+        }
+      }
+      const linearTime = performance.now() - linearStart;
+
+      // Measure indexed approach (new behavior)
+      const indexedStart = performance.now();
+      const indexedResult = extractPaths(manyColumns, allPaths);
+      const indexedTime = performance.now() - indexedStart;
+
+      console.log(`Linear Search vs Indexed Lookup (${manyColumns.length} columns, 1K rows):`);
+      console.log(`  Linear search (O(n²)): ${formatTime(linearTime)}`);
+      console.log(`  Indexed lookup (O(n)): ${formatTime(indexedTime)}`);
+      console.log(`  Speedup: ${(linearTime / indexedTime).toFixed(2)}x`);
+
+      // Verify correctness - results should be identical
+      expect(Object.keys(indexedResult).length).toBe(Object.keys(linearResult).length);
+      for (const path of allPaths) {
+        expect(indexedResult[path]).toEqual(linearResult[path]);
+      }
+
+      // Indexed should be faster (or at least not significantly slower)
+      // With 50+ columns, the index approach should show clear benefits
+      // Handle edge case where both times are 0 (too fast to measure in some environments)
+      expect(indexedTime).toBeLessThanOrEqual(linearTime * 1.5 + 1); // Allow some variance and 1ms for precision
+    });
   });
 
   describe('Block Format Performance', () => {
@@ -338,6 +387,208 @@ describe('Performance Benchmarks', () => {
 
       console.log(`RLE Encoding:`);
       console.log(`  batch column: encoding=${['Plain', 'RLE', 'Dict', 'Delta'][batchCol.encoding]}, size=${formatBytes(batchCol.data.length)}`);
+    });
+
+    it('should demonstrate TextEncoder reuse benefit for string encoding', () => {
+      // Create string-heavy data to stress test TextEncoder usage
+      const stringDocs = Array.from({ length: 10000 }, (_, i) => ({
+        message: `This is a longer message content with varying data for item ${i} that requires text encoding`,
+        description: `Description text for document number ${i} with additional context and details`,
+        title: `Title ${i}`,
+      }));
+
+      const stringColumns = shred(stringDocs);
+
+      // Measure overhead of creating TextEncoder instances (independent of encoding)
+      const allocationIterations = 1000;
+      const allocationStart = performance.now();
+      for (let i = 0; i < allocationIterations; i++) {
+        // Creating 3 encoders per iteration simulates the old approach
+        const _e1 = new TextEncoder();
+        const _e2 = new TextEncoder();
+        const _e3 = new TextEncoder();
+      }
+      const allocationTime = performance.now() - allocationStart;
+      const avgAllocationTime = allocationTime / allocationIterations;
+
+      // Verify that encoding with the optimized approach works correctly
+      const encoded = encode(stringColumns);
+
+      // Verify correctness: all string columns should be encoded
+      const stringColumnCount = stringColumns.filter(c => c.type === Type.String).length;
+      expect(encoded.length).toBeGreaterThanOrEqual(stringColumnCount);
+
+      // Verify that encoded data can be decoded back
+      const messageCol = encoded.find(c => c.path === 'message');
+      expect(messageCol).toBeDefined();
+      expect(messageCol!.data.length).toBeGreaterThan(0);
+
+      // Log the allocation overhead we're avoiding per call
+      console.log(`TextEncoder Reuse Benefit:`);
+      console.log(`  Allocation overhead per 3 encoders: ${formatTime(avgAllocationTime)}`);
+      console.log(`  Total allocation overhead (${allocationIterations} iterations): ${formatTime(allocationTime)}`);
+      console.log(`  Encoded ${encoded.length} columns from ${stringDocs.length} string docs`);
+      console.log(`  Note: With module-level sharedTextEncoder, this allocation is done once at import time`);
+
+      // The test passes if encoding works correctly - timing assertions are logged but not enforced
+      // since timing can vary significantly across different environments (CI, workerd, etc.)
+      expect(encoded.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Lazy vs Eager Bitmap Unpacking (Issue: evodb-a2x)', () => {
+    /**
+     * Helper to create a packed bitmap from boolean array
+     */
+    function packBits(bits: boolean[]): Uint8Array {
+      const bytes = new Uint8Array(Math.ceil(bits.length / 8));
+      for (let i = 0; i < bits.length; i++) {
+        if (bits[i]) bytes[i >>> 3] |= 1 << (i & 7);
+      }
+      return bytes;
+    }
+
+    it('should demonstrate lazy advantage for sparse access patterns', () => {
+      const count = 100000; // 100K elements
+      const sparseRate = 0.001; // 0.1% = 100 true values
+      const accessCount = 10; // Only access 10 indices
+
+      // Create sparse bitmap
+      const bits = Array.from({ length: count }, (_, i) => Math.random() < sparseRate);
+      const packed = packBits(bits);
+
+      // Pre-select random indices to access
+      const indicesToAccess = Array.from({ length: accessCount }, () =>
+        Math.floor(Math.random() * count)
+      );
+
+      // Benchmark eager unpacking
+      const eagerStart = performance.now();
+      const eagerResult = unpackBitsDense(packed, count);
+      for (const idx of indicesToAccess) {
+        const _val = eagerResult[idx];
+      }
+      const eagerTime = performance.now() - eagerStart;
+
+      // Benchmark lazy unpacking
+      const lazyStart = performance.now();
+      const lazyResult = unpackBitsLazy(packed, count);
+      for (const idx of indicesToAccess) {
+        const _val = lazyResult.get(idx);
+      }
+      const lazyTime = performance.now() - lazyStart;
+
+      // Verify correctness
+      for (const idx of indicesToAccess) {
+        expect(lazyResult.get(idx)).toBe(eagerResult[idx]);
+      }
+
+      // Calculate memory difference (approximate)
+      const eagerMemory = count; // ~100KB for boolean array (1 byte per boolean in JS)
+      const lazyMemory = 8 + 8 + packed.length; // object overhead + length + bytes reference
+
+      console.log(`Lazy vs Eager Bitmap Unpacking (${count.toLocaleString()} elements, ${accessCount} accesses):`);
+      console.log(`  Eager time: ${formatTime(eagerTime)}`);
+      console.log(`  Lazy time: ${formatTime(lazyTime)}`);
+      console.log(`  Speedup: ${(eagerTime / lazyTime).toFixed(2)}x`);
+      console.log(`  Eager memory: ${formatBytes(eagerMemory)}`);
+      console.log(`  Lazy memory: ~${formatBytes(lazyMemory)} (no array allocation)`);
+      console.log(`  Memory savings: ${formatBytes(eagerMemory - lazyMemory)}`);
+
+      // Lazy should be faster for sparse access (or at least not slower)
+      // Allow some variance since timing can be noisy
+      expect(lazyTime).toBeLessThanOrEqual(eagerTime * 2 + 1);
+    });
+
+    it('should show eager advantage for dense access patterns', () => {
+      const count = 10000; // 10K elements
+      const accessRate = 0.9; // Access 90% of indices
+
+      // Create bitmap
+      const bits = Array.from({ length: count }, (_, i) => i % 3 === 0);
+      const packed = packBits(bits);
+
+      // Access almost all indices
+      const indicesToAccess = Array.from({ length: count }, (_, i) => i)
+        .filter(() => Math.random() < accessRate);
+
+      // Benchmark eager unpacking
+      const eagerStart = performance.now();
+      const eagerResult = unpackBitsDense(packed, count);
+      for (const idx of indicesToAccess) {
+        const _val = eagerResult[idx];
+      }
+      const eagerTime = performance.now() - eagerStart;
+
+      // Benchmark lazy unpacking
+      const lazyStart = performance.now();
+      const lazyResult = unpackBitsLazy(packed, count);
+      for (const idx of indicesToAccess) {
+        const _val = lazyResult.get(idx);
+      }
+      const lazyTime = performance.now() - lazyStart;
+
+      // Verify correctness
+      for (const idx of indicesToAccess) {
+        expect(lazyResult.get(idx)).toBe(eagerResult[idx]);
+      }
+
+      console.log(`Lazy vs Eager for Dense Access (${count.toLocaleString()} elements, ${indicesToAccess.length} accesses):`);
+      console.log(`  Eager time: ${formatTime(eagerTime)}`);
+      console.log(`  Lazy time: ${formatTime(lazyTime)}`);
+      console.log(`  Note: For dense access, eager may be faster due to array caching`);
+
+      // Both approaches should complete in reasonable time
+      expect(eagerTime).toBeLessThan(100);
+      expect(lazyTime).toBeLessThan(100);
+    });
+
+    it('should measure memory allocation difference', () => {
+      const count = 100000; // 100K elements
+
+      // Create bitmap
+      const bits = Array.from({ length: count }, (_, i) => i % 7 === 0);
+      const packed = packBits(bits);
+
+      // Get baseline memory (if available)
+      const getMemory = () => {
+        if (typeof process !== 'undefined' && process.memoryUsage) {
+          return process.memoryUsage().heapUsed;
+        }
+        return 0;
+      };
+
+      // Measure eager allocation
+      const baselineMemory = getMemory();
+      const eagerResult = unpackBitsDense(packed, count);
+      const afterEagerMemory = getMemory();
+      const eagerAllocation = afterEagerMemory - baselineMemory;
+
+      // Force GC if available (Node.js with --expose-gc)
+      if (typeof global !== 'undefined' && (global as unknown as { gc?: () => void }).gc) {
+        (global as unknown as { gc: () => void }).gc();
+      }
+
+      // Measure lazy allocation
+      const beforeLazyMemory = getMemory();
+      const lazyResult = unpackBitsLazy(packed, count);
+      const afterLazyMemory = getMemory();
+      const lazyAllocation = afterLazyMemory - beforeLazyMemory;
+
+      // Use results to prevent optimization
+      expect(eagerResult.length).toBe(count);
+      expect(lazyResult.length).toBe(count);
+
+      console.log(`Memory Allocation (${count.toLocaleString()} elements):`);
+      console.log(`  Eager allocation: ${formatBytes(eagerAllocation)}`);
+      console.log(`  Lazy allocation: ${formatBytes(lazyAllocation)}`);
+      console.log(`  Savings: ${formatBytes(eagerAllocation - lazyAllocation)}`);
+
+      // Lazy should allocate less memory
+      // Note: This assertion may be flaky due to GC timing, so we log but don't fail
+      if (eagerAllocation > 0 && lazyAllocation >= 0) {
+        console.log(`  Lazy allocates ${((1 - lazyAllocation / eagerAllocation) * 100).toFixed(1)}% less memory`);
+      }
     });
   });
 });
