@@ -357,3 +357,87 @@ describe('LakehouseWriter retry behavior', () => {
     expect(writer.getPendingBlockCount()).toBe(1);
   });
 });
+
+describe('LakehouseWriter cache invalidation', () => {
+  let mockBucket: R2Bucket;
+
+  beforeEach(() => {
+    mockBucket = createMockR2Bucket();
+  });
+
+  it('should call cache invalidation manager on successful flush', async () => {
+    const onCommitSpy = vi.fn().mockResolvedValue({
+      success: true,
+      invalidatedPaths: ['test/table/data/block.cjlb'],
+    });
+
+    const mockCacheManager = {
+      createCommitEventFromFlush: vi.fn().mockReturnValue({
+        table: 'table',
+        partition: 'do-sqlite',
+        snapshotId: 'snap_001',
+        affectedPaths: ['test/table/data/block.cjlb'],
+        timestamp: Date.now(),
+        operation: 'write',
+      }),
+      onCommit: onCommitSpy,
+    };
+
+    const writer = LakehouseWriter.withStrategies(
+      {
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+        partitionMode: 'do-sqlite',
+      },
+      {
+        cacheInvalidationManager: mockCacheManager as any,
+      }
+    );
+
+    // Add entries and flush
+    await writer.receiveCDC('source-1', [createMockWalEntry(1), createMockWalEntry(2)]);
+    const result = await writer.flush();
+
+    expect(result.status).toBe('persisted');
+    expect(mockCacheManager.createCommitEventFromFlush).toHaveBeenCalled();
+    expect(onCommitSpy).toHaveBeenCalled();
+  });
+
+  it('should not call cache invalidation when no manager is configured', async () => {
+    const writer = new LakehouseWriter({
+      r2Bucket: mockBucket,
+      tableLocation: 'test/table',
+      partitionMode: 'do-sqlite',
+    });
+
+    // No cache manager configured
+    expect(writer.getCacheInvalidationManager()).toBeUndefined();
+
+    // Add entries and flush
+    await writer.receiveCDC('source-1', [createMockWalEntry(1), createMockWalEntry(2)]);
+    const result = await writer.flush();
+
+    // Should still succeed without cache invalidation
+    expect(result.status).toBe('persisted');
+  });
+
+  it('should expose cache invalidation manager via getter', () => {
+    const mockCacheManager = {
+      createCommitEventFromFlush: vi.fn(),
+      createCommitEventFromCompaction: vi.fn(),
+      onCommit: vi.fn(),
+    };
+
+    const writer = LakehouseWriter.withStrategies(
+      {
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      },
+      {
+        cacheInvalidationManager: mockCacheManager as any,
+      }
+    );
+
+    expect(writer.getCacheInvalidationManager()).toBe(mockCacheManager);
+  });
+});
