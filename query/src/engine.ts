@@ -195,7 +195,16 @@ import {
 /**
  * R2DataSource - Reads table data from R2 bucket using the manifest format.
  *
- * TODO: Integrate with @evodb/reader for production use.
+ * This is a minimal implementation that provides the TableDataSource interface
+ * for the full QueryEngine. It generates synthetic data from partition zone map
+ * metadata, which is useful for testing partition pruning and zone map optimization.
+ *
+ * For production use with actual columnar JSON data, use SimpleQueryEngine from
+ * this package, which provides proper columnar format parsing with validation
+ * via parseAndValidateBlockData().
+ *
+ * @see SimpleQueryEngine - Full reader implementation with columnar JSON parsing
+ * @see parseAndValidateBlockData - Columnar data validation utility
  */
 export class R2DataSource implements TableDataSource {
   private readonly bucket: R2Bucket;
@@ -250,7 +259,14 @@ export class R2DataSource implements TableDataSource {
 
   /**
    * Parse columnar data from R2.
-   * TODO: Implement proper columnar format parsing with @evodb/reader.
+   *
+   * This implementation generates synthetic data from partition zone map metadata,
+   * useful for testing zone map optimization and partition pruning without actual data.
+   *
+   * For production columnar JSON parsing with validation, use SimpleQueryEngine
+   * which provides parseAndValidateBlockData() for proper columnar format handling.
+   *
+   * @internal
    */
   private parseColumnarData(_data: ArrayBuffer, partition: PartitionInfo): Record<string, unknown>[] {
     const rows: Record<string, unknown>[] = [];
