@@ -31,6 +31,7 @@ import type {
   TableDataSourceMetadata,
   QueryExecutionOptions,
   SubrequestContext,
+  StreamingThresholdConfig,
 } from './types.js';
 
 import { SUBREQUEST_BUDGETS } from './types.js';
@@ -196,6 +197,24 @@ import {
   DEFAULT_MOCK_ROW_COUNT,
   DEFAULT_MOCK_PARTITION_SIZE,
 } from '@evodb/core';
+
+// =============================================================================
+// Adaptive Streaming Thresholds
+// =============================================================================
+
+/**
+ * Default row count threshold for adaptive streaming.
+ * If estimated row count exceeds this, use streaming mode.
+ * For datasets below this threshold, batch loading is faster.
+ */
+export const DEFAULT_STREAMING_THRESHOLD_ROWS = 50000;
+
+/**
+ * Default byte size threshold for adaptive streaming.
+ * If estimated data size exceeds this (10MB), use streaming mode.
+ * For datasets below this threshold, batch loading is faster.
+ */
+export const DEFAULT_STREAMING_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10MB
 
 // =============================================================================
 // Data Sources
@@ -2393,6 +2412,12 @@ export class QueryEngine {
    */
   private readonly subrequestBudget?: number;
 
+  /**
+   * Streaming threshold configuration for adaptive streaming.
+   * Determines when to use batch vs streaming processing.
+   */
+  private readonly streamingThreshold: Required<StreamingThresholdConfig>;
+
   constructor(config: QueryEngineConfig) {
     this.config = config;
     this.planner = new QueryPlanner(config);
@@ -2402,6 +2427,12 @@ export class QueryEngine {
     this.resultProcessor = new ResultProcessor();
     this.subrequestContext = config.subrequestContext ?? 'worker';
     this.subrequestBudget = config.subrequestBudget;
+
+    // Initialize streaming threshold with defaults
+    this.streamingThreshold = {
+      rows: config.streamingThreshold?.rows ?? DEFAULT_STREAMING_THRESHOLD_ROWS,
+      bytes: config.streamingThreshold?.bytes ?? DEFAULT_STREAMING_THRESHOLD_BYTES,
+    };
 
     // Data source is required - use R2DataSource for production or MockDataSource for testing
     if (!config.dataSource) {
@@ -2425,6 +2456,71 @@ export class QueryEngine {
    */
   private createSubrequestTracker(): SubrequestTracker {
     return new SubrequestTracker(this.subrequestContext, this.subrequestBudget);
+  }
+
+  /**
+   * Determine if streaming mode should be used based on estimated dataset size.
+   *
+   * Uses zone map statistics and partition metadata to estimate size.
+   * Falls back to streaming if size cannot be determined (safe default).
+   *
+   * @param partitions - Partitions to estimate size from
+   * @param query - Query with optional hints to force batch/streaming
+   * @returns true if streaming should be used, false for batch processing
+   */
+  private shouldUseStreaming(
+    partitions: PartitionInfo[],
+    query: Query
+  ): boolean {
+    // Check query hints first - they take precedence
+    if (query.hints?.forceBatch) {
+      return false; // Force batch mode
+    }
+    if (query.hints?.forceStreaming) {
+      return true; // Force streaming mode
+    }
+
+    // If no partitions, use batch (nothing to stream)
+    if (partitions.length === 0) {
+      return false;
+    }
+
+    // Estimate total rows from partition metadata (zone maps)
+    let estimatedRows = 0;
+    let estimatedBytes = 0;
+    let hasRowEstimate = false;
+    let hasBytesEstimate = false;
+
+    for (const partition of partitions) {
+      // Use rowCount from partition if available
+      if (partition.rowCount !== undefined && partition.rowCount > 0) {
+        estimatedRows += partition.rowCount;
+        hasRowEstimate = true;
+      }
+
+      // Use sizeBytes from partition if available
+      if (partition.sizeBytes !== undefined && partition.sizeBytes > 0) {
+        estimatedBytes += partition.sizeBytes;
+        hasBytesEstimate = true;
+      }
+    }
+
+    // If we have estimates, check against thresholds
+    if (hasRowEstimate && estimatedRows > this.streamingThreshold.rows) {
+      return true; // Exceeds row threshold, use streaming
+    }
+    if (hasBytesEstimate && estimatedBytes > this.streamingThreshold.bytes) {
+      return true; // Exceeds bytes threshold, use streaming
+    }
+
+    // If we have estimates and they're below thresholds, use batch
+    if (hasRowEstimate || hasBytesEstimate) {
+      return false;
+    }
+
+    // No estimates available - fall back to streaming for safety
+    // This ensures we don't accidentally load huge datasets into memory
+    return true;
   }
 
   /**
@@ -2549,8 +2645,9 @@ export class QueryEngine {
     // Start scan operation tracking
     memoryTracker.startOperation('scan', 0);
 
-    // MEMORY-EFFICIENT STREAMING: Filter rows AS they are loaded from each partition
-    // This prevents loading all 100MB+ datasets into memory before filtering
+    // ADAPTIVE STREAMING: Choose between batch and streaming based on estimated dataset size
+    // - Small datasets (below threshold): Load all data at once for fast batch processing
+    // - Large datasets (above threshold): Stream and filter row-by-row for memory efficiency
     let filteredRows: Record<string, unknown>[] = [];
     let rowsScanned = 0;
     let columnValidated = false;
@@ -2559,11 +2656,32 @@ export class QueryEngine {
     const hasOrderBy = query.orderBy && query.orderBy.length > 0;
     const hasPredicates = predicates && predicates.length > 0;
 
+    // Determine if we should use streaming based on estimated size
+    const useStreaming = this.shouldUseStreaming(partitions, query);
+
     // Determine if we can use early termination (only when no aggregations/sorting needed)
     const canEarlyTerminate = query.limit !== undefined && !hasAggregations && !hasOrderBy;
     const earlyTerminateLimit = canEarlyTerminate && query.limit !== undefined
       ? (query.offset || 0) + query.limit
       : Infinity;
+
+    // Helper function to validate columns on first row
+    const validateColumns = (row: Record<string, unknown>) => {
+      if (!columnValidated && hasPredicates && predicates) {
+        for (const predicate of predicates) {
+          const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
+          if (isAggAlias) continue;
+          const columnExists =
+            (Object.keys(schema).length > 0 && schema[predicate.column]) ||
+            predicate.column in row ||
+            predicate.column.includes('.');
+          if (!columnExists) {
+            throw new Error(`Column not found: ${predicate.column}`);
+          }
+        }
+        columnValidated = true;
+      }
+    };
 
     if (dataSourceWithRows.getTableRows) {
       // Optimized path: direct row access (e.g., MockDataSource)
@@ -2580,29 +2698,30 @@ export class QueryEngine {
         memoryTracker.startOperation('filter', rowsScanned);
       }
 
-      // Stream through rows, filtering as we go to minimize memory usage
-      for (const row of allRows) {
-        // Column validation on first row only
-        if (!columnValidated && hasPredicates) {
-          for (const predicate of predicates) {
-            const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
-            if (isAggAlias) continue;
-            const columnExists =
-              (Object.keys(schema).length > 0 && schema[predicate.column]) ||
-              predicate.column in row ||
-              predicate.column.includes('.');
-            if (!columnExists) {
-              throw new Error(`Column not found: ${predicate.column}`);
-            }
-          }
-          columnValidated = true;
+      if (!useStreaming && !canEarlyTerminate) {
+        // BATCH MODE: For small datasets, use efficient batch filtering
+        // Validate columns on first row
+        if (allRows.length > 0) {
+          validateColumns(allRows[0]);
         }
 
-        // Apply filter immediately - only keep matching rows in memory
-        if (!hasPredicates || this.matchesAllPredicates(row, predicates)) {
-          filteredRows.push(row);
-          // Early termination when we have enough rows
-          if (filteredRows.length >= earlyTerminateLimit) break;
+        // Batch filter all rows at once (more efficient for small datasets)
+        if (hasPredicates && predicates) {
+          filteredRows = allRows.filter(row => this.matchesAllPredicates(row, predicates));
+        } else {
+          filteredRows = [...allRows];
+        }
+      } else {
+        // STREAMING MODE: For large datasets or early termination, filter row-by-row
+        for (const row of allRows) {
+          validateColumns(row);
+
+          // Apply filter immediately - only keep matching rows in memory
+          if (!hasPredicates || this.matchesAllPredicates(row, predicates!)) {
+            filteredRows.push(row);
+            // Early termination when we have enough rows
+            if (filteredRows.length >= earlyTerminateLimit) break;
+          }
         }
       }
 
@@ -2610,9 +2729,48 @@ export class QueryEngine {
       if (hasPredicates) {
         memoryTracker.endOperation('filter', filteredRows.length);
       }
+    } else if (!useStreaming) {
+      // BATCH MODE: Load all partition data at once, then filter
+      // This is faster for small datasets (< 50k rows or < 10MB)
+      const allRows: Record<string, unknown>[] = [];
+
+      for (const partition of partitions) {
+        checkAbortSignal(signal);
+        subrequestTracker.increment();
+
+        const partitionRows = await this.dataSource.readPartition(partition);
+        rowsScanned += partitionRows.length;
+        allRows.push(...partitionRows);
+      }
+
+      // Track memory for loaded rows
+      memoryTracker.trackRows(allRows, 100);
+      memoryTracker.endOperation('scan', rowsScanned);
+
+      // Start filter operation if we have predicates
+      if (hasPredicates) {
+        memoryTracker.startOperation('filter', rowsScanned);
+      }
+
+      // Validate columns on first row
+      if (allRows.length > 0) {
+        validateColumns(allRows[0]);
+      }
+
+      // Batch filter all rows at once
+      if (hasPredicates && predicates) {
+        filteredRows = allRows.filter(row => this.matchesAllPredicates(row, predicates));
+      } else {
+        filteredRows = allRows;
+      }
+
+      // End filter operation if we had predicates
+      if (hasPredicates) {
+        memoryTracker.endOperation('filter', filteredRows.length);
+      }
     } else {
-      // Standard path: read from partitions with streaming filter
-      // This is the critical path for 100MB+ datasets
+      // STREAMING MODE: Read from partitions with streaming filter
+      // This is the memory-efficient path for 100MB+ datasets
       for (const partition of partitions) {
         checkAbortSignal(signal);
         subrequestTracker.increment();
@@ -2623,24 +2781,10 @@ export class QueryEngine {
         // Stream through partition rows, filtering immediately
         // Do NOT accumulate all rows first - filter as we go
         for (const row of partitionRows) {
-          // Column validation on first row only
-          if (!columnValidated && hasPredicates) {
-            for (const predicate of predicates) {
-              const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
-              if (isAggAlias) continue;
-              const columnExists =
-                (Object.keys(schema).length > 0 && schema[predicate.column]) ||
-                predicate.column in row ||
-                predicate.column.includes('.');
-              if (!columnExists) {
-                throw new Error(`Column not found: ${predicate.column}`);
-              }
-            }
-            columnValidated = true;
-          }
+          validateColumns(row);
 
           // Apply filter immediately - only keep matching rows in memory
-          if (!hasPredicates || this.matchesAllPredicates(row, predicates)) {
+          if (!hasPredicates || this.matchesAllPredicates(row, predicates!)) {
             filteredRows.push(row);
             memoryTracker.trackRow(row);
           }

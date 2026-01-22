@@ -500,6 +500,21 @@ export interface QueryHints {
 
   /** Memory limit in bytes */
   memoryLimitBytes?: number;
+
+  /**
+   * Force streaming mode regardless of dataset size.
+   * When true, always uses memory-efficient streaming even for small datasets.
+   * When false (default), uses adaptive streaming based on estimated size.
+   */
+  forceStreaming?: boolean;
+
+  /**
+   * Force batch mode regardless of dataset size.
+   * When true, always loads all data at once (fast for small datasets).
+   * When false (default), uses adaptive streaming based on estimated size.
+   * Takes precedence over forceStreaming if both are set.
+   */
+  forceBatch?: boolean;
 }
 
 /**
@@ -1413,6 +1428,57 @@ export interface QueryEngineConfig {
    * Useful for testing or custom environments.
    */
   subrequestBudget?: number;
+
+  /**
+   * Streaming threshold configuration for adaptive streaming.
+   *
+   * The query engine uses adaptive streaming to optimize performance:
+   * - Small datasets (below threshold): Load all data at once for fast batch processing
+   * - Large datasets (above threshold): Stream and filter row-by-row for memory efficiency
+   *
+   * If not specified, defaults are used (50,000 rows or 10MB).
+   */
+  streamingThreshold?: StreamingThresholdConfig;
+}
+
+/**
+ * Configuration for adaptive streaming thresholds.
+ *
+ * The query engine uses these thresholds to decide between:
+ * - Batch processing: Fast, loads all data at once (good for small datasets)
+ * - Streaming processing: Memory-efficient, filters as data loads (good for large datasets)
+ *
+ * Either rows or bytes threshold can trigger streaming mode - whichever is exceeded first.
+ *
+ * @example
+ * ```typescript
+ * // Custom thresholds for memory-constrained environment
+ * const threshold: StreamingThresholdConfig = {
+ *   rows: 10000,           // Stream if more than 10k rows
+ *   bytes: 5 * 1024 * 1024 // Stream if more than 5MB
+ * };
+ *
+ * // Aggressive streaming for very limited memory
+ * const lowMemThreshold: StreamingThresholdConfig = {
+ *   rows: 1000,
+ *   bytes: 1024 * 1024 // 1MB
+ * };
+ * ```
+ */
+export interface StreamingThresholdConfig {
+  /**
+   * Row count threshold for streaming.
+   * If estimated row count exceeds this, use streaming mode.
+   * @default 50000
+   */
+  rows?: number;
+
+  /**
+   * Byte size threshold for streaming.
+   * If estimated data size exceeds this, use streaming mode.
+   * @default 10485760 (10MB)
+   */
+  bytes?: number;
 }
 
 /**

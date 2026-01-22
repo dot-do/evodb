@@ -146,6 +146,7 @@ export type {
   // Configuration types
   QueryEngineConfig,
   CacheConfig,
+  StreamingThresholdConfig,
 
   // Data source types
   TableDataSource,
@@ -204,6 +205,9 @@ export {
   createAggregationEngine,
   createCacheManager,
   createResultProcessor,
+  // Adaptive streaming thresholds
+  DEFAULT_STREAMING_THRESHOLD_ROWS,
+  DEFAULT_STREAMING_THRESHOLD_BYTES,
 } from './engine.js';
 
 // =============================================================================
