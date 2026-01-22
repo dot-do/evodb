@@ -152,7 +152,7 @@ describe('Unified Storage Interface', () => {
       });
 
       it('should throw for non-existent key', async () => {
-        await expect(storage.readRange('nonexistent', 0, 10)).rejects.toThrow('Object not found');
+        await expect(storage.readRange('nonexistent', 0, 10)).rejects.toThrow(/not found.*nonexistent/i);
       });
 
       // ==========================================================================

@@ -5,6 +5,12 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Compiled files in src (build output goes to dist/)
+**/src/*.js
+**/src/*.d.ts
+**/src/*.js.map
+**/src/*.d.ts.map
+
 # Test coverage
 coverage/
 

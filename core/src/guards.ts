@@ -1,400 +1,112 @@
 /**
  * Type Guards for EvoDB
  *
- * Provides runtime type validation functions that narrow TypeScript types.
- * Use these guards before type assertions to ensure type safety.
+ * This file re-exports from the centralized type-guards module for backward
+ * compatibility. New code should import directly from '@evodb/core' or
+ * '@evodb/core/guards'.
+ *
+ * @deprecated Import from '@evodb/core' or '@evodb/core/guards' instead
+ * @see type-guards.ts for the canonical implementation
  *
  * @example
  * ```typescript
- * import { isArray, isRecord } from './guards.js';
+ * // Preferred: import from core
+ * import { isArray, isRecord, assertString } from '@evodb/core';
  *
- * function processValue(val: unknown): void {
- *   if (isArray(val)) {
- *     // TypeScript now knows val is unknown[]
- *     val.forEach(item => console.log(item));
- *   } else if (isRecord(val)) {
- *     // TypeScript now knows val is Record<string, unknown>
- *     Object.keys(val).forEach(key => console.log(key, val[key]));
- *   }
- * }
+ * // Alternative: import from guards submodule
+ * import { isArray, isRecord, assertString } from '@evodb/core/guards';
  * ```
  */
 
-/**
- * Type guard: check if value is an array
- *
- * @param value - Value to check
- * @returns True if value is an array, narrowing type to unknown[]
- *
- * @example
- * ```typescript
- * const data: unknown = [1, 2, 3];
- * if (isArray(data)) {
- *   // data is now typed as unknown[]
- *   console.log(data.length);
- * }
- * ```
- */
-export function isArray(value: unknown): value is unknown[] {
-  return Array.isArray(value);
-}
+// Re-export everything from the centralized type-guards module
+export {
+  // Primitive type guards
+  isString,
+  isNumber,
+  isNumberIncludingNaN,
+  isBoolean,
+  isBigInt,
+  isFunction,
+  isSymbol,
 
-/**
- * Type guard: check if value is a plain object (not null, not array)
- *
- * This is more strict than `typeof value === 'object'` as it excludes:
- * - null
- * - arrays
- * - class instances (by default objects but often not what you want)
- *
- * @param value - Value to check
- * @returns True if value is a plain object, narrowing type to Record<string, unknown>
- *
- * @example
- * ```typescript
- * const data: unknown = { name: 'Alice', age: 30 };
- * if (isRecord(data)) {
- *   // data is now typed as Record<string, unknown>
- *   console.log(data.name);
- * }
- * ```
- */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+  // Nullish type guards
+  isNull,
+  isUndefined,
+  isNullish,
+  isNotNullish,
 
-/**
- * Type guard: check if value is a number
- *
- * Note: This excludes NaN by default since NaN often causes unexpected behavior.
- * Use isNumberIncludingNaN if you need to include NaN values.
- *
- * @param value - Value to check
- * @returns True if value is a finite number, narrowing type to number
- *
- * @example
- * ```typescript
- * const data: unknown = 42;
- * if (isNumber(data)) {
- *   // data is now typed as number
- *   console.log(data * 2);
- * }
- * ```
- */
-export function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && !Number.isNaN(value);
-}
+  // Object type guards
+  isArray,
+  isRecord,
+  isPlainObject,
+  isDate,
+  isValidDate,
+  isUint8Array,
+  isArrayBuffer,
+  isError,
+  isPromise,
+  isRegExp,
+  isMap,
+  isSet,
 
-/**
- * Type guard: check if value is a number (including NaN)
- *
- * @param value - Value to check
- * @returns True if value is a number (including NaN), narrowing type to number
- */
-export function isNumberIncludingNaN(value: unknown): value is number {
-  return typeof value === 'number';
-}
+  // Compound type guards
+  isNumberTuple,
+  isArrayOf,
+  isNonEmptyString,
+  isFiniteNumber,
+  isPositiveNumber,
+  isNonNegativeNumber,
+  isInteger,
+  isPositiveInteger,
+  isNonNegativeInteger,
 
-/**
- * Type guard: check if value is a string
- *
- * @param value - Value to check
- * @returns True if value is a string, narrowing type to string
- *
- * @example
- * ```typescript
- * const data: unknown = 'hello';
- * if (isString(data)) {
- *   // data is now typed as string
- *   console.log(data.toUpperCase());
- * }
- * ```
- */
-export function isString(value: unknown): value is string {
-  return typeof value === 'string';
-}
+  // Property checking guards
+  hasProperty,
+  hasProperties,
+  hasTypedProperty,
+  hasStringProperty,
+  hasNumberProperty,
+  hasBooleanProperty,
+  hasArrayProperty,
 
-/**
- * Type guard: check if value is a boolean
- *
- * @param value - Value to check
- * @returns True if value is a boolean, narrowing type to boolean
- *
- * @example
- * ```typescript
- * const data: unknown = true;
- * if (isBoolean(data)) {
- *   // data is now typed as boolean
- *   console.log(!data);
- * }
- * ```
- */
-export function isBoolean(value: unknown): value is boolean {
-  return typeof value === 'boolean';
-}
+  // Assertion guards
+  assertString,
+  assertNumber,
+  assertBoolean,
+  assertArray,
+  assertRecord,
+  assertNumberTuple,
+  assertDefined,
+  // Note: assertNever is exported from types.ts to avoid duplicate exports
 
-/**
- * Type guard: check if value is null or undefined
- *
- * @param value - Value to check
- * @returns True if value is null or undefined
- *
- * @example
- * ```typescript
- * const data: unknown = null;
- * if (isNullish(data)) {
- *   console.log('Value is null or undefined');
- * }
- * ```
- */
-export function isNullish(value: unknown): value is null | undefined {
-  return value === null || value === undefined;
-}
+  // Domain-specific guards (general)
+  isAscii,
+  isUUID,
+  isJsonPrimitive,
+  isJsonValue,
 
-/**
- * Type guard: check if value is not null or undefined
- *
- * This is useful for filtering out nullish values while preserving type narrowing.
- *
- * @param value - Value to check
- * @returns True if value is not null or undefined
- *
- * @example
- * ```typescript
- * const items: (string | null)[] = ['a', null, 'b'];
- * const filtered: string[] = items.filter(isNotNullish);
- * ```
- */
-export function isNotNullish<T>(value: T): value is NonNullable<T> {
-  return value !== null && value !== undefined;
-}
+  // EvoDB domain-specific guards (type narrowing versions)
+  isBlockId,
+  isTableId,
 
-/**
- * Type guard: check if value is a bigint
- *
- * @param value - Value to check
- * @returns True if value is a bigint, narrowing type to bigint
- */
-export function isBigInt(value: unknown): value is bigint {
-  return typeof value === 'bigint';
-}
+  // EvoDB interface guards
+  isColumn,
+  isEncodedColumn,
+  isSchemaColumn,
+  isSchema,
+  isColumnStats,
+  isWalEntry,
+  isBlockHeader,
+  isTableSchemaColumn,
+  isTableSchema,
+  isRpcWalEntry,
 
-/**
- * Type guard: check if value is a function
- *
- * @param value - Value to check
- * @returns True if value is a function
- */
-export function isFunction(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === 'function';
-}
-
-/**
- * Type guard: check if value is a Date instance
- *
- * @param value - Value to check
- * @returns True if value is a Date instance
- */
-export function isDate(value: unknown): value is Date {
-  return value instanceof Date;
-}
-
-/**
- * Type guard: check if value is a valid Date (not Invalid Date)
- *
- * @param value - Value to check
- * @returns True if value is a valid Date instance
- */
-export function isValidDate(value: unknown): value is Date {
-  return value instanceof Date && !Number.isNaN(value.getTime());
-}
-
-/**
- * Type guard: check if value is a Uint8Array
- *
- * @param value - Value to check
- * @returns True if value is a Uint8Array
- */
-export function isUint8Array(value: unknown): value is Uint8Array {
-  return value instanceof Uint8Array;
-}
-
-/**
- * Type guard: check if value is an ArrayBuffer
- *
- * @param value - Value to check
- * @returns True if value is an ArrayBuffer
- */
-export function isArrayBuffer(value: unknown): value is ArrayBuffer {
-  return value instanceof ArrayBuffer;
-}
-
-/**
- * Assertion helper: assert value is an array or throw
- *
- * @param value - Value to assert
- * @param message - Optional error message
- * @throws TypeError if value is not an array
- */
-export function assertArray(value: unknown, message?: string): asserts value is unknown[] {
-  if (!isArray(value)) {
-    throw new TypeError(message ?? `Expected array, got ${typeof value}`);
-  }
-}
-
-/**
- * Assertion helper: assert value is a record or throw
- *
- * @param value - Value to assert
- * @param message - Optional error message
- * @throws TypeError if value is not a record
- */
-export function assertRecord(value: unknown, message?: string): asserts value is Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new TypeError(message ?? `Expected object, got ${typeof value}`);
-  }
-}
-
-/**
- * Assertion helper: assert value is a number or throw
- *
- * @param value - Value to assert
- * @param message - Optional error message
- * @throws TypeError if value is not a number
- */
-export function assertNumber(value: unknown, message?: string): asserts value is number {
-  if (!isNumber(value)) {
-    throw new TypeError(message ?? `Expected number, got ${typeof value}`);
-  }
-}
-
-/**
- * Assertion helper: assert value is a string or throw
- *
- * @param value - Value to assert
- * @param message - Optional error message
- * @throws TypeError if value is not a string
- */
-export function assertString(value: unknown, message?: string): asserts value is string {
-  if (!isString(value)) {
-    throw new TypeError(message ?? `Expected string, got ${typeof value}`);
-  }
-}
-
-// =============================================================================
-// Advanced Type Guards
-// =============================================================================
-
-/**
- * Type guard: check if value is a tuple of two numbers
- *
- * Useful for range values like [min, max] or [lo, hi].
- * Excludes NaN values by default for safety.
- *
- * @param value - Value to check
- * @returns True if value is a [number, number] tuple
- *
- * @example
- * ```typescript
- * const range: unknown = [10, 20];
- * if (isNumberTuple(range)) {
- *   const [lo, hi] = range;
- *   console.log(`Range: ${lo} to ${hi}`);
- * }
- * ```
- */
-export function isNumberTuple(value: unknown): value is [number, number] {
-  return (
-    Array.isArray(value) &&
-    value.length === 2 &&
-    isNumber(value[0]) &&
-    isNumber(value[1])
-  );
-}
-
-/**
- * Type guard: check if value is an array where all elements pass a guard
- *
- * @param value - Value to check
- * @param guard - Type guard function to apply to each element
- * @returns True if value is an array and all elements pass the guard
- *
- * @example
- * ```typescript
- * const data: unknown = [1, 2, 3];
- * if (isArrayOf(data, isNumber)) {
- *   // data is now typed as number[]
- *   const sum = data.reduce((a, b) => a + b, 0);
- * }
- * ```
- */
-export function isArrayOf<T>(
-  value: unknown,
-  guard: (item: unknown) => item is T
-): value is T[] {
-  return Array.isArray(value) && value.every(guard);
-}
-
-/**
- * Type guard: check if a record has a specific property
- *
- * This is useful for safely accessing properties on unknown objects
- * after validating they exist.
- *
- * @param value - Value to check (must be a record)
- * @param key - Property key to check for
- * @returns True if value is a record with the specified property
- *
- * @example
- * ```typescript
- * const data: unknown = { name: 'Alice', age: 30 };
- * if (hasProperty(data, 'name')) {
- *   console.log(data.name); // TypeScript knows 'name' exists
- * }
- * ```
- */
-export function hasProperty<K extends string>(
-  value: unknown,
-  key: K
-): value is Record<string, unknown> & Record<K, unknown> {
-  return isRecord(value) && key in value;
-}
-
-/**
- * Type guard: check if a record has all specified properties
- *
- * @param value - Value to check (must be a record)
- * @param keys - Array of property keys to check for
- * @returns True if value is a record with all specified properties
- *
- * @example
- * ```typescript
- * const data: unknown = { lsn: '123', timestamp: '456', op: 1 };
- * if (hasProperties(data, ['lsn', 'timestamp', 'op'])) {
- *   // TypeScript knows all properties exist
- *   console.log(data.lsn, data.timestamp, data.op);
- * }
- * ```
- */
-export function hasProperties<K extends string>(
-  value: unknown,
-  keys: K[]
-): value is Record<string, unknown> & Record<K, unknown> {
-  return isRecord(value) && keys.every(key => key in value);
-}
-
-/**
- * Assertion helper: assert value is a [number, number] tuple or throw
- *
- * @param value - Value to assert
- * @param message - Optional error message
- * @throws TypeError if value is not a [number, number] tuple
- */
-export function assertNumberTuple(
-  value: unknown,
-  message?: string
-): asserts value is [number, number] {
-  if (!isNumberTuple(value)) {
-    throw new TypeError(message ?? 'Expected [number, number] tuple');
-  }
-}
+  // Type guards for unsafe cast replacement (evodb-u602)
+  isTableManifest,
+  hasInFilter,
+  isSnapshotRef,
+  isSchemaRef,
+  isInternalMetric,
+  isHistogramData,
+  isInternalHistogram,
+} from './type-guards.js';

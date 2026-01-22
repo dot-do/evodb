@@ -1,0 +1,15 @@
+# EvoDB Vector Search Example
+# Cloudflare Workers configuration
+
+name = "evodb-vector-search-example"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Uncomment to enable R2 storage for Lance datasets
+# [[r2_buckets]]
+# binding = "EMBEDDINGS_BUCKET"
+# bucket_name = "evodb-embeddings"
+
+# Uncomment to enable Cloudflare AI for embeddings
+# [ai]
+# binding = "AI"

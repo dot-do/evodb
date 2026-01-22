@@ -12,7 +12,17 @@
 import { type Column, type ColumnStats, type EncodedColumn, Encoding, Type, assertNever } from './types.js';
 import { internString } from './string-intern-pool.js';
 import { EncodingValidationError } from './errors.js';
-import { isArray, isRecord, isBoolean, isBigInt, isNumber, isString, isNullish, isUint8Array, isDate } from './guards.js';
+import {
+  isArray,
+  isRecord,
+  isBoolean,
+  isBigInt,
+  isNumber,
+  isString,
+  isNullish,
+  isUint8Array,
+  isDate,
+} from './type-guards.js';
 
 // =============================================================================
 // MODULE-LEVEL CONSTANTS
@@ -87,8 +97,14 @@ export function assertType(value: unknown, expectedType: Type, context: string):
   }
 
   if (!valid) {
-    throw new Error(
-      `Type assertion failed in ${context}: expected ${Type[expectedType]}, got ${actualType} (value: ${String(value).slice(0, 50)})`
+    throw new EncodingValidationError(
+      `Type assertion failed in ${context}: expected ${getTypeName(expectedType)}, got ${actualType}`,
+      'TYPE_MISMATCH',
+      {
+        expectedType: getTypeName(expectedType),
+        actualType,
+        actualValue: typeof value === 'string' ? value.slice(0, 50) : value,
+      }
     );
   }
 }
@@ -976,28 +992,52 @@ export const MAX_DECODE_COUNT = 2 ** 31 - 1; // ~2 billion, safe for typed array
  *
  * @param count - The count value to validate
  * @param context - Description of where the validation is occurring
- * @throws Error if count is invalid (negative, NaN, Infinity, or exceeds safe integer)
+ * @throws EncodingValidationError if count is invalid (negative, NaN, Infinity, or exceeds safe integer)
  */
 export function validateDecodeCount(count: number, context: string): void {
   if (typeof count !== 'number') {
-    throw new Error(`Invalid count in ${context}: expected number, got ${typeof count}`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: expected number, got ${typeof count}`,
+      'TYPE_MISMATCH',
+      { expectedType: 'number', actualType: typeof count }
+    );
   }
   if (Number.isNaN(count)) {
-    throw new Error(`Invalid count in ${context}: count cannot be NaN`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: count cannot be NaN`,
+      'VALIDATION_ERROR',
+      { actualValue: count }
+    );
   }
   if (!Number.isFinite(count)) {
-    throw new Error(`Invalid count in ${context}: count cannot be Infinity`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: count cannot be Infinity`,
+      'VALIDATION_ERROR',
+      { actualValue: count }
+    );
   }
   if (count < 0) {
-    throw new Error(`Invalid count in ${context}: count cannot be negative (got ${count})`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: count cannot be negative (got ${count})`,
+      'VALIDATION_ERROR',
+      { actualValue: count }
+    );
   }
   // Check for counts that would exceed array capacity or cause memory issues
   if (count > MAX_DECODE_COUNT) {
-    throw new Error(`Invalid count in ${context}: count ${count} exceeds maximum safe capacity ${MAX_DECODE_COUNT}`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: count ${count} exceeds maximum safe capacity ${MAX_DECODE_COUNT}`,
+      'VALIDATION_ERROR',
+      { actualValue: count, maxAllowed: MAX_DECODE_COUNT }
+    );
   }
   // Ensure count is an integer
   if (!Number.isInteger(count)) {
-    throw new Error(`Invalid count in ${context}: count must be an integer (got ${count})`);
+    throw new EncodingValidationError(
+      `Invalid count in ${context}: count must be an integer (got ${count})`,
+      'TYPE_MISMATCH',
+      { expectedType: 'integer', actualValue: count }
+    );
   }
 }
 
@@ -1008,7 +1048,7 @@ export function validateDecodeCount(count: number, context: string): void {
  * @param count - Number of elements to decode
  * @param bytesPerElement - Bytes required per element
  * @param context - Description of where the validation is occurring
- * @throws Error if buffer is too small for requested count
+ * @throws EncodingValidationError if buffer is too small for requested count
  */
 export function validateBufferCapacity(
   bufferLength: number,
@@ -1020,9 +1060,15 @@ export function validateBufferCapacity(
 
   const requiredBytes = count * bytesPerElement;
   if (requiredBytes > bufferLength) {
-    throw new Error(
-      `Buffer capacity exceeded in ${context}: ` +
-      `requested ${count} elements (${requiredBytes} bytes) but buffer has ${bufferLength} bytes`
+    throw new EncodingValidationError(
+      `Buffer capacity exceeded in ${context}: requested ${count} elements (${requiredBytes} bytes) but buffer has ${bufferLength} bytes`,
+      'VALIDATION_ERROR',
+      {
+        requestedCount: count,
+        requiredBytes,
+        availableBytes: bufferLength,
+        bytesPerElement,
+      }
     );
   }
 }
@@ -1063,7 +1109,11 @@ function decodeDict(data: Uint8Array, _nulls: NullBitmap, rowCount: number): unk
 
   // Bounds check for dictSize read - corrupt data should throw
   if (data.byteLength < 4) {
-    throw new Error('Corrupt dictionary data: insufficient bytes for dictionary header');
+    throw new EncodingValidationError(
+      'Corrupt dictionary data: insufficient bytes for dictionary header (need 4 bytes, got ' + data.byteLength + ')',
+      'VALIDATION_ERROR',
+      { expectedMinBytes: 4, actualBytes: data.byteLength, encoding: 'Dict' }
+    );
   }
 
   const dictSize = view.getUint32(offset, true); offset += 4;

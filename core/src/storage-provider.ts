@@ -264,48 +264,18 @@ export interface StorageProvider {
 // R2 BUCKET INTERFACE (for type safety)
 // =============================================================================
 
-/**
- * Minimal R2Bucket interface for storage operations.
- * Compatible with Cloudflare Workers R2Bucket binding.
- */
-export interface R2BucketLike {
-  get(key: string): Promise<R2ObjectLike | null>;
-  put(key: string, value: ArrayBuffer | Uint8Array | string, options?: R2PutOptionsLike): Promise<R2ObjectLike>;
-  delete(key: string): Promise<void>;
-  list(options?: R2ListOptionsLike): Promise<R2ObjectsLike>;
-  head(key: string): Promise<R2ObjectLike | null>;
-}
+// R2 types are now centralized in types/r2.ts (Issue evodb-sdgz)
+// Re-export for backward compatibility
+export type {
+  R2BucketLike,
+  R2ObjectLike,
+  R2ObjectsLike,
+  R2PutOptionsLike,
+  R2ListOptionsLike,
+} from './types/r2.js';
 
-export interface R2ObjectLike {
-  key: string;
-  size: number;
-  etag: string;
-  uploaded: Date;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-}
-
-export interface R2ObjectsLike {
-  objects: R2ObjectLike[];
-  truncated: boolean;
-  cursor?: string;
-}
-
-export interface R2PutOptionsLike {
-  httpMetadata?: { contentType?: string };
-  customMetadata?: Record<string, string>;
-  onlyIf?: {
-    etagMatches?: string;
-    etagDoesNotMatch?: string;
-  };
-}
-
-export interface R2ListOptionsLike {
-  prefix?: string;
-  cursor?: string;
-  limit?: number;
-  delimiter?: string;
-}
+// Import types for use in this file
+import type { R2BucketLike } from './types/r2.js';
 
 // =============================================================================
 // IN-MEMORY STORAGE PROVIDER

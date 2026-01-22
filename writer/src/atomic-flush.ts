@@ -251,8 +251,8 @@ export class AtomicFlushWriter {
           documents.push({ value: text });
         }
       } catch {
-        // Skip malformed entries
-        console.warn('Failed to decode WAL entry:', entry.lsn);
+        // Skip malformed entries - continue processing remaining entries
+        // Note: In production, this should be logged through @evodb/observability
       }
     }
 
@@ -420,8 +420,9 @@ export class AtomicFlushWriter {
       await this.removePendingFlush(flushId);
 
       return true;
-    } catch (error) {
-      console.error('Failed to commit flush:', error);
+    } catch (_error) {
+      // Commit failed - will be retried
+      // Note: In production, this should be logged through @evodb/observability
       return false;
     }
   }
@@ -450,8 +451,9 @@ export class AtomicFlushWriter {
       await this.removePendingFlush(flushId);
 
       return true;
-    } catch (error) {
-      console.error('Failed to rollback flush:', error);
+    } catch (_error) {
+      // Rollback failed - may have partial state
+      // Note: In production, this should be logged through @evodb/observability
       return false;
     }
   }

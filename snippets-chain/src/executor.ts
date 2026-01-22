@@ -589,11 +589,14 @@ export class ChainExecutor {
   }
 
   /**
-   * Log message if tracing is enabled
+   * Log message if tracing is enabled.
+   * Note: In production, consider using @evodb/observability logger.
+   * This uses console.log only when trace is explicitly enabled for debugging.
    */
   private log(message: string): void {
-    if (this.trace) {
-      console.log(`[ChainExecutor] ${message}`);
+    if (this.trace && typeof globalThis.console !== 'undefined') {
+      // eslint-disable-next-line no-console
+      globalThis.console.log(`[ChainExecutor] ${message}`);
     }
   }
 }

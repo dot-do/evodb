@@ -276,6 +276,20 @@ export function formatPrometheus(registry: MetricsRegistry): string {
 }
 
 /**
+ * Type guard to check if a metric has internal values map
+ */
+function hasInternalValues(metric: Counter | Gauge): metric is (Counter | Gauge) & InternalMetric {
+  return '_values' in metric && metric._values instanceof Map;
+}
+
+/**
+ * Type guard to check if a histogram has internal data map
+ */
+function hasInternalData(histogram: Histogram): histogram is Histogram & InternalHistogram {
+  return '_data' in histogram && histogram._data instanceof Map;
+}
+
+/**
  * Get all values from a counter or gauge (including labeled values)
  * This uses the internal structure to access all label combinations
  */
@@ -287,9 +301,8 @@ function getAllMetricValues(metric: Counter | Gauge): Map<string, number> {
   // For metrics with labels, we need to access internal state
   // This is a workaround since we don't expose internal maps directly
   try {
-    const internalMetric = metric as unknown as InternalMetric;
-    if (internalMetric._values) {
-      return internalMetric._values;
+    if (hasInternalValues(metric)) {
+      return metric._values;
     }
   } catch {
     // Fallback
@@ -312,9 +325,8 @@ function getAllHistogramData(histogram: Histogram): Map<string, HistogramData> {
   const result = new Map<string, HistogramData>();
 
   try {
-    const internalHistogram = histogram as unknown as InternalHistogram;
-    if (internalHistogram._data) {
-      const internalData = internalHistogram._data;
+    if (hasInternalData(histogram)) {
+      const internalData = histogram._data;
       const buckets = histogram.buckets;
 
       for (const [key, d] of internalData) {

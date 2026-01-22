@@ -173,73 +173,116 @@ export class LakehouseWriter {
 
   /**
    * Load persistent state from DO storage
+   * Includes defensive checks for corrupted or partial state data.
    */
   async loadState(): Promise<void> {
     if (!this.doStorage) return;
 
-    const state = await this.doStorage.get<PersistentState>('writer:state');
-    if (state) {
-      this.lastBlockSeq = state.lastBlockSeq;
-      this.pendingBlocks = state.pendingBlocks;
-      this.blockIndex = state.blockIndex;
-      this.lastSnapshotId = state.lastSnapshotId;
+    try {
+      const state = await this.doStorage.get<PersistentState>('writer:state');
+      if (state) {
+        // Defensive null checks with sensible defaults for corrupted state
+        this.lastBlockSeq = state.lastBlockSeq ?? 0;
+        this.pendingBlocks = state.pendingBlocks ?? [];
+        this.blockIndex = state.blockIndex ?? [];
+        this.lastSnapshotId = state.lastSnapshotId ?? 0;
 
-      // Restore source cursors
-      for (const [sourceDoId, lsnStr] of Object.entries(state.sourceCursors)) {
-        const stats: SourceStats = {
-          sourceDoId,
-          entriesReceived: 0,
-          lastLsn: BigInt(lsnStr),
-          lastEntryTime: 0,
-          connected: false,
-        };
-        this.sourceStats.set(sourceDoId, stats);
+        // Restore source cursors with defensive null checks
+        if (state.sourceCursors != null && typeof state.sourceCursors === 'object') {
+          for (const [sourceDoId, lsnStr] of Object.entries(state.sourceCursors)) {
+            // Skip invalid entries
+            if (sourceDoId == null || lsnStr == null) {
+              continue;
+            }
+            try {
+              const stats: SourceStats = {
+                sourceDoId,
+                entriesReceived: 0,
+                lastLsn: BigInt(lsnStr),
+                lastEntryTime: 0,
+                connected: false,
+              };
+              this.sourceStats.set(sourceDoId, stats);
+            } catch {
+              // Skip entries with invalid BigInt values - state loading continues
+              // Caller can check source stats to detect missing sources
+            }
+          }
+        }
+
+        // Restore stats with defensive null checks
+        if (state.stats != null) {
+          this.cdcEntriesReceived = state.stats.cdcEntriesReceived ?? 0;
+          this.flushCount = state.stats.flushCount ?? 0;
+          this.compactCount = state.stats.compactCount ?? 0;
+          this.r2WriteFailures = state.stats.r2WriteFailures ?? 0;
+          this.blockIndexEvictions = state.stats.blockIndexEvictions ?? 0;
+        }
       }
-
-      // Restore stats
-      this.cdcEntriesReceived = state.stats.cdcEntriesReceived;
-      this.flushCount = state.stats.flushCount;
-      this.compactCount = state.stats.compactCount;
-      this.r2WriteFailures = state.stats.r2WriteFailures;
-      this.blockIndexEvictions = state.stats.blockIndexEvictions ?? 0;
+    } catch {
+      // Initialize with defaults on corrupted state - don't crash
+      // State remains at initialized defaults, allowing the writer to continue operating
+      // Caller can detect state load issues through missing source cursors or zero stats
     }
   }
 
   /**
    * Save persistent state to DO storage
+   * Wraps serialization in try/catch to prevent state loss on serialization failures.
    */
   async saveState(): Promise<void> {
     if (!this.doStorage) return;
 
-    const sourceCursors: Record<string, string> = {};
-    for (const [id, stats] of this.sourceStats) {
-      sourceCursors[id] = stats.lastLsn.toString();
+    try {
+      const sourceCursors: Record<string, string> = {};
+      for (const [id, stats] of this.sourceStats) {
+        // Defensive null check for stats - skip entries with missing data
+        if (stats == null || stats.lastLsn == null) {
+          continue;
+        }
+        sourceCursors[id] = stats.lastLsn.toString();
+      }
+
+      const state: PersistentState = {
+        lastBlockSeq: this.lastBlockSeq,
+        pendingBlocks: this.pendingBlocks,
+        blockIndex: this.blockIndex,
+        lastSnapshotId: this.lastSnapshotId,
+        partitionMode: this.options.partitionMode,
+        sourceCursors,
+        stats: {
+          cdcEntriesReceived: this.cdcEntriesReceived,
+          flushCount: this.flushCount,
+          compactCount: this.compactCount,
+          r2WriteFailures: this.r2WriteFailures,
+          blockIndexEvictions: this.blockIndexEvictions,
+        },
+      };
+
+      await this.doStorage.put('writer:state', state);
+    } catch (error) {
+      // State persistence failure - throw to allow caller to handle retry logic or alerting
+      throw new Error(`State persistence failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    const state: PersistentState = {
-      lastBlockSeq: this.lastBlockSeq,
-      pendingBlocks: this.pendingBlocks,
-      blockIndex: this.blockIndex,
-      lastSnapshotId: this.lastSnapshotId,
-      partitionMode: this.options.partitionMode,
-      sourceCursors,
-      stats: {
-        cdcEntriesReceived: this.cdcEntriesReceived,
-        flushCount: this.flushCount,
-        compactCount: this.compactCount,
-        r2WriteFailures: this.r2WriteFailures,
-        blockIndexEvictions: this.blockIndexEvictions,
-      },
-    };
-
-    await this.doStorage.put('writer:state', state);
   }
 
   /**
    * Receive CDC entries from a child DO
+   * @throws Error if sourceDoId is null/undefined or empty
    */
   async receiveCDC(sourceDoId: string, entries: WalEntry[]): Promise<void> {
-    if (entries.length === 0) return;
+    // Defensive null check for sourceDoId
+    if (sourceDoId == null || sourceDoId === '') {
+      throw new Error('Invalid sourceDoId: sourceDoId must be a non-empty string');
+    }
+
+    if (entries == null || entries.length === 0) return;
+
+    // Validate entries have required fields before processing
+    const lastEntry = entries[entries.length - 1];
+    if (lastEntry == null || lastEntry.lsn == null) {
+      throw new Error('Invalid WAL entry: last entry or its LSN is null/undefined');
+    }
 
     // Update source stats
     let stats = this.sourceStats.get(sourceDoId);
@@ -255,7 +298,7 @@ export class LakehouseWriter {
     }
 
     stats.entriesReceived += entries.length;
-    stats.lastLsn = entries[entries.length - 1].lsn;
+    stats.lastLsn = lastEntry.lsn;
     stats.lastEntryTime = Date.now();
     stats.connected = true;
 

@@ -311,7 +311,8 @@ export class CacheAwareQueryPlanner {
 
     const cachedPartitions = partitions.filter(p => p.isCached);
     const cachedBytes = cachedPartitions.reduce((sum, p) => sum + p.sizeBytes, 0);
-    const totalBytes = partitions.reduce((sum, p) => sum + p.sizeBytes, 0);
+    // totalBytes available for future extensions
+    // const totalBytes = partitions.reduce((sum, p) => sum + p.sizeBytes, 0);
 
     // Savings = bytes that don't need to be read from storage
     const estimatedSavings = cachedBytes * (1 - this.config.cacheWeightFactor);

@@ -21,8 +21,14 @@ import type {
 
 // =============================================================================
 // Type Definitions
+// Note: Test-utils defines its own R2 types for mock implementations.
+// Canonical R2 types are in @evodb/core/types/r2.ts (Issue evodb-sdgz).
 // =============================================================================
 
+/**
+ * R2 Object type for test mocks.
+ * Compatible with @evodb/core R2Object but with optional fields for easier mocking.
+ */
 export type R2Object = {
   key: string;
   version?: string;
@@ -49,6 +55,10 @@ export type R2ListResult = {
   delimitedPrefixes?: string[];
 };
 
+/**
+ * R2 Bucket type for test mocks.
+ * Compatible with @evodb/core R2Bucket but simplified for testing.
+ */
 export type R2Bucket = {
   get: (key: string) => Promise<R2Object | null>;
   put: (key: string, value: ArrayBuffer | Uint8Array | string, options?: {

@@ -753,3 +753,348 @@ describe('Integration: Guard + Assertion Pattern', () => {
     expect(() => processNumbers('not an array')).toThrow('Expected array of numbers');
   });
 });
+
+// =============================================================================
+// Domain-Specific Type Guards (Issue evodb-s7bt)
+// =============================================================================
+
+import {
+  isBlockId,
+  isTableId,
+  isColumn,
+  isEncodedColumn,
+  isSchemaColumn,
+  isSchema,
+  isColumnStats,
+  isWalEntry,
+  isBlockHeader,
+  isTableSchemaColumn,
+  isTableSchema,
+  isRpcWalEntry,
+} from '../guards.js';
+
+describe('EvoDB Domain-Specific Type Guards', () => {
+  describe('isBlockId', () => {
+    it('returns true for valid BlockId format', () => {
+      expect(isBlockId('table:abc123:001')).toBe(true);
+      expect(isBlockId('my_table:1a2b3c:42')).toBe(true);
+      expect(isBlockId('TEST:ABC:XYZ')).toBe(true);
+      expect(isBlockId('a-b-c:123:456')).toBe(true);
+    });
+
+    it('returns false for invalid BlockId format', () => {
+      expect(isBlockId('invalid')).toBe(false);
+      expect(isBlockId('only:two')).toBe(false);
+      expect(isBlockId('a:b:c:d')).toBe(false); // too many parts
+      expect(isBlockId('')).toBe(false);
+      expect(isBlockId(123)).toBe(false);
+      expect(isBlockId(null)).toBe(false);
+      expect(isBlockId(undefined)).toBe(false);
+      expect(isBlockId({})).toBe(false);
+    });
+
+    it('narrows type correctly', () => {
+      const value: unknown = 'table:abc123:001';
+      if (isBlockId(value)) {
+        // TypeScript should know value is string
+        expect(value.split(':').length).toBe(3);
+      }
+    });
+  });
+
+  describe('isTableId', () => {
+    it('returns true for valid UUID format', () => {
+      expect(isTableId('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
+      expect(isTableId('123e4567-e89b-12d3-a456-426614174000')).toBe(true);
+      expect(isTableId('AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE')).toBe(true);
+    });
+
+    it('returns false for invalid UUID format', () => {
+      expect(isTableId('not-a-uuid')).toBe(false);
+      expect(isTableId('550e8400-e29b-41d4-a716')).toBe(false); // too short
+      expect(isTableId('550e8400-e29b-41d4-a716-446655440000-extra')).toBe(false);
+      expect(isTableId('')).toBe(false);
+      expect(isTableId(123)).toBe(false);
+      expect(isTableId(null)).toBe(false);
+    });
+
+    it('narrows type correctly', () => {
+      const value: unknown = '550e8400-e29b-41d4-a716-446655440000';
+      if (isTableId(value)) {
+        expect(value.length).toBe(36);
+      }
+    });
+  });
+
+  describe('isSchemaColumn', () => {
+    it('returns true for valid SchemaColumn', () => {
+      expect(isSchemaColumn({ path: 'name', type: 5, nullable: false })).toBe(true);
+      expect(isSchemaColumn({ path: 'age', type: 2, nullable: true })).toBe(true);
+      expect(isSchemaColumn({ path: 'data', type: 6, nullable: true, defaultValue: null })).toBe(true);
+    });
+
+    it('returns false for invalid SchemaColumn', () => {
+      expect(isSchemaColumn({})).toBe(false);
+      expect(isSchemaColumn({ path: 'name' })).toBe(false);
+      expect(isSchemaColumn({ path: 123, type: 5, nullable: false })).toBe(false);
+      expect(isSchemaColumn({ path: 'name', type: '5', nullable: false })).toBe(false);
+      expect(isSchemaColumn({ path: 'name', type: 5, nullable: 'false' })).toBe(false);
+      expect(isSchemaColumn(null)).toBe(false);
+    });
+  });
+
+  describe('isSchema', () => {
+    it('returns true for valid Schema', () => {
+      expect(isSchema({
+        id: 1,
+        version: 1,
+        columns: [
+          { path: 'id', type: 2, nullable: false },
+          { path: 'name', type: 5, nullable: true },
+        ],
+      })).toBe(true);
+
+      expect(isSchema({
+        id: 2,
+        version: 3,
+        parentVersion: 2,
+        columns: [],
+      })).toBe(true);
+    });
+
+    it('returns false for invalid Schema', () => {
+      expect(isSchema({})).toBe(false);
+      expect(isSchema({ id: 1, version: 1 })).toBe(false); // missing columns
+      expect(isSchema({ id: '1', version: 1, columns: [] })).toBe(false);
+      expect(isSchema({ id: 1, version: 1, columns: 'not an array' })).toBe(false);
+      expect(isSchema({ id: 1, version: 1, columns: [{ invalid: true }] })).toBe(false);
+      expect(isSchema(null)).toBe(false);
+    });
+
+    it('narrows type correctly', () => {
+      const value: unknown = {
+        id: 1,
+        version: 1,
+        columns: [{ path: 'id', type: 2, nullable: false }],
+      };
+      if (isSchema(value)) {
+        expect(value.columns.length).toBe(1);
+        expect(value.columns[0].path).toBe('id');
+      }
+    });
+  });
+
+  describe('isColumnStats', () => {
+    it('returns true for valid ColumnStats', () => {
+      expect(isColumnStats({ min: 0, max: 100, nullCount: 5, distinctEst: 50 })).toBe(true);
+      expect(isColumnStats({ min: 'a', max: 'z', nullCount: 0, distinctEst: 26 })).toBe(true);
+      expect(isColumnStats({ min: undefined, max: undefined, nullCount: 100, distinctEst: 0 })).toBe(true);
+    });
+
+    it('returns false for invalid ColumnStats', () => {
+      expect(isColumnStats({})).toBe(false);
+      expect(isColumnStats({ min: 0, max: 100 })).toBe(false); // missing fields
+      expect(isColumnStats({ min: 0, max: 100, nullCount: '5', distinctEst: 50 })).toBe(false);
+      expect(isColumnStats(null)).toBe(false);
+    });
+  });
+
+  describe('isColumn', () => {
+    it('returns true for valid Column with boolean[] nulls', () => {
+      expect(isColumn({
+        path: 'name',
+        type: 5,
+        nullable: true,
+        values: ['Alice', 'Bob'],
+        nulls: [false, false],
+      })).toBe(true);
+    });
+
+    it('returns true for valid Column with SparseNullSet-like nulls', () => {
+      expect(isColumn({
+        path: 'age',
+        type: 2,
+        nullable: true,
+        values: [25, 30],
+        nulls: { isNull: () => false, toArray: () => [false, false], length: 2 },
+      })).toBe(true);
+    });
+
+    it('returns false for invalid Column', () => {
+      expect(isColumn({})).toBe(false);
+      expect(isColumn({ path: 'name' })).toBe(false);
+      expect(isColumn({ path: 'name', type: 5, nullable: true, values: 'not array', nulls: [] })).toBe(false);
+      expect(isColumn(null)).toBe(false);
+    });
+  });
+
+  describe('isEncodedColumn', () => {
+    it('returns true for valid EncodedColumn', () => {
+      expect(isEncodedColumn({
+        path: 'name',
+        type: 5,
+        encoding: 0,
+        data: new Uint8Array([1, 2, 3]),
+        nullBitmap: new Uint8Array([0]),
+        stats: { min: 'a', max: 'z', nullCount: 0, distinctEst: 26 },
+      })).toBe(true);
+    });
+
+    it('returns false for invalid EncodedColumn', () => {
+      expect(isEncodedColumn({})).toBe(false);
+      expect(isEncodedColumn({
+        path: 'name',
+        type: 5,
+        encoding: 0,
+        data: [1, 2, 3], // not Uint8Array
+        nullBitmap: new Uint8Array([0]),
+        stats: {},
+      })).toBe(false);
+      expect(isEncodedColumn(null)).toBe(false);
+    });
+  });
+
+  describe('isWalEntry', () => {
+    it('returns true for valid WalEntry', () => {
+      expect(isWalEntry({
+        lsn: BigInt(1),
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: new Uint8Array([1, 2, 3]),
+        checksum: 12345,
+      })).toBe(true);
+    });
+
+    it('returns false for invalid WalEntry', () => {
+      expect(isWalEntry({})).toBe(false);
+      expect(isWalEntry({
+        lsn: 1, // number, not bigint
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: new Uint8Array([1, 2, 3]),
+        checksum: 12345,
+      })).toBe(false);
+      expect(isWalEntry(null)).toBe(false);
+    });
+  });
+
+  describe('isBlockHeader', () => {
+    it('returns true for valid BlockHeader', () => {
+      expect(isBlockHeader({
+        magic: 0x434A4C42,
+        version: 1,
+        schemaId: 1,
+        rowCount: 1000,
+        columnCount: 5,
+        flags: 0,
+        minLsn: BigInt(1),
+        maxLsn: BigInt(100),
+        checksum: 12345,
+      })).toBe(true);
+    });
+
+    it('returns false for invalid BlockHeader', () => {
+      expect(isBlockHeader({})).toBe(false);
+      expect(isBlockHeader({
+        magic: 0x434A4C42,
+        version: 1,
+        schemaId: 1,
+        rowCount: 1000,
+        columnCount: 5,
+        flags: 0,
+        minLsn: 1, // number, not bigint
+        maxLsn: BigInt(100),
+        checksum: 12345,
+      })).toBe(false);
+      expect(isBlockHeader(null)).toBe(false);
+    });
+  });
+
+  describe('isTableSchemaColumn', () => {
+    it('returns true for valid TableSchemaColumn', () => {
+      expect(isTableSchemaColumn({ name: 'id', type: 'int32', nullable: false })).toBe(true);
+      expect(isTableSchemaColumn({ name: 'data', type: { type: 'array', elementType: 'string' }, nullable: true })).toBe(true);
+      expect(isTableSchemaColumn({ name: 'description', type: 'string', nullable: true, doc: 'A description' })).toBe(true);
+    });
+
+    it('returns false for invalid TableSchemaColumn', () => {
+      expect(isTableSchemaColumn({})).toBe(false);
+      expect(isTableSchemaColumn({ name: 123, type: 'string', nullable: false })).toBe(false);
+      expect(isTableSchemaColumn({ name: 'id', nullable: false })).toBe(false); // missing type
+      expect(isTableSchemaColumn(null)).toBe(false);
+    });
+  });
+
+  describe('isTableSchema', () => {
+    it('returns true for valid TableSchema', () => {
+      expect(isTableSchema({
+        schemaId: 1,
+        version: 1,
+        columns: [
+          { name: 'id', type: 'int32', nullable: false },
+          { name: 'name', type: 'string', nullable: true },
+        ],
+        createdAt: Date.now(),
+      })).toBe(true);
+    });
+
+    it('returns false for invalid TableSchema', () => {
+      expect(isTableSchema({})).toBe(false);
+      expect(isTableSchema({ schemaId: 1, version: 1, columns: [] })).toBe(false); // missing createdAt
+      expect(isTableSchema({ schemaId: 1, version: 1, columns: [], createdAt: 'not a number' })).toBe(false);
+      expect(isTableSchema(null)).toBe(false);
+    });
+  });
+
+  describe('isRpcWalEntry', () => {
+    it('returns true for valid RpcWalEntry', () => {
+      expect(isRpcWalEntry({
+        sequence: 1,
+        timestamp: Date.now(),
+        operation: 'INSERT',
+        table: 'users',
+        rowId: 'abc123',
+        after: { name: 'Alice' },
+      })).toBe(true);
+
+      expect(isRpcWalEntry({
+        sequence: 2,
+        timestamp: Date.now(),
+        operation: 'UPDATE',
+        table: 'users',
+        rowId: 'abc123',
+        before: { name: 'Alice' },
+        after: { name: 'Bob' },
+      })).toBe(true);
+
+      expect(isRpcWalEntry({
+        sequence: 3,
+        timestamp: Date.now(),
+        operation: 'DELETE',
+        table: 'users',
+        rowId: 'abc123',
+      })).toBe(true);
+    });
+
+    it('returns false for invalid RpcWalEntry', () => {
+      expect(isRpcWalEntry({})).toBe(false);
+      expect(isRpcWalEntry({
+        sequence: 1,
+        timestamp: Date.now(),
+        operation: 'INVALID', // not a valid operation
+        table: 'users',
+        rowId: 'abc123',
+      })).toBe(false);
+      expect(isRpcWalEntry({
+        sequence: '1', // should be number
+        timestamp: Date.now(),
+        operation: 'INSERT',
+        table: 'users',
+        rowId: 'abc123',
+      })).toBe(false);
+      expect(isRpcWalEntry(null)).toBe(false);
+    });
+  });
+});

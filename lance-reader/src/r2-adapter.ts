@@ -2,110 +2,57 @@
  * R2 Storage Adapter for Lance Reader
  * Implements StorageAdapter interface for Cloudflare R2
  *
+ * R2 types are imported from @evodb/core (Issue evodb-sdgz).
+ * The canonical R2 types are defined in @evodb/core/types/r2.ts.
+ *
  * @module @evodb/lance-reader/r2
  */
 
 import type { StorageAdapter } from './types.js';
 
 // ==========================================
-// R2 Type Definitions
+// R2 Type Definitions - Imported from @evodb/core (Issue evodb-sdgz)
 // ==========================================
 
+import type {
+  R2Object,
+  R2ObjectBody,
+  R2Objects,
+  R2Range,
+  R2Checksums,
+  R2HTTPMetadata,
+  R2ListOptions,
+  R2GetOptions,
+} from '@evodb/core';
+
+// Re-export for consumers
+export type {
+  R2Object,
+  R2ObjectBody,
+  R2Objects,
+  R2Range,
+  R2Checksums,
+  R2HTTPMetadata,
+  R2ListOptions,
+  R2GetOptions,
+};
+
 /**
- * Minimal R2Bucket interface
- * Compatible with Cloudflare Workers R2 bindings
+ * R2Bucket interface for lance-reader (read-only subset).
+ * Compatible with Cloudflare Workers R2 bindings.
+ *
+ * This is a subset of the full R2Bucket from @evodb/core, containing
+ * only the methods needed for reading lance format files.
  */
 export interface R2Bucket {
   get(
     key: string,
-    options?: { range?: R2Range }
+    options?: R2GetOptions
   ): Promise<R2ObjectBody | null>;
 
   head(key: string): Promise<R2Object | null>;
 
   list(options?: R2ListOptions): Promise<R2Objects>;
-}
-
-/**
- * R2 range request options
- */
-export interface R2Range {
-  offset?: number;
-  length?: number;
-  suffix?: number;
-}
-
-/**
- * R2 object metadata
- */
-export interface R2Object {
-  key: string;
-  version: string;
-  size: number;
-  etag: string;
-  httpEtag: string;
-  checksums: R2Checksums;
-  uploaded: Date;
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
-  range?: R2Range;
-}
-
-/**
- * R2 object with body
- */
-export interface R2ObjectBody extends R2Object {
-  body: ReadableStream;
-  bodyUsed: boolean;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-  json<T>(): Promise<T>;
-  blob(): Promise<Blob>;
-}
-
-/**
- * R2 checksums
- */
-export interface R2Checksums {
-  md5?: ArrayBuffer;
-  sha1?: ArrayBuffer;
-  sha256?: ArrayBuffer;
-  sha384?: ArrayBuffer;
-  sha512?: ArrayBuffer;
-}
-
-/**
- * R2 HTTP metadata
- */
-export interface R2HTTPMetadata {
-  contentType?: string;
-  contentLanguage?: string;
-  contentDisposition?: string;
-  contentEncoding?: string;
-  cacheControl?: string;
-  cacheExpiry?: Date;
-}
-
-/**
- * R2 list options
- */
-export interface R2ListOptions {
-  limit?: number;
-  prefix?: string;
-  cursor?: string;
-  delimiter?: string;
-  startAfter?: string;
-  include?: ('httpMetadata' | 'customMetadata')[];
-}
-
-/**
- * R2 list result
- */
-export interface R2Objects {
-  objects: R2Object[];
-  truncated: boolean;
-  cursor?: string;
-  delimitedPrefixes: string[];
 }
 
 // ==========================================

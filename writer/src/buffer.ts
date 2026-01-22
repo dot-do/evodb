@@ -8,6 +8,7 @@
  */
 
 import type { WalEntry } from '@evodb/core';
+import { EvoDBError, ErrorCode, captureStackTrace } from '@evodb/core';
 import type { BufferState, BufferStats, ResolvedWriterOptions } from './types.js';
 
 /**
@@ -20,16 +21,40 @@ export const DEFAULT_MAX_BUFFER_SIZE = 128 * 1024 * 1024;
 /**
  * Error thrown when buffer exceeds maximum size limit.
  * This prevents unbounded memory growth when flush operations fail.
+ * Extends EvoDBError for consistent error hierarchy.
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   buffer.add(entries);
+ * } catch (e) {
+ *   if (e instanceof BufferOverflowError) {
+ *     console.log(`Current: ${e.currentSize}, Max: ${e.maxSize}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.BUFFER_OVERFLOW) {
+ *     // Handle buffer overflow
+ *   }
+ * }
+ * ```
  */
-export class BufferOverflowError extends Error {
+export class BufferOverflowError extends EvoDBError {
   public readonly currentSize: number;
   public readonly maxSize: number;
 
   constructor(currentSize: number, maxSize: number) {
-    super(`BufferOverflowError: Buffer size (${currentSize} bytes) would exceed maximum (${maxSize} bytes). Consider draining the buffer or increasing maxBufferSize.`);
+    super(
+      `BufferOverflowError: Buffer size (${currentSize} bytes) would exceed maximum (${maxSize} bytes). Consider draining the buffer or increasing maxBufferSize.`,
+      ErrorCode.BUFFER_OVERFLOW,
+      { currentSize, maxSize },
+      'Consider draining the buffer or increasing maxBufferSize.'
+    );
     this.name = 'BufferOverflowError';
     this.currentSize = currentSize;
     this.maxSize = maxSize;
+    captureStackTrace(this, BufferOverflowError);
   }
 }
 
@@ -177,8 +202,14 @@ export class CDCBuffer {
    * @param sourceDoId - The source DO identifier
    * @param newLsn - The new LSN to potentially set as cursor
    * @returns true if cursor was updated, false if current cursor was already >= newLsn
+   * @throws Error if newLsn is negative (invalid LSN)
    */
   private updateSourceCursor(sourceDoId: string, newLsn: bigint): boolean {
+    // Validate LSN is non-negative (defensive check for BigInt edge cases)
+    if (newLsn < 0n) {
+      throw new Error(`Invalid LSN: ${newLsn}. LSN must be non-negative.`);
+    }
+
     const currentCursor = this.sourceCursors.get(sourceDoId);
     const timestamp = Date.now();
 
@@ -219,12 +250,18 @@ export class CDCBuffer {
    * @param expectedLsn - The expected current cursor value (undefined for new sources)
    * @param newLsn - The new LSN to set if conditions are met
    * @returns true if cursor was updated, false otherwise
+   * @throws Error if newLsn is negative (invalid LSN)
    */
   compareAndSetCursor(
     sourceDoId: string,
     expectedLsn: bigint | undefined,
     newLsn: bigint
   ): boolean {
+    // Validate LSN is non-negative (defensive check for BigInt edge cases)
+    if (newLsn < 0n) {
+      throw new Error(`Invalid LSN: ${newLsn}. LSN must be non-negative.`);
+    }
+
     const currentCursor = this.sourceCursors.get(sourceDoId);
     const timestamp = Date.now();
 
@@ -345,8 +382,16 @@ export class CDCBuffer {
 
   /**
    * Estimate the serialized size of a WAL entry
+   * @throws Error if entry or entry.data is null/undefined
    */
   private estimateEntrySize(entry: WalEntry): number {
+    // Defensive null checks for malformed entries
+    if (entry == null) {
+      throw new Error('Invalid WAL entry: entry is null or undefined');
+    }
+    if (entry.data == null) {
+      throw new Error('Invalid WAL entry: entry.data is null or undefined');
+    }
     // WAL header (24 bytes) + data length + checksum (4 bytes)
     return 24 + entry.data.length + 4;
   }
@@ -680,9 +725,17 @@ export class SizeBasedBuffer {
   /**
    * Add entries and check if buffer should flush
    * Returns true if buffer is at or over target size
+   * @throws Error if any entry or entry.data is null/undefined
    */
   add(entries: WalEntry[]): boolean {
     for (const entry of entries) {
+      // Defensive null checks for malformed entries
+      if (entry == null) {
+        throw new Error('Invalid WAL entry: entry is null or undefined');
+      }
+      if (entry.data == null) {
+        throw new Error('Invalid WAL entry: entry.data is null or undefined');
+      }
       this.entries.push(entry);
       this.currentSize += 24 + entry.data.length + 4;
     }

@@ -34,12 +34,7 @@ export {
   providerToObjectAdapter,
   storageToProvider,
   objectAdapterToProvider,
-  // R2 types (also used by R2StorageProvider)
-  type R2BucketLike as StorageProviderR2BucketLike,
-  type R2ObjectLike as StorageProviderR2ObjectLike,
-  type R2ObjectsLike as StorageProviderR2ObjectsLike,
-  type R2PutOptionsLike as StorageProviderR2PutOptionsLike,
-  type R2ListOptionsLike as StorageProviderR2ListOptionsLike,
+  // Note: R2*Like types are now exported from types/r2.ts (Issue evodb-sdgz)
 } from '../storage-provider.js';
 
 export {
@@ -87,11 +82,7 @@ export {
    */
   type ObjectStorageAdapter,
   type ObjectMetadata,
-  type R2BucketLike,
-  type R2ObjectLike,
-  type R2ObjectsLike,
-  type R2PutOptionsLike,
-  type R2ListOptionsLike,
+  // Note: R2*Like types are now exported from types/r2.ts (Issue evodb-sdgz)
   R2ObjectStorageAdapter,
   MemoryObjectStorageAdapter,
   createR2ObjectAdapter,

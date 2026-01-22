@@ -1,0 +1,33 @@
+# EvoDB Multi-Tenant SaaS Example
+# Cloudflare Workers configuration
+
+name = "evodb-multi-tenant-example"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Durable Objects for per-tenant databases
+[durable_objects]
+bindings = [
+  { name = "TENANT_DB", class_name = "TenantDatabase" }
+]
+
+# Durable Object migrations
+[[migrations]]
+tag = "v1"
+new_classes = ["TenantDatabase"]
+
+# KV namespace for tenant metadata
+# Uncomment after creating: wrangler kv:namespace create TENANT_META
+# [[kv_namespaces]]
+# binding = "TENANT_META"
+# id = "<your-kv-namespace-id>"
+
+# R2 bucket for data persistence
+# Uncomment after creating: wrangler r2 bucket create evodb-tenant-data
+# [[r2_buckets]]
+# binding = "DATA_BUCKET"
+# bucket_name = "evodb-tenant-data"
+
+# Environment variables
+[vars]
+# JWT_SECRET = "your-secret-here" # Use wrangler secret put JWT_SECRET instead

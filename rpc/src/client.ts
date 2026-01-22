@@ -90,7 +90,8 @@ export type OnHandlerErrorCallback = (event: string, error: Error) => void;
 export interface EventEmitterConfig {
   /**
    * Optional callback for custom error handling when event handlers throw.
-   * If not provided, errors are only logged to console.error.
+   * If not provided, errors are silently caught to prevent handler failures
+   * from affecting other handlers.
    */
   onHandlerError?: OnHandlerErrorCallback;
 }
@@ -126,9 +127,8 @@ class EventEmitter {
         try {
           handler(data);
         } catch (error) {
-          // Log the error with context about which event handler failed
+          // Convert to Error if needed
           const err = error instanceof Error ? error : new Error(String(error));
-          console.error(`EventEmitter: error in '${event}' event handler`, err);
 
           // Call custom error handler if provided
           if (this.onHandlerError) {
@@ -136,9 +136,11 @@ class EventEmitter {
               this.onHandlerError(event, err);
             } catch {
               // Prevent infinite loops if error handler also throws
-              console.error('EventEmitter: error in onHandlerError callback');
+              // Silently ignore to prevent cascade failures
             }
           }
+          // If no custom error handler, errors are silently caught
+          // to prevent handler failures from affecting other handlers
         }
       }
     }

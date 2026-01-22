@@ -2,51 +2,41 @@
  * Branded Types Tests
  * Tests for compile-time and runtime type safety of branded ID types.
  *
- * After evodb-3ju simplification:
+ * Simplified per evodb-cn6:
  * - BlockId and TableId remain branded with validation
- * - SnapshotId, BatchId, WalId, SchemaId are now plain string/number types
+ * - SnapshotId, BatchId, WalId, SchemaId are plain string/number type aliases
  *
  * These tests verify:
  * 1. Runtime validation in constructor functions (BlockId, TableId only)
  * 2. Format validation for branded ID types
  * 3. Type guards work correctly (BlockId, TableId only)
  * 4. Integration with makeBlockId/makeWalId etc.
- * 5. Plain type constructors pass through without validation
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-  // Branded types (still branded)
+  // Branded types (BlockId, TableId only - evodb-cn6)
   type BlockId,
   type TableId,
-  // Plain types (simplified from branded - evodb-3ju)
+  // Plain type aliases (evodb-cn6)
   type SnapshotId,
   type BatchId,
   type WalId,
   type SchemaId,
-  // Validated constructors (BlockId, TableId only)
+  // Validated constructors (BlockId, TableId only - evodb-cn6)
   blockId,
   tableId,
-  // Pass-through constructors (deprecated, no validation)
-  snapshotId,
-  batchId,
-  walId,
-  schemaId,
-  // Unsafe constructors
+  // Unsafe constructors (BlockId, TableId only - evodb-cn6)
   unsafeBlockId,
-  unsafeSnapshotId,
-  unsafeBatchId,
-  unsafeWalId,
-  unsafeSchemaId,
   unsafeTableId,
-  // Type guards (BlockId, TableId only - evodb-3ju)
+  // Type guards (BlockId, TableId only - evodb-cn6)
   isValidBlockId,
   isValidTableId,
 } from '../types.js';
 import { makeBlockId, parseBlockId, makeWalId, parseWalId } from '../storage.js';
 
 // =============================================================================
-// BlockId Tests (still branded with validation)
+// BlockId Tests (branded with validation)
 // =============================================================================
 
 describe('BlockId', () => {
@@ -119,7 +109,7 @@ describe('BlockId', () => {
 });
 
 // =============================================================================
-// TableId Tests (still branded with validation)
+// TableId Tests (branded with validation)
 // =============================================================================
 
 describe('TableId', () => {
@@ -168,28 +158,18 @@ describe('TableId', () => {
 });
 
 // =============================================================================
-// WalId Tests (simplified to plain string - evodb-3ju)
+// Plain Type Alias Tests (WalId, SnapshotId, BatchId, SchemaId - evodb-cn6)
+// These are just type aliases for string/number, not branded types.
 // =============================================================================
 
-describe('WalId (plain string - evodb-3ju)', () => {
-  describe('walId() constructor (deprecated, pass-through)', () => {
-    it('should accept any string without validation', () => {
-      // No longer validates format
-      expect(walId('wal:000000000000')).toBe('wal:000000000000');
-      expect(walId('any-string')).toBe('any-string');
-      expect(walId('')).toBe('');
+describe('Plain Type Aliases (evodb-cn6)', () => {
+  describe('WalId (plain string)', () => {
+    it('should be assignable from any string', () => {
+      const id: WalId = 'any-string';
+      expect(id).toBe('any-string');
     });
-  });
 
-  describe('unsafeWalId() constructor (deprecated)', () => {
-    it('should pass through any value', () => {
-      const id = unsafeWalId('not-a-wal-id');
-      expect(id).toBe('not-a-wal-id');
-    });
-  });
-
-  describe('integration with makeWalId()', () => {
-    it('should return WalId type from makeWalId', () => {
+    it('should work with makeWalId()', () => {
       const id: WalId = makeWalId(12345n);
       expect(id.startsWith('wal:')).toBe(true);
     });
@@ -201,75 +181,25 @@ describe('WalId (plain string - evodb-3ju)', () => {
       expect(parsed).toBe(lsn);
     });
   });
-});
 
-// =============================================================================
-// SnapshotId Tests (simplified to plain string - evodb-3ju)
-// =============================================================================
-
-describe('SnapshotId (plain string - evodb-3ju)', () => {
-  describe('snapshotId() constructor (deprecated, pass-through)', () => {
-    it('should accept any string without validation', () => {
-      // No longer validates format
-      expect(snapshotId('0000000001-abcdef12')).toBe('0000000001-abcdef12');
-      expect(snapshotId('any-string')).toBe('any-string');
-      expect(snapshotId('nohyphen')).toBe('nohyphen');
-      expect(snapshotId('')).toBe('');
+  describe('SnapshotId (plain string)', () => {
+    it('should be assignable from any string', () => {
+      const id: SnapshotId = 'snap-12345';
+      expect(id).toBe('snap-12345');
     });
   });
 
-  describe('unsafeSnapshotId() constructor (deprecated)', () => {
-    it('should pass through any value', () => {
-      const id = unsafeSnapshotId('any-format');
-      expect(id).toBe('any-format');
-    });
-  });
-});
-
-// =============================================================================
-// BatchId Tests (simplified to plain string - evodb-3ju)
-// =============================================================================
-
-describe('BatchId (plain string - evodb-3ju)', () => {
-  describe('batchId() constructor (deprecated, pass-through)', () => {
-    it('should accept any string without validation', () => {
-      // No longer validates format
-      expect(batchId('abc12345_123_xyz789')).toBe('abc12345_123_xyz789');
-      expect(batchId('any-string')).toBe('any-string');
-      expect(batchId('only_one')).toBe('only_one');
-      expect(batchId('')).toBe('');
+  describe('BatchId (plain string)', () => {
+    it('should be assignable from any string', () => {
+      const id: BatchId = 'batch-abc-123';
+      expect(id).toBe('batch-abc-123');
     });
   });
 
-  describe('unsafeBatchId() constructor (deprecated)', () => {
-    it('should pass through any value', () => {
-      const id = unsafeBatchId('custom-format');
-      expect(id).toBe('custom-format');
-    });
-  });
-});
-
-// =============================================================================
-// SchemaId Tests (simplified to plain number - evodb-3ju)
-// =============================================================================
-
-describe('SchemaId (plain number - evodb-3ju)', () => {
-  describe('schemaId() constructor (deprecated, pass-through)', () => {
-    it('should accept any number without validation', () => {
-      // No longer validates format
-      expect(schemaId(0)).toBe(0);
-      expect(schemaId(1)).toBe(1);
-      expect(schemaId(100)).toBe(100);
-      expect(schemaId(-1)).toBe(-1);  // Now allowed
-      expect(schemaId(1.5)).toBe(1.5); // Now allowed
-      expect(schemaId(NaN)).toBeNaN(); // Now allowed
-    });
-  });
-
-  describe('unsafeSchemaId() constructor (deprecated)', () => {
-    it('should pass through any value', () => {
-      const id = unsafeSchemaId(-999);
-      expect(id).toBe(-999);
+  describe('SchemaId (plain number)', () => {
+    it('should be assignable from any number', () => {
+      const id: SchemaId = 42;
+      expect(id).toBe(42);
     });
   });
 });
@@ -292,11 +222,11 @@ describe('Type Safety', () => {
   });
 
   it('plain types (WalId, SnapshotId, BatchId, SchemaId) are just string/number', () => {
-    // These are now plain types, not branded (evodb-3ju)
+    // These are now plain types, not branded (evodb-cn6)
     const wal: WalId = makeWalId(0n);
-    const snapshot: SnapshotId = snapshotId('ts-random');
-    const batch: BatchId = batchId('src_1_ts');
-    const schema: SchemaId = schemaId(1);
+    const snapshot: SnapshotId = 'ts-random';
+    const batch: BatchId = 'src_1_ts';
+    const schema: SchemaId = 1;
 
     // Direct string/number assignment works
     const walStr: string = wal;
@@ -364,6 +294,4 @@ describe('Error Messages', () => {
       expect((e as Error).message).toContain('not-uuid');
     }
   });
-
-  // Note: walId, snapshotId, batchId, schemaId no longer throw errors (evodb-3ju)
 });

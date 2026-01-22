@@ -1,0 +1,33 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    { "repo": "dot-do/evodb" }
+  ],
+  "commit": false,
+  "fixed": [
+    [
+      "@evodb/core",
+      "@evodb/rpc",
+      "@evodb/lakehouse",
+      "@evodb/writer",
+      "@evodb/reader",
+      "@evodb/query",
+      "@evodb/observability",
+      "@evodb/edge-cache"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@evodb/test-utils",
+    "@evodb/benchmark",
+    "@evodb/codegen",
+    "@evodb/e2e",
+    "@evodb/snippets-chain",
+    "@evodb/snippets-lance",
+    "@evodb/lance-reader"
+  ]
+}

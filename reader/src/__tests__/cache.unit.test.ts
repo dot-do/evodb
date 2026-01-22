@@ -75,12 +75,14 @@ function setupCacheMock() {
     open: vi.fn().mockResolvedValue(mockCache),
   };
 
-  // @ts-expect-error - mocking global
+  // @ts-expect-error - globalThis.caches is a browser/worker API not typed in Node.js.
+  // This is necessary for testing Cache API behavior in a Node.js test environment.
   globalThis.caches = mockCaches;
 }
 
 function removeCacheMock() {
-  // @ts-expect-error - cleaning up mock
+  // @ts-expect-error - globalThis.caches is a browser/worker API not typed in Node.js.
+  // Cleanup: remove mock after each test.
   delete globalThis.caches;
 }
 
@@ -245,10 +247,10 @@ describe('Cache Error Categorization', () => {
 });
 
 // ============================================================================
-// Logging Tests
+// Error Tracking Tests (console logging removed - use @evodb/observability)
 // ============================================================================
 
-describe('Cache Error Logging', () => {
+describe('Cache Error Tracking', () => {
   let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -265,20 +267,22 @@ describe('Cache Error Logging', () => {
     vi.clearAllMocks();
   });
 
-  it('should log warning when Cache API is not available', async () => {
+  it('should track error when Cache API is not available without console logging', async () => {
     const error = new ReferenceError('caches is not defined');
     mockCaches.open.mockRejectedValue(error);
 
     const cache = new CacheTier();
     await cache.getWithStatus('test-key');
 
-    expect(consoleWarnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Cache API'),
-      expect.anything()
-    );
+    // Errors are tracked through stats, not console logging
+    const stats = cache.getStats();
+    expect(stats.errors).toBe(1);
+    // No console output in production
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
-  it('should log error with details for permission errors', async () => {
+  it('should track permission errors without console logging', async () => {
     const error = new Error('Permission denied');
     error.name = 'NotAllowedError';
     mockCaches.open.mockRejectedValue(error);
@@ -286,16 +290,14 @@ describe('Cache Error Logging', () => {
     const cache = new CacheTier();
     await cache.getWithStatus('test-key');
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('permission'),
-      expect.objectContaining({
-        key: expect.any(String),
-        error: expect.any(String),
-      })
-    );
+    // Errors are tracked through stats
+    const stats = cache.getStats();
+    expect(stats.errors).toBe(1);
+    // No console output in production
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
-  it('should log error with details for quota exceeded', async () => {
+  it('should track quota errors without console logging', async () => {
     const error = new Error('Quota exceeded');
     error.name = 'QuotaExceededError';
     mockCache.put.mockRejectedValue(error);
@@ -307,13 +309,11 @@ describe('Cache Error Logging', () => {
       { etag: '"test"', httpEtag: '"test"' } as R2Object
     );
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('quota'),
-      expect.objectContaining({
-        key: expect.any(String),
-        error: expect.any(String),
-      })
-    );
+    // Errors are tracked through stats
+    const stats = cache.getStats();
+    expect(stats.errors).toBe(1);
+    // No console output in production
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
   it('should not log on cache miss (expected behavior)', async () => {
@@ -337,7 +337,7 @@ describe('Cache Error Logging', () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
-  it('should include operation context in log messages', async () => {
+  it('should track errors through stats without console output', async () => {
     const error = new Error('Network timeout');
     error.name = 'TimeoutError';
     mockCaches.open.mockRejectedValue(error);
@@ -345,13 +345,10 @@ describe('Cache Error Logging', () => {
     const cache = new CacheTier();
     await cache.getWithStatus('my-data-key');
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        operation: 'get',
-        key: expect.stringContaining('my-data-key'),
-      })
-    );
+    // Errors are tracked through stats, not console
+    const stats = cache.getStats();
+    expect(stats.errors).toBe(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 });
 

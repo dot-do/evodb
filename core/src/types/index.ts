@@ -31,31 +31,34 @@ export {
   type SchemaColumn,
   type StorageAdapter,
 
-  // Branded Types for compile-time ID safety
+  // ColumnStats type-safe accessors (Issue evodb-lgp2)
+  type NumericColumnStats,
+  type StringColumnStats,
+  type BigIntColumnStats,
+  isNumericStats,
+  isStringStats,
+  isBigIntStats,
+  getNumericStats,
+  getStringStats,
+  getBigIntStats,
+
+  // Branded Types for compile-time ID safety (BlockId, TableId only - evodb-cn6)
   type BlockId,
+  type TableId,
+
+  // Plain Type Aliases (SnapshotId, BatchId, WalId, SchemaId - evodb-cn6)
   type SnapshotId,
   type BatchId,
   type WalId,
   type SchemaId,
-  type TableId,
 
-  // Branded type constructors (validated)
+  // Branded type constructors (BlockId, TableId only - evodb-cn6)
   blockId,
-  snapshotId,
-  batchId,
-  walId,
-  schemaId,
   tableId,
-
-  // Branded type constructors (unvalidated, for internal use)
   unsafeBlockId,
-  unsafeSnapshotId,
-  unsafeBatchId,
-  unsafeWalId,
-  unsafeSchemaId,
   unsafeTableId,
 
-  // Type guards for branded types (BlockId, TableId only - evodb-3ju)
+  // Type guards (BlockId, TableId only - evodb-cn6)
   isValidBlockId,
   isValidTableId,
 
@@ -82,4 +85,54 @@ export {
   tableSchemaToSchema,
   walEntryToRpcEntry,
   rpcEntryToWalEntry,
+
+  // Generic Constraint Types (Issue evodb-aqap)
+  type DocumentConstraint,
+  type DocumentWithId,
+  type KeysOfType,
+  type StringFieldsOf,
+  type NumericFieldsOf,
+  type BooleanFieldsOf,
+  type FieldPath,
+  type InvalidFieldError,
+  type ValidateFields,
+  type TypedIndexFields,
+  type TypedUpdate,
+  type TypedFilter,
+  type TypedFieldAccessor,
+  type ArrayElement,
+  type RequireFields,
+  type OptionalFields,
 } from '../types.js';
+
+// =============================================================================
+// R2 Types (Issue evodb-sdgz - Consolidated R2 interfaces)
+// =============================================================================
+
+export {
+  // Full R2 types (compatible with Cloudflare Workers R2 bindings)
+  type R2Range,
+  type R2Checksums,
+  type R2HTTPMetadata,
+  type R2Conditional,
+  type R2PutOptions,
+  type R2GetOptions,
+  type R2ListOptions,
+  type R2Object,
+  type R2ObjectBody,
+  type R2Objects,
+  type R2Bucket,
+
+  // Minimal "Like" interfaces (for lighter dependencies)
+  type R2BucketLike,
+  type R2ObjectLike,
+  type R2ObjectsLike,
+  type R2PutOptionsLike,
+  type R2ListOptionsLike,
+
+  // Simple R2 types (for query engine and reader)
+  type SimpleR2Bucket,
+  type SimpleR2Object,
+  type SimpleR2ListOptions,
+  type SimpleR2Objects,
+} from './r2.js';

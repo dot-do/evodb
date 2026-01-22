@@ -1284,3 +1284,236 @@ describe('CDCBuffer concurrent access', () => {
     expect(buffer.getSourceCursors().get(sourceId)).toBe(150n);
   });
 });
+
+describe('CDCBuffer defensive null checks', () => {
+  // Tests for defensive null checks added per issue evodb-vtgk
+
+  function createEntry(lsn: number, data: string = 'test'): WalEntry {
+    const encoder = new TextEncoder();
+    return {
+      lsn: BigInt(lsn),
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: encoder.encode(data),
+      checksum: 12345,
+    };
+  }
+
+  describe('LSN validation', () => {
+    it('should throw error when updateSourceCursor receives negative LSN', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Create an entry with a negative LSN
+      const encoder = new TextEncoder();
+      const invalidEntry: WalEntry = {
+        lsn: -1n,
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: encoder.encode('test'),
+        checksum: 12345,
+      };
+
+      expect(() => buffer.add('source-1', [invalidEntry])).toThrow('Invalid LSN');
+      expect(() => buffer.add('source-1', [invalidEntry])).toThrow('-1');
+    });
+
+    it('should throw error when compareAndSetCursor receives negative LSN', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Add valid entry first to set up a cursor
+      buffer.add('source-1', [createEntry(100)]);
+
+      // Try to CAS with negative LSN
+      expect(() => buffer.compareAndSetCursor('source-1', 100n, -5n)).toThrow('Invalid LSN');
+      expect(() => buffer.compareAndSetCursor('source-1', 100n, -5n)).toThrow('-5');
+    });
+
+    it('should accept LSN of zero', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Zero is a valid LSN (edge case)
+      const encoder = new TextEncoder();
+      const zeroLsnEntry: WalEntry = {
+        lsn: 0n,
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: encoder.encode('test'),
+        checksum: 12345,
+      };
+
+      expect(() => buffer.add('source-1', [zeroLsnEntry])).not.toThrow();
+      expect(buffer.getSourceCursors().get('source-1')).toBe(0n);
+    });
+  });
+
+  describe('entry validation', () => {
+    it('should throw error when entry is null', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // TypeScript would prevent this, but at runtime it's possible
+      const entriesWithNull = [createEntry(1), null as unknown as WalEntry];
+
+      expect(() => buffer.add('source-1', entriesWithNull)).toThrow('Invalid WAL entry');
+      expect(() => buffer.add('source-1', entriesWithNull)).toThrow('null or undefined');
+    });
+
+    it('should throw error when entry.data is null', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Create entry with null data
+      const entryWithNullData = {
+        lsn: 1n,
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: null as unknown as Uint8Array,
+        checksum: 12345,
+      };
+
+      expect(() => buffer.add('source-1', [entryWithNullData])).toThrow('Invalid WAL entry');
+      expect(() => buffer.add('source-1', [entryWithNullData])).toThrow('entry.data');
+    });
+
+    it('should throw error when entry.data is undefined', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Create entry with undefined data
+      const entryWithUndefinedData = {
+        lsn: 1n,
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: undefined as unknown as Uint8Array,
+        checksum: 12345,
+      };
+
+      expect(() => buffer.add('source-1', [entryWithUndefinedData])).toThrow('Invalid WAL entry');
+    });
+  });
+
+  describe('empty buffer edge cases', () => {
+    it('should return correct state when buffer is empty', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      const state = buffer.getState();
+      expect(state.entries).toHaveLength(0);
+      expect(state.estimatedSize).toBe(0);
+      expect(state.minLsn).toBe(0n);
+      expect(state.maxLsn).toBe(0n);
+      expect(state.sourceCursors.size).toBe(0);
+    });
+
+    it('should handle drain on empty buffer', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      const { entries, state } = buffer.drain();
+      expect(entries).toHaveLength(0);
+      expect(state.minLsn).toBe(0n);
+      expect(state.maxLsn).toBe(0n);
+    });
+
+    it('should handle multiple drains on empty buffer', () => {
+      const buffer = new CDCBuffer({
+        bufferSize: 10000,
+        bufferTimeout: 10000,
+        targetBlockSize: 1000000,
+      });
+
+      // Drain multiple times - should not throw
+      buffer.drain();
+      buffer.drain();
+      buffer.drain();
+
+      expect(buffer.isEmpty()).toBe(true);
+      expect(buffer.size()).toBe(0);
+    });
+  });
+});
+
+describe('SizeBasedBuffer defensive null checks', () => {
+  it('should throw error when entry is null', () => {
+    const buffer = new SizeBasedBuffer(1000, 2000);
+
+    const encoder = new TextEncoder();
+    const validEntry: WalEntry = {
+      lsn: 1n,
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: encoder.encode('test'),
+      checksum: 12345,
+    };
+
+    // TypeScript would prevent this, but at runtime it's possible
+    const entriesWithNull = [validEntry, null as unknown as WalEntry];
+
+    expect(() => buffer.add(entriesWithNull)).toThrow('Invalid WAL entry');
+  });
+
+  it('should throw error when entry.data is null', () => {
+    const buffer = new SizeBasedBuffer(1000, 2000);
+
+    const entryWithNullData = {
+      lsn: 1n,
+      timestamp: BigInt(Date.now()),
+      op: 1,
+      flags: 0,
+      data: null as unknown as Uint8Array,
+      checksum: 12345,
+    };
+
+    expect(() => buffer.add([entryWithNullData])).toThrow('Invalid WAL entry');
+  });
+
+  it('should handle empty entries array', () => {
+    const buffer = new SizeBasedBuffer(1000, 2000);
+
+    const shouldFlush = buffer.add([]);
+    expect(shouldFlush).toBe(false);
+    expect(buffer.isEmpty()).toBe(true);
+  });
+
+  it('should handle drain on empty buffer', () => {
+    const buffer = new SizeBasedBuffer(1000, 2000);
+
+    const drained = buffer.drain();
+    expect(drained).toHaveLength(0);
+    expect(buffer.isEmpty()).toBe(true);
+    expect(buffer.getSize()).toBe(0);
+  });
+});

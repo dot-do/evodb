@@ -1,0 +1,22 @@
+{
+  "name": "@evodb/example-vector-search",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vector search and AI/ML example for EvoDB using Lance format",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*",
+    "@evodb/lance-reader": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.0.0"
+  }
+}

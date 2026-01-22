@@ -8,6 +8,7 @@ import type {
   TableSchemaColumn as CoreTableSchemaColumn,
   TableColumnType as CoreColumnType,
 } from '@evodb/core';
+import { EvoDBError, ErrorCode, captureStackTrace } from '@evodb/core';
 
 // Re-export core types with lakehouse-specific names for compatibility
 export type { CoreTableSchema, CoreTableSchemaColumn, CoreColumnType };
@@ -57,21 +58,42 @@ export const CURRENT_MANIFEST_VERSION = 1;
 /**
  * Error thrown when attempting to read a manifest with an unsupported schema version.
  * This typically happens when a newer manifest format is encountered by an older reader.
+ * Extends EvoDBError for consistent error hierarchy.
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   const manifest = await loadManifest('table');
+ * } catch (e) {
+ *   if (e instanceof VersionMismatchError) {
+ *     console.log(`Found version ${e.foundVersion}, supports ${e.supportedVersion}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.VERSION_MISMATCH) {
+ *     // Handle version mismatch
+ *   }
+ * }
+ * ```
  */
-export class VersionMismatchError extends Error {
-  public readonly name = 'VersionMismatchError';
+export class VersionMismatchError extends EvoDBError {
+  public readonly foundVersion: number;
+  public readonly supportedVersion: number;
 
-  constructor(
-    public readonly foundVersion: number,
-    public readonly supportedVersion: number
-  ) {
+  constructor(foundVersion: number, supportedVersion: number) {
     super(
       `Unsupported manifest schema version ${foundVersion}. ` +
       `This reader supports version ${supportedVersion}. ` +
-      `Please upgrade to a newer version of the lakehouse package.`
+      `Please upgrade to a newer version of the lakehouse package.`,
+      ErrorCode.VERSION_MISMATCH,
+      { foundVersion, supportedVersion },
+      `Please upgrade to a newer version of the lakehouse package that supports version ${foundVersion}.`
     );
-    // Maintain proper prototype chain for instanceof checks
-    Object.setPrototypeOf(this, VersionMismatchError.prototype);
+    this.name = 'VersionMismatchError';
+    this.foundVersion = foundVersion;
+    this.supportedVersion = supportedVersion;
+    captureStackTrace(this, VersionMismatchError);
   }
 }
 

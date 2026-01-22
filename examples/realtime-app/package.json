@@ -1,0 +1,22 @@
+{
+  "name": "@evodb/example-realtime-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-time subscriptions example for EvoDB (placeholder)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*",
+    "@evodb/writer": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.0.0"
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "name": "@evodb/graphql",
+  "version": "0.1.0-rc.1",
+  "description": "GraphQL adapter for EvoDB - auto-generate GraphQL schema and resolvers from tables",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    },
+    "./resolvers": {
+      "types": "./dist/resolvers.d.ts",
+      "import": "./dist/resolvers.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "graphql",
+    "schema-generation",
+    "resolvers",
+    "subscriptions",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "query-engine"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "graphql"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*",
+    "@evodb/query": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "graphql": ">=16.0.0"
+  },
+  "peerDependenciesMeta": {
+    "graphql": {
+      "optional": true
+    }
+  },
+  "sideEffects": false
+}

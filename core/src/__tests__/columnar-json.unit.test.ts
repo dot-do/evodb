@@ -19,6 +19,11 @@ import {
   inferSchema,
   isCompatible,
   Type,
+  extractPath,
+  extractPaths,
+  coerceToType,
+  appendRows,
+  buildPathIndex,
 } from '../index.js';
 
 // =============================================================================
@@ -691,7 +696,7 @@ describe('RED PHASE: Features requiring implementation', () => {
 
   describe('Path Query API', () => {
     // ClickHouse supports JSONPath-like queries - we need a query API
-    it('should support extractPath function for single value extraction', async () => {
+    it('should support extractPath function for single value extraction', () => {
       const docs = [
         { user: { name: 'Alice', profile: { city: 'NYC' } } },
         { user: { name: 'Bob', profile: { city: 'LA' } } },
@@ -699,24 +704,17 @@ describe('RED PHASE: Features requiring implementation', () => {
 
       const columns = shred(docs);
 
-      // This function should be exported from the module
-      // @ts-expect-error - extractPath not yet implemented
-      const { extractPath } = await import('../index.js');
-
       const cities = extractPath(columns, 'user.profile.city');
       expect(cities).toEqual(['NYC', 'LA']);
     });
 
-    it('should support extractPaths function for multiple paths', async () => {
+    it('should support extractPaths function for multiple paths', () => {
       const docs = [
         { user: { name: 'Alice', age: 30 } },
         { user: { name: 'Bob', age: 25 } },
       ];
 
       const columns = shred(docs);
-
-      // @ts-expect-error - extractPaths not yet implemented
-      const { extractPaths } = await import('../index.js');
 
       const result = extractPaths(columns, ['user.name', 'user.age']);
       expect(result).toEqual({
@@ -736,10 +734,8 @@ describe('RED PHASE: Features requiring implementation', () => {
       schema2.columns.find(c => c.path === 'age')!.nullable = true;
 
       // Schema should track parent version for evolution chain
-      // @ts-expect-error - parentVersion not yet on Schema type
       schema2.parentVersion = 1;
 
-      // @ts-expect-error - parentVersion not yet on Schema type
       expect(schema2.parentVersion).toBe(1);
       expect(schema2.version).toBe(2);
     });
@@ -758,7 +754,6 @@ describe('RED PHASE: Features requiring implementation', () => {
       const columns = shred(docs);
       const schema = inferSchema(columns);
 
-      // @ts-expect-error - Type.Timestamp not yet defined
       expect(schema.columns.find(c => c.path === 'created')?.type).toBe(Type.Timestamp);
     });
 
@@ -771,8 +766,6 @@ describe('RED PHASE: Features requiring implementation', () => {
       const columns = shred(docs);
       const schema = inferSchema(columns);
 
-      // Currently detected as String, should be Date
-      // @ts-expect-error - Type.Date not yet defined
       expect(schema.columns.find(c => c.path === 'date')?.type).toBe(Type.Date);
     });
   });
@@ -784,7 +777,6 @@ describe('RED PHASE: Features requiring implementation', () => {
         { id: 2, name: 'Bob', email: 'bob@test.com', age: 25 },
       ];
 
-      // @ts-expect-error - shred does not yet support options.columns
       const columns = shred(docs, { columns: ['id', 'name'] });
 
       expect(columns).toHaveLength(2);
@@ -796,7 +788,6 @@ describe('RED PHASE: Features requiring implementation', () => {
         { user: { name: 'Alice', profile: { email: 'a@test.com', phone: '123' } } },
       ];
 
-      // @ts-expect-error - shred does not yet support options.columns
       const columns = shred(docs, { columns: ['user.name', 'user.profile.email'] });
 
       expect(columns).toHaveLength(2);
@@ -814,18 +805,16 @@ describe('RED PHASE: Features requiring implementation', () => {
       const valueCol = columns.find(c => c.path === 'value')!;
 
       // Null bitmap should be RLE compressed
-      // @ts-expect-error - nullBitmapCompressed not yet on Column
-      expect(valueCol.nullBitmapCompressed).toBeDefined();
-      // @ts-expect-error - nullBitmapCompression not yet on Column
-      expect(valueCol.nullBitmapCompression).toBe('RLE');
+      // NOTE: nullBitmapCompressed and nullBitmapCompression are dynamically added properties
+      // that are not part of the Column interface, so we need to use type assertion
+      const extendedCol = valueCol as typeof valueCol & { nullBitmapCompressed?: Uint8Array; nullBitmapCompression?: string };
+      expect(extendedCol.nullBitmapCompressed).toBeDefined();
+      expect(extendedCol.nullBitmapCompression).toBe('RLE');
     });
   });
 
   describe('Type Coercion Functions', () => {
-    it('should export coerceToType function', async () => {
-      // @ts-expect-error - coerceToType not yet exported
-      const { coerceToType } = await import('../index.js');
-
+    it('should export coerceToType function', () => {
       expect(coerceToType(42, Type.String)).toBe('42');
       expect(coerceToType('3.14', Type.Float64)).toBe(3.14);
       expect(coerceToType(1, Type.Bool)).toBe(true);
@@ -833,14 +822,11 @@ describe('RED PHASE: Features requiring implementation', () => {
   });
 
   describe('Incremental Shredding', () => {
-    it('should support appending rows to existing columns', async () => {
+    it('should support appending rows to existing columns', () => {
       const docs1 = [{ id: 1, name: 'Alice' }];
       const columns1 = shred(docs1);
 
       const docs2 = [{ id: 2, name: 'Bob' }];
-
-      // @ts-expect-error - appendRows not yet implemented
-      const { appendRows } = await import('../index.js');
 
       const columns2 = appendRows(columns1, docs2);
 
@@ -848,14 +834,11 @@ describe('RED PHASE: Features requiring implementation', () => {
       expect(columns2.find(c => c.path === 'name')?.values).toEqual(['Alice', 'Bob']);
     });
 
-    it('should handle schema evolution during append', async () => {
+    it('should handle schema evolution during append', () => {
       const docs1 = [{ id: 1, name: 'Alice' }];
       const columns1 = shred(docs1);
 
       const docs2 = [{ id: 2, name: 'Bob', age: 25 }]; // New field
-
-      // @ts-expect-error - appendRows not yet implemented
-      const { appendRows } = await import('../index.js');
 
       const columns2 = appendRows(columns1, docs2);
 
@@ -866,16 +849,13 @@ describe('RED PHASE: Features requiring implementation', () => {
   });
 
   describe('Materialized Path Indexes', () => {
-    it('should build path index for fast column lookup', async () => {
+    it('should build path index for fast column lookup', () => {
       const docs = Array.from({ length: 1000 }, (_, i) => ({
         a: { b: { c: { d: { e: i } } } },
         x: { y: { z: i * 2 } },
       }));
 
       const columns = shred(docs);
-
-      // @ts-expect-error - buildPathIndex not yet implemented
-      const { buildPathIndex } = await import('../index.js');
 
       const index = buildPathIndex(columns);
 

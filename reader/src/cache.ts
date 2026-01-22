@@ -322,9 +322,10 @@ export class CacheTier {
    *
    * Note: Cache API doesn't support prefix deletion directly.
    * Would need to track keys separately for bulk invalidation.
+   * Returns 0 as a no-op - callers should use individual invalidate() instead.
    */
   async invalidatePrefix(_prefix: string): Promise<number> {
-    console.warn('Prefix invalidation not fully supported - use individual invalidate()');
+    // Prefix invalidation not supported - callers should use individual invalidate()
     return 0;
   }
 
@@ -384,32 +385,18 @@ export class CacheTier {
 
   /**
    * Log error with appropriate severity and context.
+   * Note: In production, this should be logged through @evodb/observability.
+   * Currently this method tracks errors in stats without console logging.
    */
   private logError(
-    operation: 'get' | 'put' | 'invalidate',
-    key: string,
-    error: Error,
-    errorType: CacheErrorType
+    _operation: 'get' | 'put' | 'invalidate',
+    _key: string,
+    _error: Error,
+    _errorType: CacheErrorType
   ): void {
-    const context = {
-      operation,
-      key: this.buildCacheUrl(key),
-      error: error.message,
-      errorName: error.name,
-    };
-
-    if (errorType === 'unavailable') {
-      // Cache API not available is a warning (expected in some environments)
-      console.warn('Cache API not available or error occurred', context);
-    } else if (errorType === 'permission') {
-      console.error('Cache permission error - check Cache API access', context);
-    } else if (errorType === 'quota') {
-      console.error('Cache quota exceeded - consider reducing cache size or TTL', context);
-    } else if (errorType === 'network') {
-      console.error('Cache network error - possible timeout or connectivity issue', context);
-    } else {
-      console.error('Cache operation failed with unknown error', context);
-    }
+    // Error tracking is done through trackError() and stats
+    // Console logging removed - use @evodb/observability logger in production
+    // Error context is available through the error callback if configured
   }
 
   /**

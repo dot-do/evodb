@@ -1,0 +1,103 @@
+# EvoDB Release Workflow
+#
+# This workflow handles automated publishing of EvoDB packages to npm.
+# It uses Changesets to manage versions and changelogs.
+#
+# Trigger: Push to main branch or manual workflow dispatch
+# Actions:
+#   1. Run quality gates (typecheck, lint, test)
+#   2. If changesets present: Create "Version Packages" PR
+#   3. If version PR merged: Publish to npm with provenance
+#
+# Required Secrets:
+#   - NPM_TOKEN: npm automation token with publish access to @evodb scope
+#
+# TODO: Configure NPM_TOKEN secret before enabling this workflow
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write      # Create releases and tags
+      pull-requests: write # Create version PRs
+      id-token: write      # npm provenance
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for changeset versioning
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type Check
+        run: pnpm typecheck
+
+      # TODO: Enable linting once lint script is configured
+      # - name: Lint
+      #   run: pnpm lint
+
+      - name: Run Tests
+        run: pnpm test
+
+      - name: Build All Packages
+        run: pnpm build
+
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          # Script to run when publishing
+          publish: pnpm changeset publish
+          # Script to run when versioning (creates PR)
+          version: pnpm changeset version
+          # Title for the version PR
+          title: 'chore: version packages'
+          # Commit message for version bumps
+          commit: 'chore: version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Post-publish: Create GitHub Release (optional enhancement)
+      # - name: Create GitHub Release
+      #   if: steps.changesets.outputs.published == 'true'
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     tag_name: v${{ steps.changesets.outputs.publishedPackages[0].version }}
+      #     generate_release_notes: true
+
+  # Optional: Publish documentation after release
+  # docs:
+  #   name: Publish Docs
+  #   needs: release
+  #   if: ${{ needs.release.outputs.published == 'true' }}
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: echo "TODO: Publish documentation"

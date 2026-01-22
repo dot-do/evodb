@@ -104,10 +104,17 @@ export type ReaderEnv = {
   CACHE_TTL_SECONDS?: string;
 };
 
-/**
- * @deprecated Use SimpleQueryEngine from @evodb/query instead.
- */
-console.warn(
-  '[@evodb/reader] This package is deprecated. Please migrate to @evodb/query. ' +
-  'See migration guide: https://github.com/evodb/evodb/blob/main/MIGRATION.md'
-);
+// Deprecation warning - emitted once per process
+// Users should migrate to @evodb/query
+declare const globalThis: { __evodb_reader_warned?: boolean };
+if (typeof globalThis !== 'undefined' && !globalThis.__evodb_reader_warned) {
+  globalThis.__evodb_reader_warned = true;
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+    // Only warn in non-production environments to avoid log noise
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[@evodb/reader] This package is deprecated. Please migrate to @evodb/query. ' +
+      'See migration guide: https://github.com/evodb/evodb/blob/main/MIGRATION.md'
+    );
+  }
+}

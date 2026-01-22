@@ -357,3 +357,203 @@ describe('LakehouseWriter retry behavior', () => {
     expect(writer.getPendingBlockCount()).toBe(1);
   });
 });
+
+describe('LakehouseWriter defensive null checks', () => {
+  let mockBucket: R2Bucket;
+
+  beforeEach(() => {
+    mockBucket = createMockR2Bucket();
+  });
+
+  describe('receiveCDC validation', () => {
+    it('should throw error when sourceDoId is null', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const entries = [createMockWalEntry(1)];
+
+      await expect(writer.receiveCDC(null as unknown as string, entries)).rejects.toThrow('Invalid sourceDoId');
+    });
+
+    it('should throw error when sourceDoId is undefined', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const entries = [createMockWalEntry(1)];
+
+      await expect(writer.receiveCDC(undefined as unknown as string, entries)).rejects.toThrow('Invalid sourceDoId');
+    });
+
+    it('should throw error when sourceDoId is empty string', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const entries = [createMockWalEntry(1)];
+
+      await expect(writer.receiveCDC('', entries)).rejects.toThrow('Invalid sourceDoId');
+    });
+
+    it('should handle null entries array gracefully', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      // Should not throw, just return early
+      await writer.receiveCDC('source-1', null as unknown as WalEntry[]);
+
+      const stats = writer.getStats();
+      expect(stats.buffer.entryCount).toBe(0);
+    });
+
+    it('should throw error when last entry has null LSN', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const entryWithNullLsn = {
+        lsn: null as unknown as bigint,
+        timestamp: BigInt(Date.now()),
+        op: 1,
+        flags: 0,
+        data: new Uint8Array([1, 2, 3]),
+        checksum: 12345,
+      };
+
+      await expect(writer.receiveCDC('source-1', [entryWithNullLsn])).rejects.toThrow('Invalid WAL entry');
+    });
+  });
+
+  describe('loadState with corrupted data', () => {
+    it('should handle corrupted state gracefully', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const mockStorage: DOStorage = {
+        get: vi.fn(async () => ({
+          // Partially corrupted state - missing required fields
+          lastBlockSeq: null,
+          pendingBlocks: null,
+          blockIndex: null,
+          sourceCursors: null,
+          stats: null,
+        })),
+        put: vi.fn(async () => {}),
+        delete: vi.fn(async () => true),
+        list: vi.fn(async () => new Map()),
+      };
+
+      writer.setDOStorage(mockStorage);
+
+      // Should not throw, but handle gracefully with defaults
+      await writer.loadState();
+
+      const stats = writer.getStats();
+      expect(stats.blocks.r2BlockCount).toBe(0);
+    });
+
+    it('should handle invalid BigInt in source cursors', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const mockStorage: DOStorage = {
+        get: vi.fn(async () => ({
+          lastBlockSeq: 5,
+          pendingBlocks: [],
+          blockIndex: [],
+          lastSnapshotId: 0,
+          partitionMode: 'do-sqlite',
+          sourceCursors: {
+            'source-1': 'not-a-valid-bigint',  // Invalid BigInt string
+            'source-2': '12345',  // Valid
+          },
+          stats: {
+            cdcEntriesReceived: 10,
+            flushCount: 2,
+            compactCount: 0,
+            r2WriteFailures: 0,
+          },
+        })),
+        put: vi.fn(async () => {}),
+        delete: vi.fn(async () => true),
+        list: vi.fn(async () => new Map()),
+      };
+
+      writer.setDOStorage(mockStorage);
+
+      // Should not throw, skip invalid entries
+      await writer.loadState();
+
+      // source-1 should be skipped, source-2 should be loaded
+      const source2Stats = writer.getSourceStats('source-2');
+      expect(source2Stats).toBeDefined();
+      expect(source2Stats!.lastLsn).toBe(12345n);
+
+      // source-1 should not exist due to invalid BigInt
+      const source1Stats = writer.getSourceStats('source-1');
+      expect(source1Stats).toBeUndefined();
+    });
+  });
+
+  describe('saveState error handling', () => {
+    it('should throw error with message when DO storage fails', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      const mockStorage: DOStorage = {
+        get: vi.fn(async () => undefined),
+        put: vi.fn(async () => { throw new Error('Storage write failed'); }),
+        delete: vi.fn(async () => true),
+        list: vi.fn(async () => new Map()),
+      };
+
+      writer.setDOStorage(mockStorage);
+
+      await expect(writer.saveState()).rejects.toThrow('State persistence failed');
+      await expect(writer.saveState()).rejects.toThrow('Storage write failed');
+    });
+  });
+
+  describe('source stats with null values', () => {
+    it('should skip source with null lastLsn when saving state', async () => {
+      const writer = new LakehouseWriter({
+        r2Bucket: mockBucket,
+        tableLocation: 'test/table',
+      });
+
+      // Receive valid CDC to create source stats
+      await writer.receiveCDC('source-1', [createMockWalEntry(100)]);
+
+      let capturedState: Record<string, unknown> | null = null;
+      const mockStorage: DOStorage = {
+        get: vi.fn(async () => undefined),
+        put: vi.fn(async (_key: string, value: unknown) => {
+          capturedState = value as Record<string, unknown>;
+        }),
+        delete: vi.fn(async () => true),
+        list: vi.fn(async () => new Map()),
+      };
+
+      writer.setDOStorage(mockStorage);
+      await writer.saveState();
+
+      // Verify source cursor was saved
+      expect(capturedState).not.toBeNull();
+      const sourceCursors = capturedState!.sourceCursors as Record<string, string>;
+      expect(sourceCursors['source-1']).toBe('100');
+    });
+  });
+});

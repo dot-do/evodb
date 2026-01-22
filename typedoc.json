@@ -1,0 +1,26 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "core/src/index.ts",
+    "query/src/index.ts",
+    "writer/src/index.ts",
+    "rpc/src/index.ts"
+  ],
+  "entryPointStrategy": "expand",
+  "out": "docs/api",
+  "plugin": ["typedoc-plugin-markdown"],
+  "readme": "none",
+  "name": "EvoDB API Reference",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true,
+  "skipErrorChecking": true,
+  "categorizeByGroup": true,
+  "categoryOrder": ["Core", "Query", "Writer", "RPC", "*"],
+  "sort": ["source-order", "alphabetical"],
+  "navigation": {
+    "includeCategories": true,
+    "includeGroups": true
+  },
+  "gitRevision": "main"
+}

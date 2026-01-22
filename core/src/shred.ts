@@ -1,6 +1,8 @@
 // JSON Shredder - Flatten JSON documents to columns (~1.5KB budget)
 
 import { type Column, Type } from './types.js';
+import { isArray, isRecord as isPlainObject } from './type-guards.js';
+import { ValidationError, ErrorCode } from './errors.js';
 
 /** Default maximum recursion depth for walk() */
 const DEFAULT_MAX_DEPTH = 100;
@@ -91,7 +93,13 @@ function walk(
 ): void {
   // Check max depth
   if (depth > maxDepth) {
-    throw new Error(`Maximum recursion depth exceeded (max depth: ${maxDepth}). Path: ${path}`);
+    throw new ValidationError(
+      `Maximum recursion depth exceeded while shredding document`,
+      ErrorCode.VALIDATION_ERROR,
+      { path, depth, maxDepth, operation: 'shred' },
+      `The document structure is too deeply nested (depth ${depth} > max ${maxDepth}). ` +
+      `Consider flattening the document or increasing maxDepth in ShredOptions.`
+    );
   }
 
   const type = inferType(val);
@@ -100,7 +108,13 @@ function walk(
   if (Array.isArray(val)) {
     // Check for circular reference (only ancestors in current path)
     if (seen.has(val)) {
-      throw new Error(`Circular reference detected at path: ${path}`);
+      throw new ValidationError(
+        `Circular reference detected in array at path: ${path}`,
+        ErrorCode.VALIDATION_ERROR,
+        { path, depth, type: 'array', operation: 'shred' },
+        `The document contains a circular reference (an array that references itself or its parent). ` +
+        `Circular structures cannot be shredded to columnar format.`
+      );
     }
     seen.add(val);
 
@@ -144,7 +158,13 @@ function walk(
 
   // Check for circular reference (only ancestors in current path)
   if (seen.has(obj)) {
-    throw new Error(`Circular reference detected at path: ${path}`);
+    throw new ValidationError(
+      `Circular reference detected in object at path: ${path}`,
+      ErrorCode.VALIDATION_ERROR,
+      { path, depth, type: 'object', operation: 'shred' },
+      `The document contains a circular reference (an object that references itself or its parent). ` +
+      `Circular structures cannot be shredded to columnar format.`
+    );
   }
   seen.add(obj);
 
@@ -195,23 +215,7 @@ export function unshred(columns: Column[], rowCount?: number): unknown[] {
   return docs;
 }
 
-/**
- * Type guard: check if value is an array
- * @param val - Value to check
- * @returns True if value is an array
- */
-function isArray(val: unknown): val is unknown[] {
-  return Array.isArray(val);
-}
-
-/**
- * Type guard: check if value is a plain object (not null, not array)
- * @param val - Value to check
- * @returns True if value is a plain object
- */
-function isPlainObject(val: unknown): val is Record<string, unknown> {
-  return typeof val === 'object' && val !== null && !Array.isArray(val);
-}
+// Type guards imported from type-guards.ts: isArray, isPlainObject
 
 /**
  * Parse path parts including array indices

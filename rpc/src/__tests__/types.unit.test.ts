@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { ErrorCode, EvoDBError, NetworkError } from '@evodb/core';
 import {
   // Error classes
   LakehouseRpcError,
@@ -62,6 +63,13 @@ describe('Error Classes', () => {
       expect(error).toBeInstanceOf(Error);
     });
 
+    it('should extend EvoDBError via NetworkError', () => {
+      const error = new LakehouseRpcError('Test error', ErrorCode.RPC_ERROR);
+
+      expect(error).toBeInstanceOf(EvoDBError);
+      expect(error).toBeInstanceOf(NetworkError);
+    });
+
     it('should default retryable to false', () => {
       const error = new LakehouseRpcError('Test', 'TEST');
 
@@ -70,11 +78,16 @@ describe('Error Classes', () => {
   });
 
   describe('ConnectionError', () => {
-    it('should have CONNECTION_ERROR code', () => {
+    it('should have RPC_CONNECTION_ERROR code', () => {
       const error = new ConnectionError('Connection failed');
 
-      expect(error.code).toBe('CONNECTION_ERROR');
+      expect(error.code).toBe(ErrorCode.RPC_CONNECTION_ERROR);
       expect(error.name).toBe('ConnectionError');
+    });
+
+    it('should extend EvoDBError', () => {
+      const error = new ConnectionError('Connection failed');
+      expect(error).toBeInstanceOf(EvoDBError);
     });
 
     it('should default retryable to true', () => {
@@ -94,8 +107,13 @@ describe('Error Classes', () => {
     it('should have BUFFER_OVERFLOW code', () => {
       const error = new BufferOverflowError('Buffer full');
 
-      expect(error.code).toBe('BUFFER_OVERFLOW');
+      expect(error.code).toBe(ErrorCode.BUFFER_OVERFLOW);
       expect(error.name).toBe('BufferOverflowError');
+    });
+
+    it('should extend EvoDBError', () => {
+      const error = new BufferOverflowError('Buffer full');
+      expect(error).toBeInstanceOf(EvoDBError);
     });
 
     it('should always be retryable', () => {
@@ -109,8 +127,13 @@ describe('Error Classes', () => {
     it('should have FLUSH_ERROR code', () => {
       const error = new FlushError('Flush failed', false);
 
-      expect(error.code).toBe('FLUSH_ERROR');
+      expect(error.code).toBe(ErrorCode.FLUSH_ERROR);
       expect(error.name).toBe('FlushError');
+    });
+
+    it('should extend EvoDBError', () => {
+      const error = new FlushError('Flush failed', false);
+      expect(error).toBeInstanceOf(EvoDBError);
     });
 
     it('should track usedFallback flag', () => {
@@ -132,8 +155,13 @@ describe('Error Classes', () => {
     it('should have PROTOCOL_ERROR code', () => {
       const error = new ProtocolError('Invalid message format');
 
-      expect(error.code).toBe('PROTOCOL_ERROR');
+      expect(error.code).toBe(ErrorCode.PROTOCOL_ERROR);
       expect(error.name).toBe('ProtocolError');
+    });
+
+    it('should extend EvoDBError', () => {
+      const error = new ProtocolError('Invalid message format');
+      expect(error).toBeInstanceOf(EvoDBError);
     });
 
     it('should never be retryable', () => {

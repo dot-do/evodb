@@ -61,6 +61,7 @@ export type {
 
   // Configuration
   LanceReaderConfig,
+  LazyLoadConfig,
 
   // Internal
   GlobalBufferEntry,
@@ -162,3 +163,72 @@ export type {
   ArrowSchema,
   ArrowRecordBatch,
 } from './arrow.js';
+
+// ==========================================
+// Lazy Loading
+// ==========================================
+
+export {
+  // Core lazy loading classes
+  LazyIvfPqIndex,
+  LazyHnswIndex,
+  LazyLoader,
+  createLazyIndexFactory,
+  createVectorIndex,
+  dynamicImport,
+  DEFAULT_LAZY_LOAD_CONFIG,
+
+  // Component-level lazy loading
+  lazyModuleLoader,
+  clearModuleCache,
+
+  // Streaming partition loading
+  StreamingPartitionLoader,
+  DEFAULT_STREAMING_CONFIG,
+
+  // Progressive loading
+  ProgressiveLoader,
+
+  // Component registry
+  LazyComponentRegistry,
+
+  // Memory-aware loading
+  DEFAULT_MEMORY_AWARE_CONFIG,
+  estimateMemoryUsage,
+
+  // Lazy reader components
+  getLazyProtobufParser,
+  getLazyArrowReader,
+
+  // Batch loading
+  batchLoadPartitions,
+  DEFAULT_BATCH_LOAD_OPTIONS,
+} from './lazy-loader.js';
+
+export type {
+  // Configuration types
+  LazyLoadConfig as LazyLoaderConfig,
+  LoadingState,
+  IvfPqLoadingState,
+  HnswLoadingState,
+
+  // Streaming types
+  StreamingPartitionConfig,
+  StreamingPartitionData,
+
+  // Progress types
+  ProgressCallback,
+
+  // Component registry types
+  ComponentStatus,
+
+  // Memory-aware types
+  MemoryAwareConfig,
+
+  // Lazy reader interfaces
+  LazyProtobufParser,
+  LazyArrowReader,
+
+  // Batch loading types
+  BatchLoadOptions,
+} from './lazy-loader.js';

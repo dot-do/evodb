@@ -1,73 +1,96 @@
 /**
  * @evodb/query - Unified Query Engine Package
  *
- * This package provides two query modes:
+ * This package provides a unified query engine with configurable execution modes.
  *
- * ## Simple Mode (formerly @evodb/reader)
+ * ## Recommended: UnifiedQueryEngine (v0.2.0+)
+ * The new UnifiedQueryEngine consolidates both simple and full modes into a single class:
+ *
+ * ```typescript
+ * import { UnifiedQueryEngine } from '@evodb/query';
+ *
+ * // Simple mode - lightweight for basic queries
+ * const simpleEngine = new UnifiedQueryEngine({
+ *   mode: 'simple',
+ *   bucket: env.R2_BUCKET,
+ *   simpleCache: { enableCacheApi: true },
+ * });
+ *
+ * // Full mode (default) - advanced features
+ * const fullEngine = new UnifiedQueryEngine({
+ *   mode: 'full',  // default
+ *   bucket: env.R2_BUCKET,
+ *   cache: { enabled: true, ttlSeconds: 3600, maxSizeBytes: 256 * 1024 * 1024, keyPrefix: 'evodb:' },
+ * });
+ * ```
+ *
+ * ## Execution Modes:
+ *
+ * ### Simple Mode
  * Lightweight query engine for basic filtering, projection, and aggregation:
  * - R2 + Cache API integration
  * - Manifest-based table discovery
  * - Columnar JSON block reading
+ * - Lower overhead, fewer features
  *
- * ## Full Mode (advanced features)
+ * ### Full Mode (default)
  * Full-featured query engine with:
  * - Zone map optimization for partition pruning
  * - Bloom filter support for point lookups
- * - Edge cache integration
+ * - Edge cache integration (LRU)
  * - Streaming results for large queries
  * - Query planning and cost estimation
+ * - Memory tracking and limits
+ * - Subrequest budget tracking
  *
- * @example Simple Mode
+ * ## Legacy APIs (Deprecated)
+ * SimpleQueryEngine and QueryEngine are still available but deprecated.
+ * They will be removed in v0.3.0.
+ *
+ * @example UnifiedQueryEngine (Recommended)
  * ```typescript
- * import { SimpleQueryEngine, type SimpleQueryConfig } from '@evodb/query';
+ * import { UnifiedQueryEngine, createUnifiedQueryEngine } from '@evodb/query';
  *
- * const engine = new SimpleQueryEngine({
+ * // Factory function
+ * const engine = createUnifiedQueryEngine({
+ *   mode: 'simple',
  *   bucket: env.R2_BUCKET,
- *   cache: { enableCacheApi: true },
  * });
  *
+ * // Simple mode query API
  * const result = await engine.query({
  *   table: 'users',
  *   filters: [{ column: 'status', operator: 'eq', value: 'active' }],
  *   columns: ['id', 'name'],
  *   limit: 100,
  * });
- * ```
  *
- * @example Full Mode
- * ```typescript
- * import { createQueryEngine, type Query } from '@evodb/query';
- *
- * const engine = createQueryEngine({ bucket: env.R2_BUCKET });
- *
- * const query: Query = {
- *   table: 'com/example/api/users',
- *   predicates: [
- *     { column: 'status', operator: 'eq', value: 'active' }
- *   ],
- *   projection: { columns: ['id', 'name', 'email'] },
- *   limit: 100,
- * };
- *
- * const result = await engine.execute(query);
- * console.log(`Found ${result.totalRowCount} users`);
- * ```
- *
- * @example Unified QueryExecutor Interface
- * ```typescript
- * import { createSimpleQueryEngine, createQueryExecutor, type QueryExecutor } from '@evodb/query';
- *
- * // Both engines implement QueryExecutor interface
- * const simple: QueryExecutor = createSimpleQueryEngine({ bucket: env.R2_BUCKET });
- * const full: QueryExecutor = createQueryExecutor({ bucket: env.R2_BUCKET });
- *
- * // Use unified interface
- * const result = await simple.execute({
+ * // Or use unified execute() API (works in both modes)
+ * const result2 = await engine.execute({
  *   table: 'users',
  *   predicates: [{ column: 'status', operator: 'eq', value: 'active' }],
  *   columns: ['id', 'name'],
  *   limit: 100,
  * });
+ * ```
+ *
+ * @example Legacy Simple Mode (Deprecated)
+ * ```typescript
+ * import { SimpleQueryEngine, type SimpleQueryConfig } from '@evodb/query';
+ *
+ * // DEPRECATED: Use UnifiedQueryEngine with mode: 'simple' instead
+ * const engine = new SimpleQueryEngine({
+ *   bucket: env.R2_BUCKET,
+ *   cache: { enableCacheApi: true },
+ * });
+ * ```
+ *
+ * @example Legacy Full Mode (Deprecated)
+ * ```typescript
+ * import { createQueryEngine, type Query } from '@evodb/query';
+ *
+ * // DEPRECATED: Use UnifiedQueryEngine with mode: 'full' instead
+ * const engine = createQueryEngine({ bucket: env.R2_BUCKET });
  * ```
  */
 
@@ -109,6 +132,8 @@ export type {
   // Result types (engine-specific internal format)
   EngineQueryResult,
   EngineQueryStats,
+  // Per-operation memory metrics type (for identifying bottlenecks)
+  OperationMemoryMetrics,
   // Backward compatibility aliases (deprecated)
   QueryResult,
   QueryStats,
@@ -152,6 +177,19 @@ export {
   ResultProcessor,
   // Error classes
   MemoryLimitExceededError,
+  // Memory tracking classes
+  GranularMemoryTracker,
+  OperationMemoryTracker,
+} from './engine.js';
+
+// Memory tracking types
+export type {
+  QueryPhase,
+  PhaseMemoryMetrics,
+  GranularMemoryMetrics,
+  QueryOperationType,
+  OperationMemoryMetricsInternal,
+  OperationMemoryReport,
 } from './engine.js';
 
 // =============================================================================
@@ -566,3 +604,68 @@ export type ReaderQueryResult = SimpleQueryResult;
  * This alias is provided for backward compatibility with @evodb/reader.
  */
 export type CacheTierConfig = SimpleCacheTierConfig;
+
+// =============================================================================
+// Unified Query Engine Exports (Recommended for new code)
+// =============================================================================
+
+export {
+  // Main unified engine class
+  UnifiedQueryEngine,
+  // Factory functions
+  createUnifiedQueryEngine,
+  createSimpleUnifiedEngine,
+  createFullUnifiedEngine,
+} from './unified-engine.js';
+
+export type {
+  // Configuration types
+  QueryEngineMode,
+  UnifiedQueryEngineConfig,
+  // Simple mode types (re-exported for convenience with Unified prefix)
+  SimpleQueryRequest as UnifiedSimpleQueryRequest,
+  SimpleQueryResult as UnifiedSimpleQueryResult,
+  SimpleQueryStats as UnifiedSimpleQueryStats,
+  SimpleFilterPredicate as UnifiedSimpleFilterPredicate,
+  SimpleFilterOperator as UnifiedSimpleFilterOperator,
+  SimpleSortSpec as UnifiedSimpleSortSpec,
+  SimpleAggregateSpec as UnifiedSimpleAggregateSpec,
+  SimpleAggregateFunction as UnifiedSimpleAggregateFunction,
+} from './unified-engine.js';
+
+// =============================================================================
+// Type-Safe Query Builder Exports
+// =============================================================================
+
+export {
+  // Query Builder class
+  QueryBuilder,
+  // Factory functions
+  createQueryBuilder,
+  createUntypedQueryBuilder,
+  // Schema helpers
+  defineSchema,
+  mergeSchemas,
+} from './query-builder.js';
+
+export type {
+  // Schema types
+  ColumnType,
+  SchemaDefinition,
+  ColumnNames,
+  ColumnsOfType,
+  ColumnRuntimeType,
+  InferRowType,
+  // Operator types
+  StringOperators,
+  NumericOperators,
+  BooleanOperators,
+  TimestampOperators,
+  OperatorsForType,
+  // Typed query components
+  TypedPredicate,
+  TypedAggregation,
+  TypedOrderBy,
+  TypedProjection,
+  TypedQuery,
+} from './query-builder.js';

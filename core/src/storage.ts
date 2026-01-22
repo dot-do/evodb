@@ -1,7 +1,8 @@
 // DO Storage Adapter (~1KB budget)
 
-import { type StorageAdapter, type BlockId, type WalId, unsafeBlockId, unsafeWalId } from './types.js';
+import { type StorageAdapter, type BlockId, type WalId, unsafeBlockId } from './types.js';
 import { STORAGE_LIST_PAGE_SIZE } from './constants.js';
+import { StorageError, ValidationError, ErrorCode } from './errors.js';
 
 // =============================================================================
 // UNIFIED STORAGE INTERFACE (Issue evodb-pyo)
@@ -146,48 +147,18 @@ export interface ObjectStorageAdapter {
 // R2 Storage Adapter
 // =============================================================================
 
-/**
- * Minimal R2Bucket interface for storage operations
- * Compatible with Cloudflare Workers R2Bucket binding
- */
-export interface R2BucketLike {
-  get(key: string): Promise<R2ObjectLike | null>;
-  put(key: string, value: ArrayBuffer | Uint8Array | string, options?: R2PutOptionsLike): Promise<R2ObjectLike>;
-  delete(key: string): Promise<void>;
-  list(options?: R2ListOptionsLike): Promise<R2ObjectsLike>;
-  head(key: string): Promise<R2ObjectLike | null>;
-}
+// R2 types are now centralized in types/r2.ts (Issue evodb-sdgz)
+// Re-export for backward compatibility
+export type {
+  R2BucketLike,
+  R2ObjectLike,
+  R2ObjectsLike,
+  R2PutOptionsLike,
+  R2ListOptionsLike,
+} from './types/r2.js';
 
-export interface R2ObjectLike {
-  key: string;
-  size: number;
-  etag: string;
-  uploaded: Date;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-}
-
-export interface R2ObjectsLike {
-  objects: R2ObjectLike[];
-  truncated: boolean;
-  cursor?: string;
-}
-
-export interface R2PutOptionsLike {
-  httpMetadata?: { contentType?: string };
-  customMetadata?: Record<string, string>;
-  onlyIf?: {
-    etagMatches?: string;
-    etagDoesNotMatch?: string;
-  };
-}
-
-export interface R2ListOptionsLike {
-  prefix?: string;
-  cursor?: string;
-  limit?: number;
-  delimiter?: string;
-}
+// Import types for use in this file
+import type { R2BucketLike } from './types/r2.js';
 
 /**
  * R2 storage adapter implementation
@@ -318,7 +289,7 @@ export class MemoryObjectStorageAdapter implements ObjectStorageAdapter {
   async getRange(path: string, offset: number, length: number): Promise<Uint8Array> {
     const entry = this.storage.get(path);
     if (!entry) {
-      throw new Error(`Object not found: ${path}`);
+      throw StorageError.notFound(path, { operation: 'getRange', offset, length });
     }
     const start = validateRangeBounds(entry.data.length, offset, length);
     return entry.data.slice(start, start + length);
@@ -406,7 +377,7 @@ export class MemoryStorage implements Storage {
   async readRange(path: string, offset: number, length: number): Promise<Uint8Array> {
     const entry = this.data.get(path);
     if (!entry) {
-      throw new Error(`Object not found: ${path}`);
+      throw StorageError.notFound(path, { operation: 'readRange', offset, length });
     }
     const start = validateRangeBounds(entry.bytes.length, offset, length);
     return entry.bytes.slice(start, start + length);
@@ -566,7 +537,7 @@ export function storageToObjectAdapter(storage: Storage): ObjectStorageAdapter {
       }
       const data = await storage.read(path);
       if (!data) {
-        throw new Error(`Object not found: ${path}`);
+        throw StorageError.notFound(path, { operation: 'getRange', offset, length });
       }
       const start = validateRangeBounds(data.length, offset, length);
       return data.slice(start, start + length);
@@ -609,7 +580,7 @@ export function objectAdapterToStorage(adapter: ObjectStorageAdapter): Storage {
       }
       const data = await adapter.get(path);
       if (!data) {
-        throw new Error(`Object not found: ${path}`);
+        throw StorageError.notFound(path, { operation: 'readRange', offset, length });
       }
       const start = validateRangeBounds(data.length, offset, length);
       return data.slice(start, start + length);
@@ -704,12 +675,15 @@ const VALID_TABLE_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
  * - Contain only alphanumeric characters and underscores
  * - Not be empty
  *
- * @throws Error if table name is invalid
+ * @throws ValidationError if table name is invalid
  */
 export function validateTableName(tableName: string): void {
   if (!tableName || !VALID_TABLE_NAME_REGEX.test(tableName)) {
-    throw new Error(
-      `Invalid table name: "${tableName}". Table names must start with a letter or underscore and contain only alphanumeric characters and underscores.`
+    throw new ValidationError(
+      `Invalid table name: "${tableName}"`,
+      ErrorCode.INVALID_FORMAT,
+      { field: 'tableName', actualValue: tableName, expectedFormat: 'alphanumeric with underscores, starting with letter or underscore' },
+      'Table names must start with a letter or underscore and contain only alphanumeric characters and underscores (e.g., "users", "order_items", "_temp").'
     );
   }
 }
@@ -745,38 +719,68 @@ export function quoteIdentifier(identifier: string): string {
  * - Do not contain null bytes or control characters
  *
  * @param path - The storage path to validate
- * @throws Error if path contains dangerous patterns
+ * @throws StorageError if path contains dangerous patterns
  */
 export function validateStoragePath(path: string): void {
   // Check for empty or whitespace-only paths
   if (!path || path.trim().length === 0) {
-    throw new Error('Storage path validation failed: path cannot be empty');
+    throw new StorageError(
+      'Storage path cannot be empty',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'empty' },
+      'Provide a non-empty path (e.g., "data/file.bin").'
+    );
   }
 
   // Check for null bytes (can truncate paths in some systems)
   if (path.includes('\x00')) {
-    throw new Error('Storage path validation failed: path contains null byte');
+    throw new StorageError(
+      'Storage path contains null byte',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'null_byte' },
+      'Remove null bytes from the path. Null bytes can cause security issues.'
+    );
   }
 
   // Check for control characters (ASCII 0x00-0x1F except allowed whitespace)
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f]/.test(path)) {
-    throw new Error('Storage path validation failed: path contains control character');
+    throw new StorageError(
+      'Storage path contains control character',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'control_character' },
+      'Remove control characters from the path. Use only printable characters.'
+    );
   }
 
   // Check for absolute paths (Unix-style)
   if (path.startsWith('/')) {
-    throw new Error('Storage path validation failed: absolute path not allowed');
+    throw new StorageError(
+      'Absolute path not allowed',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'absolute_path' },
+      'Use a relative path instead (e.g., "data/file.bin" not "/data/file.bin").'
+    );
   }
 
   // Check for Windows absolute paths (C:\ or C:/)
   if (/^[a-zA-Z]:[/\\]/.test(path)) {
-    throw new Error('Storage path validation failed: absolute path not allowed');
+    throw new StorageError(
+      'Absolute path not allowed',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'absolute_path' },
+      'Use a relative path instead (e.g., "data/file.bin" not "C:/data/file.bin").'
+    );
   }
 
   // Check for UNC paths (\\server\share or //server/share)
   if (path.startsWith('\\\\') || path.startsWith('//')) {
-    throw new Error('Storage path validation failed: absolute path not allowed');
+    throw new StorageError(
+      'Absolute path not allowed',
+      ErrorCode.INVALID_PATH,
+      { operation: 'validatePath', path, reason: 'absolute_path' },
+      'Use a relative path instead. UNC paths are not supported.'
+    );
   }
 
   // Normalize the path for traversal detection (handle backslashes as path separators)
@@ -791,7 +795,12 @@ export function validateStoragePath(path: string): void {
 
   for (const pattern of pathTraversalPatterns) {
     if (pattern.test(normalizedPath)) {
-      throw new Error('Storage path validation failed: path traversal detected');
+      throw new StorageError(
+        'Path traversal detected',
+        ErrorCode.INVALID_PATH,
+        { operation: 'validatePath', path, reason: 'path_traversal' },
+        'Remove ".." sequences from the path. Path traversal is not allowed for security reasons.'
+      );
     }
   }
 
@@ -799,20 +808,30 @@ export function validateStoragePath(path: string): void {
   try {
     const decoded = decodeURIComponent(normalizedPath);
     if (decoded.includes('..')) {
-      throw new Error('Storage path validation failed: path traversal detected');
+      throw new StorageError(
+        'Path traversal detected (URL-encoded)',
+        ErrorCode.INVALID_PATH,
+        { operation: 'validatePath', path, reason: 'path_traversal' },
+        'Remove ".." sequences from the path (including URL-encoded variants like %2e%2e).'
+      );
     }
     // Try double-decoding (handles double URL-encoded attacks)
     try {
       const doubleDecoded = decodeURIComponent(decoded);
       if (doubleDecoded.includes('..')) {
-        throw new Error('Storage path validation failed: path traversal detected');
+        throw new StorageError(
+          'Path traversal detected (double URL-encoded)',
+          ErrorCode.INVALID_PATH,
+          { operation: 'validatePath', path, reason: 'path_traversal' },
+          'Remove ".." sequences from the path (including double URL-encoded variants).'
+        );
       }
     } catch {
       // Double decoding failed, which is fine - the path is safe from double-encoding attacks
     }
   } catch (e) {
-    // If decoding fails with a non-path-traversal error, re-throw original path traversal errors
-    if (e instanceof Error && e.message.includes('path traversal')) {
+    // If decoding fails with a StorageError, re-throw it
+    if (e instanceof StorageError) {
       throw e;
     }
     // Otherwise, decoding failed which means it's not a valid URL-encoded attack
@@ -850,12 +869,17 @@ export function validateKeyPrefix(keyPrefix: string): void {
  * @param offset - The requested offset (can be negative for from-end semantics)
  * @param length - The requested length (must be non-negative)
  * @returns The normalized start position (always non-negative)
- * @throws Error if length is negative, or if offset is out of bounds
+ * @throws ValidationError if length is negative, or if offset is out of bounds
  */
 export function validateRangeBounds(dataLength: number, offset: number, length: number): number {
   // Check for negative length
   if (length < 0) {
-    throw new Error(`Invalid length: ${length}. Length cannot be negative.`);
+    throw new ValidationError(
+      `Invalid range length: ${length}`,
+      ErrorCode.VALIDATION_ERROR,
+      { field: 'length', actualValue: length, expectedFormat: 'non-negative integer' },
+      'Length must be a non-negative integer (e.g., 0, 100, 1024).'
+    );
   }
 
   // Resolve negative offset (from end of data)
@@ -867,11 +891,21 @@ export function validateRangeBounds(dataLength: number, offset: number, length: 
   // Check if start is out of bounds
   // Note: start == dataLength is allowed ONLY if length == 0 (reading nothing from end)
   if (start < 0) {
-    throw new Error(`Offset out of range: ${offset} resolves to ${start} for data of length ${dataLength}.`);
+    throw new ValidationError(
+      `Offset out of range: ${offset} resolves to ${start} for data of length ${dataLength}`,
+      ErrorCode.VALIDATION_ERROR,
+      { field: 'offset', actualValue: offset, resolvedValue: start, dataLength },
+      `Use an offset between ${-dataLength} and ${dataLength - 1} for this data.`
+    );
   }
 
   if (start > dataLength || (start === dataLength && length > 0)) {
-    throw new Error(`Offset out of range: ${offset} (resolved to ${start}) is beyond data length ${dataLength}.`);
+    throw new ValidationError(
+      `Offset out of range: ${offset} (resolved to ${start}) is beyond data length ${dataLength}`,
+      ErrorCode.VALIDATION_ERROR,
+      { field: 'offset', actualValue: offset, resolvedValue: start, dataLength },
+      `Use an offset between 0 and ${dataLength - 1} for this data, or use a negative offset to read from the end.`
+    );
   }
 
   return start;
@@ -1026,10 +1060,10 @@ export function parseBlockId(id: BlockId | string): { prefix: string; timestamp:
 /**
  * Create a WalId from an LSN.
  * Format: wal:lsn(base36,12-padded)
- * @returns Branded WalId type for compile-time safety
+ * @returns WalId string (plain string type - evodb-cn6)
  */
 export function makeWalId(lsn: bigint): WalId {
-  return unsafeWalId(`wal:${lsn.toString(36).padStart(12, '0')}`);
+  return `wal:${lsn.toString(36).padStart(12, '0')}`;
 }
 
 /**

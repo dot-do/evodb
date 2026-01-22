@@ -34,7 +34,9 @@
     "benchmark",
     "codegen",
     "e2e",
-    "test-utils"
+    "test-utils",
+    "graphql",
+    "react"
   ],
   "scripts": {
     "build": "pnpm -r build",

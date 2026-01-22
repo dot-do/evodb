@@ -151,12 +151,8 @@ export interface ResultProcessor {
 // Utilities
 // =============================================================================
 
-/**
- * Type guard: check if value is a plain object (not null, not array)
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+// Import centralized type guard
+import { isRecord } from './type-guards.js';
 
 /**
  * Regex pattern for valid column names.

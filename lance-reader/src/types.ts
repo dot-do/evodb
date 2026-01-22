@@ -355,6 +355,58 @@ export interface SearchResult {
 // ==========================================
 
 /**
+ * Configuration options for lazy loading behavior
+ */
+export interface LazyLoadConfig {
+  /**
+   * Loading strategy for vector indices
+   * - 'lazy': Defer loading until first query (default)
+   * - 'eager': Load immediately when index is requested
+   * - 'on-demand': Load specific components as needed
+   */
+  strategy: 'lazy' | 'eager' | 'on-demand';
+
+  /**
+   * Whether to preload centroids in background after initialization
+   * Centroids are small (~100KB for 256 partitions x 128d) and needed for every search
+   * Default: true
+   */
+  preloadCentroids?: boolean;
+
+  /**
+   * Whether to preload PQ codebook in background
+   * Codebook is moderate size (~130KB for 16 sub-vectors x 256 codes x 8d)
+   * Default: true
+   */
+  preloadCodebook?: boolean;
+
+  /**
+   * Maximum number of partitions to preload
+   * Set to 0 to disable partition preloading
+   * Default: 0
+   */
+  maxPreloadPartitions?: number;
+
+  /**
+   * Timeout for lazy load operations in milliseconds
+   * Default: 30000 (30 seconds)
+   */
+  loadTimeout?: number;
+
+  /**
+   * Enable background prefetching based on access patterns
+   * Default: false
+   */
+  enablePrefetch?: boolean;
+
+  /**
+   * Number of recently accessed partitions to track for prefetching
+   * Default: 10
+   */
+  prefetchHistorySize?: number;
+}
+
+/**
  * LanceReader configuration options
  */
 export interface LanceReaderConfig {
@@ -370,6 +422,11 @@ export interface LanceReaderConfig {
   maxIndexCacheSize?: number;
   /** Specific version to read (latest if not specified) */
   version?: number;
+  /**
+   * Lazy loading configuration for vector indices
+   * Controls when and how index components are loaded
+   */
+  lazyLoad?: Partial<LazyLoadConfig>;
 }
 
 // ==========================================

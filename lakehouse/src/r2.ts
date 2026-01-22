@@ -46,6 +46,10 @@ import {
   createR2ObjectAdapter,
   createMemoryObjectAdapter,
   wrapStorageBackend,
+  EvoDBError,
+  ErrorCode,
+  ValidationError,
+  captureStackTrace,
 } from '@evodb/core';
 
 // Re-export all types from core for backward compatibility
@@ -72,23 +76,52 @@ export type R2ListOptions = R2ListOptionsLike;
 
 /**
  * Custom error class thrown when JSON parsing fails during storage operations.
+ * Extends ValidationError for consistent error hierarchy.
+ *
  * Provides context including:
  * - The file path that failed to parse
  * - The position in the JSON where the error occurred (if available)
  * - The original error from JSON.parse
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   const data = await storage.getJson('manifest.json');
+ * } catch (e) {
+ *   if (e instanceof JsonParseError) {
+ *     console.log(`Parse error at ${e.path}, position ${e.position}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.JSON_PARSE_ERROR) {
+ *     // Handle JSON parse error
+ *   }
+ * }
+ * ```
  */
-export class JsonParseError extends Error {
-  public readonly name = 'JsonParseError';
+export class JsonParseError extends ValidationError {
+  public readonly path: string;
+  public readonly position?: number;
+  public readonly cause?: Error;
 
   constructor(
     message: string,
-    public readonly path: string,
-    public readonly position?: number,
-    public readonly cause?: Error
+    path: string,
+    position?: number,
+    cause?: Error
   ) {
-    super(message);
-    // Maintain proper prototype chain for instanceof checks
-    Object.setPrototypeOf(this, JsonParseError.prototype);
+    super(
+      message,
+      ErrorCode.JSON_PARSE_ERROR,
+      { path, position, cause: cause?.message },
+      'Ensure the JSON file is valid and not corrupted.'
+    );
+    this.name = 'JsonParseError';
+    this.path = path;
+    this.position = position;
+    this.cause = cause;
+    captureStackTrace(this, JsonParseError);
   }
 }
 

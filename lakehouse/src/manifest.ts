@@ -27,6 +27,7 @@ import type {
 import { CURRENT_MANIFEST_VERSION, VersionMismatchError } from './types.js';
 import { createSchema, createSchemaRef } from './schema.js';
 import { createPartitionSpec } from './partition.js';
+import { EvoDBError, ErrorCode, captureStackTrace } from '@evodb/core';
 import {
   createAppendSnapshot,
   createOverwriteSnapshot,
@@ -283,10 +284,26 @@ export function serializeManifest(manifest: TableManifest): string {
 }
 
 /**
+ * Type guard to validate that a parsed object has the required TableManifest structure.
+ * This performs runtime validation of critical fields.
+ */
+function isValidManifestStructure(obj: Record<string, unknown>): obj is TableManifest {
+  return (
+    typeof obj.formatVersion === 'number' &&
+    typeof obj.tableId === 'string' &&
+    typeof obj.location === 'string' &&
+    typeof obj.currentSchemaId === 'number' &&
+    Array.isArray(obj.schemas) &&
+    Array.isArray(obj.snapshots) &&
+    typeof obj.stats === 'object' && obj.stats !== null
+  );
+}
+
+/**
  * Deserialize manifest from JSON
  *
  * @throws {VersionMismatchError} If manifest version is higher than supported
- * @throws {ManifestError} If formatVersion is invalid
+ * @throws {ManifestError} If formatVersion is invalid or structure is invalid
  */
 export function deserializeManifest(json: string): TableManifest {
   const parsed = JSON.parse(json) as Record<string, unknown>;
@@ -301,7 +318,13 @@ export function deserializeManifest(json: string): TableManifest {
     throw new VersionMismatchError(schemaVersion, CURRENT_MANIFEST_VERSION);
   }
 
-  const manifest = parsed as unknown as TableManifest;
+  // Validate the manifest structure
+  if (!isValidManifestStructure(parsed)) {
+    throw new ManifestError('Invalid manifest structure: missing required fields');
+  }
+
+  // Now parsed is properly typed as TableManifest
+  const manifest = parsed;
 
   if (manifest.formatVersion !== 1) {
     throw new ManifestError(`Unsupported format version: ${manifest.formatVersion}`);
@@ -478,10 +501,32 @@ export function generateTimePartitionedPath(
 // Error Types
 // =============================================================================
 
-export class ManifestError extends Error {
-  constructor(message: string) {
-    super(message);
+/**
+ * Error thrown when manifest operations fail.
+ * Extends EvoDBError for consistent error hierarchy.
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   await appendFiles(manifest, files);
+ * } catch (e) {
+ *   if (e instanceof ManifestError) {
+ *     console.log(`Manifest error: ${e.message}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.MANIFEST_ERROR) {
+ *     // Handle manifest error
+ *   }
+ * }
+ * ```
+ */
+export class ManifestError extends EvoDBError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, ErrorCode.MANIFEST_ERROR, details, 'Check manifest structure and ensure all required fields are present.');
     this.name = 'ManifestError';
+    captureStackTrace(this, ManifestError);
   }
 }
 

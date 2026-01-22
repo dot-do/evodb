@@ -25,6 +25,7 @@ export {
   type EnforceOptions,
   type InferredSchema,
   type QueryResult,
+  type QueryExecutor,
   type UpdateResult,
   type UpdateOptions,
   type DeleteResult,

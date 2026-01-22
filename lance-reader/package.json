@@ -5,6 +5,14 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@evodb/core": {
+      "optional": true
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,6 +29,10 @@
     "./r2": {
       "types": "./dist/r2-adapter.d.ts",
       "import": "./dist/r2-adapter.js"
+    },
+    "./lazy": {
+      "types": "./dist/lazy-loader.d.ts",
+      "import": "./dist/lazy-loader.js"
     }
   },
   "files": [

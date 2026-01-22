@@ -1,0 +1,11 @@
+# EvoDB Basic CRUD Example
+# Cloudflare Workers configuration
+
+name = "evodb-basic-crud-example"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Uncomment to enable R2 storage persistence
+# [[r2_buckets]]
+# binding = "DATA_BUCKET"
+# bucket_name = "evodb-example-data"

@@ -81,8 +81,8 @@ export class DataGenerator {
       // Initialize column stats
       for (const col of schema.columns) {
         columnStats[col.name] = {
-          min: undefined as unknown,
-          max: undefined as unknown,
+          min: undefined,
+          max: undefined,
           nullCount: 0,
           distinctCount: 0,
         };
@@ -346,7 +346,7 @@ export class DataGenerator {
     const cacheKey = `${colName}_${cardinality}`;
     if (!this.valueCache.has(cacheKey)) {
       if (hint.values) {
-        this.valueCache.set(cacheKey, hint.values as unknown[]);
+        this.valueCache.set(cacheKey, hint.values);
       } else {
         const values: string[] = [];
         for (let i = 0; i < cardinality; i++) {

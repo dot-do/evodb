@@ -12,6 +12,7 @@ import {
   MERGE_RECHECK_DELAY_MS,
   MERGE_SCHEDULE_DELAY_MS,
 } from './constants.js';
+import { ValidationError, StorageError, ErrorCode } from './errors.js';
 
 /** Merge configuration */
 export interface MergeConfig {
@@ -69,14 +70,25 @@ export async function mergeBlocks(
   const cfg = { ...DEFAULT_CONFIG, ...config };
 
   if (blockIds.length === 0) {
-    throw new Error('No blocks to merge');
+    throw new ValidationError(
+      'Cannot merge: no blocks provided',
+      ErrorCode.VALIDATION_ERROR,
+      { operation: 'mergeBlocks', blockCount: 0, minRequired: 1 },
+      `Provide at least one block ID to merge. Use selectBlocksForMerge() to find mergeable blocks.`
+    );
   }
 
   // Read all blocks
   const blocks = await Promise.all(
     blockIds.map(async id => {
       const data = await adapter.readBlock(id);
-      if (!data) throw new Error(`Block not found: ${id}`);
+      if (!data) {
+        throw StorageError.notFound(id, {
+          operation: 'mergeBlocks',
+          blockId: id,
+          context: 'Block may have been deleted or moved during merge operation',
+        });
+      }
       return readBlock(data);
     })
   );

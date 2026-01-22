@@ -20,6 +20,7 @@
 //   import { KB, MB, GB } from '@evodb/core/constants';
 //   import { EvoDBError, QueryError } from '@evodb/core/errors';
 //   import { isArray, isRecord } from '@evodb/core/guards';
+//   import { SyncManager, LWWRegister, GCounter } from '@evodb/core/sync';
 //   import { Logger } from '@evodb/core/logging'; // types only
 
 // =============================================================================
@@ -114,6 +115,32 @@ export * from './constants/index.js';
 // =============================================================================
 
 export * from './guards/index.js';
+
+// =============================================================================
+// Offline-First Sync
+// Provides synchronization, conflict resolution, and CRDTs
+// Issue: evodb-bjfg
+// =============================================================================
+
+export * from './sync/index.js';
+
+// =============================================================================
+// Streaming Architecture
+// True streaming for large result sets with backpressure and memory efficiency
+// Issues: evodb-9yyz, evodb-lh2l
+// =============================================================================
+
+export * from './streaming.js';
+export * from './streaming-query.js';
+export * from './streaming-executor.js';
+
+// =============================================================================
+// Real-time Subscriptions
+// Event-driven notifications for data changes
+// Issue: evodb-kn18
+// =============================================================================
+
+export * from './subscriptions.js';
 
 // =============================================================================
 // Structured Logging Types

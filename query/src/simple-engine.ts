@@ -28,6 +28,20 @@
  * ```
  */
 
+// Cloudflare Workers Cache API type declarations
+// These are available in the Workers runtime but not in Node.js type definitions
+interface CacheStorageInterface {
+  open(cacheName: string): Promise<CacheInterface>;
+}
+
+interface CacheInterface {
+  match(request: Request | string): Promise<Response | undefined>;
+  put(request: Request | string, response: Response): Promise<void>;
+  delete(request: Request | string): Promise<boolean>;
+}
+
+declare const caches: CacheStorageInterface;
+
 import type {
   CacheableQueryExecutor,
   ExecutorQuery,
@@ -47,6 +61,9 @@ import {
   computeAggregations as coreComputeAggregations,
   DEFAULT_CACHE_TTL_SECONDS,
   CACHE_API_MAX_ITEM_SIZE,
+  ErrorCode,
+  ValidationError,
+  captureStackTrace,
 } from '@evodb/core';
 
 // =============================================================================
@@ -242,50 +259,19 @@ export type SimpleColumnType =
   | 'object';
 
 // =============================================================================
-// R2 Types (inline to avoid dependency)
+// R2 Types (re-exported from @evodb/core - Issue evodb-sdgz)
 // =============================================================================
 
-/**
- * R2 bucket interface (subset)
- */
-export interface SimpleR2Bucket {
-  get(key: string): Promise<SimpleR2Object | null>;
-  head(key: string): Promise<SimpleR2Object | null>;
-  list(options?: SimpleR2ListOptions): Promise<SimpleR2Objects>;
-}
+// Re-export for consumers
+export type {
+  SimpleR2Bucket,
+  SimpleR2Object,
+  SimpleR2ListOptions,
+  SimpleR2Objects,
+} from '@evodb/core';
 
-/**
- * R2 object interface (subset)
- */
-export interface SimpleR2Object {
-  readonly key: string;
-  readonly size: number;
-  readonly etag: string;
-  readonly httpEtag: string;
-  readonly uploaded: Date;
-  readonly customMetadata?: Record<string, string>;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-  json<T = unknown>(): Promise<T>;
-}
-
-/**
- * R2 list options (subset)
- */
-export interface SimpleR2ListOptions {
-  prefix?: string;
-  limit?: number;
-  cursor?: string;
-}
-
-/**
- * R2 objects list result
- */
-export interface SimpleR2Objects {
-  objects: SimpleR2Object[];
-  truncated: boolean;
-  cursor?: string;
-}
+// Import for local use (only import what's used)
+import type { SimpleR2Bucket } from '@evodb/core';
 
 // =============================================================================
 // Cache Types
@@ -357,21 +343,28 @@ export enum BlockSizeValidationErrorCode {
 
 /**
  * Error thrown when block size validation fails.
+ * Extends ValidationError for consistent error hierarchy.
  */
-export class BlockSizeValidationError extends Error {
-  public readonly code: BlockSizeValidationErrorCode;
-  public readonly details?: { actualSize?: number; maxSize?: number };
+export class BlockSizeValidationError extends ValidationError {
+  public readonly validationCode: BlockSizeValidationErrorCode;
+  public readonly blockPath: string;
 
   constructor(
     message: string,
-    public readonly blockPath: string,
-    code: BlockSizeValidationErrorCode,
+    blockPath: string,
+    validationCode: BlockSizeValidationErrorCode,
     details?: { actualSize?: number; maxSize?: number }
   ) {
-    super(message);
+    super(
+      message,
+      ErrorCode.BLOCK_SIZE_VALIDATION,
+      { blockPath, validationCode, ...details },
+      'Check block size limits and ensure data is not corrupted.'
+    );
     this.name = 'BlockSizeValidationError';
-    this.code = code;
-    this.details = details;
+    this.validationCode = validationCode;
+    this.blockPath = blockPath;
+    captureStackTrace(this, BlockSizeValidationError);
   }
 }
 
@@ -389,19 +382,28 @@ export enum BlockDataValidationErrorCode {
 
 /**
  * Error thrown when block data validation fails.
+ * Extends ValidationError for consistent error hierarchy.
  */
-export class BlockDataValidationError extends Error {
-  public readonly code: BlockDataValidationErrorCode;
+export class BlockDataValidationError extends ValidationError {
+  public readonly validationCode: BlockDataValidationErrorCode;
+  public readonly blockPath: string;
 
   constructor(
     message: string,
-    public readonly blockPath: string,
-    code: BlockDataValidationErrorCode,
-    public readonly details?: Record<string, unknown>
+    blockPath: string,
+    validationCode: BlockDataValidationErrorCode,
+    details?: Record<string, unknown>
   ) {
-    super(message);
+    super(
+      message,
+      ErrorCode.BLOCK_DATA_VALIDATION,
+      { blockPath, validationCode, ...details },
+      'Ensure block data is valid columnar JSON format.'
+    );
     this.name = 'BlockDataValidationError';
-    this.code = code;
+    this.validationCode = validationCode;
+    this.blockPath = blockPath;
+    captureStackTrace(this, BlockDataValidationError);
   }
 }
 
@@ -600,18 +602,25 @@ const VALID_COLUMN_TYPES = new Set([
 
 /**
  * Error thrown when manifest validation fails.
+ * Extends ValidationError for consistent error hierarchy.
  */
-export class ManifestValidationError extends Error {
-  public readonly code: ManifestValidationErrorCode;
+export class ManifestValidationError extends ValidationError {
+  public readonly validationCode: ManifestValidationErrorCode;
 
   constructor(
     message: string,
-    code: ManifestValidationErrorCode,
-    public readonly details?: Record<string, unknown>
+    validationCode: ManifestValidationErrorCode,
+    details?: Record<string, unknown>
   ) {
-    super(message);
+    super(
+      message,
+      ErrorCode.MANIFEST_VALIDATION,
+      { validationCode, ...details },
+      'Ensure manifest file is valid JSON and contains required fields.'
+    );
     this.name = 'ManifestValidationError';
-    this.code = code;
+    this.validationCode = validationCode;
+    captureStackTrace(this, ManifestValidationError);
   }
 }
 
@@ -942,6 +951,24 @@ export class SimpleCacheTier {
  * - Basic filter, sort, and aggregation using @evodb/core shared operations
  *
  * Implements the CacheableQueryExecutor interface for cross-package compatibility.
+ *
+ * @deprecated Since v0.2.0 - Use UnifiedQueryEngine with mode: 'simple' instead.
+ * SimpleQueryEngine will be removed in v0.3.0.
+ *
+ * Migration example:
+ * ```typescript
+ * // Before:
+ * import { SimpleQueryEngine } from '@evodb/query';
+ * const engine = new SimpleQueryEngine({ bucket, cache: { enableCacheApi: true } });
+ *
+ * // After:
+ * import { UnifiedQueryEngine } from '@evodb/query';
+ * const engine = new UnifiedQueryEngine({
+ *   mode: 'simple',
+ *   bucket,
+ *   simpleCache: { enableCacheApi: true },
+ * });
+ * ```
  */
 export class SimpleQueryEngine implements CacheableQueryExecutor {
   private readonly config: SimpleQueryConfig;
@@ -1426,9 +1453,30 @@ export class SimpleQueryEngine implements CacheableQueryExecutor {
   }
 }
 
+// Track if deprecation warning has been shown
+let _simpleQueryEngineDeprecationWarned = false;
+
 /**
- * Create a new simple query engine instance
+ * Create a new simple query engine instance.
+ *
+ * @deprecated Since v0.2.0 - Use createSimpleUnifiedEngine() or
+ * new UnifiedQueryEngine({ mode: 'simple', ... }) instead.
+ * This function will be removed in v0.3.0.
  */
 export function createSimpleQueryEngine(config: SimpleQueryConfig): SimpleQueryEngine {
+  // Show deprecation warning once, only in non-production environments
+  if (!_simpleQueryEngineDeprecationWarned) {
+    _simpleQueryEngineDeprecationWarned = true;
+    if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+      if (typeof console !== 'undefined' && console.warn) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[DEPRECATED] createSimpleQueryEngine() is deprecated. ' +
+          'Use createSimpleUnifiedEngine() or new UnifiedQueryEngine({ mode: "simple" }) instead. ' +
+          'This function will be removed in v0.3.0.'
+        );
+      }
+    }
+  }
   return new SimpleQueryEngine(config);
 }

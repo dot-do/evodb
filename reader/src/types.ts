@@ -248,50 +248,20 @@ export type ColumnType =
   | 'object';
 
 // ============================================================================
-// R2 Types (inline to avoid dependency)
+// R2 Types (re-exported from @evodb/core - Issue evodb-sdgz)
+// Uses SimpleR2* types which match reader's read-only needs
 // ============================================================================
 
-/**
- * R2 bucket interface (subset)
- */
-export interface R2Bucket {
-  get(key: string): Promise<R2Object | null>;
-  head(key: string): Promise<R2Object | null>;
-  list(options?: R2ListOptions): Promise<R2Objects>;
-}
+// Re-export with aliases for backward compatibility
+export type {
+  SimpleR2Bucket as R2Bucket,
+  SimpleR2Object as R2Object,
+  SimpleR2ListOptions as R2ListOptions,
+  SimpleR2Objects as R2Objects,
+} from '@evodb/core';
 
-/**
- * R2 object interface (subset)
- */
-export interface R2Object {
-  readonly key: string;
-  readonly size: number;
-  readonly etag: string;
-  readonly httpEtag: string;
-  readonly uploaded: Date;
-  readonly customMetadata?: Record<string, string>;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-  json<T = unknown>(): Promise<T>;
-}
-
-/**
- * R2 list options (subset)
- */
-export interface R2ListOptions {
-  prefix?: string;
-  limit?: number;
-  cursor?: string;
-}
-
-/**
- * R2 objects list result
- */
-export interface R2Objects {
-  objects: R2Object[];
-  truncated: boolean;
-  cursor?: string;
-}
+// Import for local use
+import type { SimpleR2Bucket as R2Bucket } from '@evodb/core';
 
 // ============================================================================
 // Reader Configuration

@@ -3,7 +3,24 @@
  * Parent DO that buffers CDC from child DOs and writes columnar blocks to R2
  */
 
-import type { WalOp, WalEntry as CoreWalEntry, Schema as CoreSchema, BlockOptions as CoreBlockOptions } from '@evodb/core';
+import type {
+  WalOp,
+  WalEntry as CoreWalEntry,
+  Schema as CoreSchema,
+  BlockOptions as CoreBlockOptions,
+  // R2 types (from @evodb/core - Issue evodb-sdgz)
+  R2Bucket,
+  R2Object,
+  R2ObjectBody,
+  R2Objects,
+  R2PutOptions,
+  R2GetOptions,
+  R2ListOptions,
+  R2HTTPMetadata,
+  R2Conditional,
+  R2Range,
+  R2Checksums,
+} from '@evodb/core';
 import {
   BUFFER_SIZE_2MB,
   BUFFER_SIZE_4MB,
@@ -27,6 +44,21 @@ import {
 export type WalEntry = CoreWalEntry;
 export type Schema = CoreSchema;
 export type BlockOptions = CoreBlockOptions;
+
+// Re-export R2 types from @evodb/core (Issue evodb-sdgz - Consolidated R2 interfaces)
+export type {
+  R2Bucket,
+  R2Object,
+  R2ObjectBody,
+  R2Objects,
+  R2PutOptions,
+  R2GetOptions,
+  R2ListOptions,
+  R2HTTPMetadata,
+  R2Conditional,
+  R2Range,
+  R2Checksums,
+};
 
 // =============================================================================
 // Partition Size Modes
@@ -588,94 +620,6 @@ export interface AckRPCPayload {
 }
 
 // =============================================================================
-// R2 Types
+// R2 Types - Now imported from @evodb/core (Issue evodb-sdgz)
 // =============================================================================
-
-/**
- * R2 bucket interface (from @cloudflare/workers-types)
- */
-export interface R2Bucket {
-  put(key: string, value: ArrayBuffer | Uint8Array | string | ReadableStream | Blob, options?: R2PutOptions): Promise<R2Object>;
-  get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | null>;
-  delete(keys: string | string[]): Promise<void>;
-  list(options?: R2ListOptions): Promise<R2Objects>;
-  head(key: string): Promise<R2Object | null>;
-}
-
-export interface R2PutOptions {
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
-  md5?: string;
-  onlyIf?: R2Conditional;
-}
-
-export interface R2GetOptions {
-  range?: R2Range;
-  onlyIf?: R2Conditional;
-}
-
-export interface R2ListOptions {
-  limit?: number;
-  prefix?: string;
-  cursor?: string;
-  delimiter?: string;
-  include?: ('httpMetadata' | 'customMetadata')[];
-}
-
-export interface R2HTTPMetadata {
-  contentType?: string;
-  contentLanguage?: string;
-  contentDisposition?: string;
-  contentEncoding?: string;
-  cacheControl?: string;
-  cacheExpiry?: Date;
-}
-
-export interface R2Conditional {
-  etagMatches?: string;
-  etagDoesNotMatch?: string;
-  uploadedBefore?: Date;
-  uploadedAfter?: Date;
-}
-
-export interface R2Range {
-  offset?: number;
-  length?: number;
-  suffix?: number;
-}
-
-export interface R2Object {
-  key: string;
-  version: string;
-  size: number;
-  etag: string;
-  httpEtag: string;
-  checksums: R2Checksums;
-  uploaded: Date;
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
-}
-
-export interface R2ObjectBody extends R2Object {
-  body: ReadableStream;
-  bodyUsed: boolean;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-  json<T>(): Promise<T>;
-  blob(): Promise<Blob>;
-}
-
-export interface R2Objects {
-  objects: R2Object[];
-  truncated: boolean;
-  cursor?: string;
-  delimitedPrefixes: string[];
-}
-
-export interface R2Checksums {
-  md5?: ArrayBuffer;
-  sha1?: ArrayBuffer;
-  sha256?: ArrayBuffer;
-  sha384?: ArrayBuffer;
-  sha512?: ArrayBuffer;
-}
+// All R2 types are now consolidated in @evodb/core/types/r2.ts and re-exported above.

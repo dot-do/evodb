@@ -221,8 +221,8 @@ export class R2BlockWriter {
           documents.push(doc);
         }
       } catch {
-        // Skip malformed entries
-        console.warn('Failed to decode WAL entry:', entry.lsn);
+        // Skip malformed entries - continue processing remaining entries
+        // Note: In production, this should be logged through @evodb/observability
       }
     }
 

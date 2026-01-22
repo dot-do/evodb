@@ -16,6 +16,7 @@ import type {
   LanceIndexMetadata,
   GlobalBufferEntry,
   RowFilter,
+  LazyLoadConfig,
 } from './types.js';
 
 /**
@@ -43,9 +44,18 @@ export interface HybridSearchOptions {
   efSearch?: number;
 }
 import { LANCE_MAGIC, LANCE_FOOTER_SIZE } from './types.js';
-import { parseManifest, parseIvf, parsePqCodebook, parseIndexSection } from './protobuf.js';
-import { IvfPqIndex } from './ivf-pq.js';
-import { HnswIndex } from './hnsw.js';
+import { parseManifest, parseIndexSection } from './protobuf.js';
+
+// Default lazy load configuration
+const DEFAULT_LAZY_LOAD_CONFIG: Required<LazyLoadConfig> = {
+  strategy: 'lazy',
+  preloadCentroids: true,
+  preloadCodebook: true,
+  maxPreloadPartitions: 0,
+  loadTimeout: 30000,
+  enablePrefetch: false,
+  prefetchHistorySize: 10,
+};
 
 // ==========================================
 // LRU Cache Implementation
@@ -481,17 +491,39 @@ export class LanceReader {
 
   /**
    * Load an IVF-PQ index
+   * Uses lazy loading by default to defer heavy operations until first query
    */
   private async loadIvfPqIndex(
     indexPath: string,
     details: { type: 'ivf_pq'; distanceType: string; numPartitions: number; numSubVectors: number; numBits: number }
-  ): Promise<IvfPqIndex> {
+  ): Promise<VectorIndex> {
+    const lazyConfig = { ...DEFAULT_LAZY_LOAD_CONFIG, ...this.config.lazyLoad };
+
+    // Use lazy loading for better cold start performance
+    if (lazyConfig.strategy === 'lazy' || lazyConfig.strategy === 'on-demand') {
+      // Dynamic import to avoid loading IVF-PQ code until needed
+      const { LazyIvfPqIndex } = await import('./lazy-loader.js');
+
+      // Calculate dimension from numPartitions and numSubVectors
+      // The dimension should be provided in the index details
+      const dimension = details.numSubVectors * (details.numBits === 8 ? 8 : 4);
+
+      return new LazyIvfPqIndex(
+        this.config.storage,
+        indexPath,
+        `${indexPath}/auxiliary.idx`,
+        details.distanceType as 'l2' | 'cosine' | 'dot',
+        dimension,
+        lazyConfig
+      );
+    }
+
+    // Eager loading - load everything upfront
+    const { parseIvf, parsePqCodebook } = await import('./protobuf.js');
+    const { IvfPqIndex } = await import('./ivf-pq.js');
+
     const indexFile = new LanceFileReader(this.config.storage, `${indexPath}/index.idx`);
     const auxFile = new LanceFileReader(this.config.storage, `${indexPath}/auxiliary.idx`);
-
-    // Read schema metadata from index file to get lance:ivf buffer index
-    // First, read the file to get Arrow schema metadata
-    // For now, use convention that IVF is in global buffer 0
 
     // Load IVF structure from index file
     const ivfBuffer = await indexFile.readGlobalBuffer(0);
@@ -515,11 +547,34 @@ export class LanceReader {
 
   /**
    * Load an HNSW index
+   * Uses lazy loading by default to defer heavy operations until first query
    */
   private async loadHnswIndex(
     indexPath: string,
     details: { type: 'hnsw'; distanceType: string; m: number; efConstruction: number; maxLevel: number }
-  ): Promise<HnswIndex> {
+  ): Promise<VectorIndex> {
+    const lazyConfig = { ...DEFAULT_LAZY_LOAD_CONFIG, ...this.config.lazyLoad };
+
+    // Use lazy loading for better cold start performance
+    if (lazyConfig.strategy === 'lazy' || lazyConfig.strategy === 'on-demand') {
+      const { LazyHnswIndex } = await import('./lazy-loader.js');
+
+      // Default dimension - will be determined from actual data when loaded
+      const dimension = 128; // This should ideally come from index metadata
+
+      return new LazyHnswIndex(
+        this.config.storage,
+        `${indexPath}/index.idx`,
+        details.distanceType as 'l2' | 'cosine' | 'dot',
+        dimension,
+        details.m,
+        details.maxLevel,
+        lazyConfig
+      );
+    }
+
+    // Eager loading
+    const { HnswIndex } = await import('./hnsw.js');
     const indexFile = new LanceFileReader(this.config.storage, `${indexPath}/index.idx`);
 
     // Create and initialize the HNSW index

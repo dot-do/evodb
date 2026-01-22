@@ -35,7 +35,13 @@ import type {
   RpcWalOperation as CoreRpcWalOperation,
   RpcWalOperationCodeValue as CoreRpcWalOperationCodeValue,
 } from '@evodb/core';
-import { RpcWalOperationCode as CoreRpcWalOperationCode } from '@evodb/core';
+import {
+  RpcWalOperationCode as CoreRpcWalOperationCode,
+  EvoDBError,
+  ErrorCode,
+  NetworkError,
+  captureStackTrace,
+} from '@evodb/core';
 
 // =============================================================================
 // WAL Entry Types (unified from @evodb/core)
@@ -637,59 +643,98 @@ export function decodeCapabilities(flags: number): Partial<ClientCapabilities> {
 // =============================================================================
 
 /**
- * Base error class for lakehouse RPC
+ * Base error class for lakehouse RPC.
+ * Extends NetworkError from @evodb/core for consistent error hierarchy.
+ *
+ * All RPC errors share these properties:
+ * - Inherit from EvoDBError via NetworkError
+ * - Have a specific error code for programmatic handling
+ * - Include retryable flag to indicate if the operation can be retried
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   await rpcClient.send(message);
+ * } catch (e) {
+ *   if (e instanceof LakehouseRpcError) {
+ *     if (e.retryable) {
+ *       // Retry the operation
+ *     }
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError) {
+ *     console.log(`Error code: ${e.code}`);
+ *   }
+ * }
+ * ```
  */
-export class LakehouseRpcError extends Error {
+export class LakehouseRpcError extends NetworkError {
+  public readonly retryable: boolean;
+
   constructor(
     message: string,
-    public readonly code: string,
-    public readonly retryable: boolean = false
+    code: string = ErrorCode.RPC_ERROR,
+    retryable: boolean = false,
+    details?: Record<string, unknown>
   ) {
-    super(message);
+    super(message, code, details, retryable ? 'This operation can be retried.' : undefined);
     this.name = 'LakehouseRpcError';
+    this.retryable = retryable;
+    captureStackTrace(this, LakehouseRpcError);
   }
 }
 
 /**
- * Connection error
+ * Connection error - thrown when RPC connection fails.
+ * Extends LakehouseRpcError for consistent error hierarchy.
  */
 export class ConnectionError extends LakehouseRpcError {
-  constructor(message: string, retryable: boolean = true) {
-    super(message, 'CONNECTION_ERROR', retryable);
+  constructor(message: string, retryable: boolean = true, details?: Record<string, unknown>) {
+    super(message, ErrorCode.RPC_CONNECTION_ERROR, retryable, details);
     this.name = 'ConnectionError';
+    captureStackTrace(this, ConnectionError);
   }
 }
 
 /**
- * Buffer overflow error
+ * Buffer overflow error - thrown when RPC buffer exceeds capacity.
+ * Extends LakehouseRpcError for consistent error hierarchy.
  */
 export class BufferOverflowError extends LakehouseRpcError {
-  constructor(message: string) {
-    super(message, 'BUFFER_OVERFLOW', true);
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, ErrorCode.BUFFER_OVERFLOW, true, details);
     this.name = 'BufferOverflowError';
+    captureStackTrace(this, BufferOverflowError);
   }
 }
 
 /**
- * Flush error
+ * Flush error - thrown when flushing data to storage fails.
+ * Extends LakehouseRpcError for consistent error hierarchy.
  */
 export class FlushError extends LakehouseRpcError {
-  constructor(
-    message: string,
-    public readonly usedFallback: boolean
-  ) {
-    super(message, 'FLUSH_ERROR', true);
+  public readonly usedFallback: boolean;
+
+  constructor(message: string, usedFallback: boolean, details?: Record<string, unknown>) {
+    super(message, ErrorCode.FLUSH_ERROR, true, { usedFallback, ...details });
     this.name = 'FlushError';
+    this.usedFallback = usedFallback;
+    captureStackTrace(this, FlushError);
   }
 }
 
 /**
- * Protocol error
+ * Protocol error - thrown when RPC protocol is violated.
+ * Extends LakehouseRpcError for consistent error hierarchy.
+ * Not retryable as protocol errors indicate a fundamental issue.
  */
 export class ProtocolError extends LakehouseRpcError {
-  constructor(message: string) {
-    super(message, 'PROTOCOL_ERROR', false);
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, ErrorCode.PROTOCOL_ERROR, false, details);
     this.name = 'ProtocolError';
+    captureStackTrace(this, ProtocolError);
   }
 }
 

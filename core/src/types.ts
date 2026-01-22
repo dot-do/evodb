@@ -21,23 +21,24 @@ export type BlockId = Brand<string, 'BlockId'>;
 export type TableId = Brand<string, 'TableId'>;
 
 // =============================================================================
-// Plain Type Aliases (simplified from branded types - evodb-3ju)
+// Plain Type Aliases (evodb-cn6)
+// These are plain string/number type aliases - no constructor functions needed.
 // =============================================================================
 
-/** Snapshot identifier (ULID-like format) */
+/** Snapshot identifier (ULID-like format) - plain string type alias */
 export type SnapshotId = string;
 
-/** Batch identifier for RPC tracking */
+/** Batch identifier for RPC tracking - plain string type alias */
 export type BatchId = string;
 
-/** WAL entry identifier (wal:lsn format) */
+/** WAL entry identifier (wal:lsn format) - plain string type alias */
 export type WalId = string;
 
-/** Schema version identifier */
+/** Schema version identifier - plain number type alias */
 export type SchemaId = number;
 
 // =============================================================================
-// Branded Type Constructors (BlockId, TableId only - evodb-3ju)
+// Branded Type Constructors (BlockId, TableId only - evodb-cn6)
 // =============================================================================
 
 /** BlockId format: prefix:timestamp(base36):seq(base36) */
@@ -84,78 +85,7 @@ export function unsafeTableId(id: string): TableId {
 }
 
 // =============================================================================
-// Plain Type Constructors (simplified - evodb-3ju)
-// These functions are kept for backward compatibility but now just pass through
-// the input value without validation. The types are no longer branded.
-// =============================================================================
-
-/**
- * Create a SnapshotId from a string.
- * @deprecated No longer validates - SnapshotId is now a plain string type (evodb-3ju)
- */
-export function snapshotId(id: string): SnapshotId {
-  return id;
-}
-
-/**
- * Create a SnapshotId without validation (for internal use).
- * @deprecated SnapshotId is now a plain string type (evodb-3ju)
- */
-export function unsafeSnapshotId(id: string): SnapshotId {
-  return id;
-}
-
-/**
- * Create a BatchId from a string.
- * @deprecated No longer validates - BatchId is now a plain string type (evodb-3ju)
- */
-export function batchId(id: string): BatchId {
-  return id;
-}
-
-/**
- * Create a BatchId without validation (for internal use).
- * @deprecated BatchId is now a plain string type (evodb-3ju)
- */
-export function unsafeBatchId(id: string): BatchId {
-  return id;
-}
-
-/**
- * Create a WalId from a string.
- * @deprecated No longer validates - WalId is now a plain string type (evodb-3ju)
- */
-export function walId(id: string): WalId {
-  return id;
-}
-
-/**
- * Create a WalId without validation (for internal use).
- * @deprecated WalId is now a plain string type (evodb-3ju)
- */
-export function unsafeWalId(id: string): WalId {
-  return id;
-}
-
-/**
- * Create a SchemaId from a number.
- * @deprecated No longer validates - SchemaId is now a plain number type (evodb-3ju)
- */
-export function schemaId(id: number): SchemaId {
-  return id;
-}
-
-/**
- * Create a SchemaId without validation (for internal use).
- * @deprecated SchemaId is now a plain number type (evodb-3ju)
- */
-export function unsafeSchemaId(id: number): SchemaId {
-  return id;
-}
-
-// =============================================================================
-// Type Guards (BlockId, TableId only - evodb-3ju)
-// Validators for the simplified types are removed per TDD issue evodb-3ju.
+// Type Guards (BlockId, TableId only - evodb-cn6)
 // =============================================================================
 
 /** Check if a string is a valid BlockId format */
@@ -210,13 +140,53 @@ export const enum Encoding {
  */
 export type NullBitmap = boolean[] | { isNull(index: number): boolean; toArray(): boolean[]; length: number };
 
-/** Column definition */
-export interface Column {
-  path: string;        // Dot-notation path (e.g., "user.name")
+/**
+ * Column definition for shredded data.
+ *
+ * The generic parameter T represents the column's value type. When T is unknown
+ * (the default), values can hold any JSON-compatible type.
+ *
+ * Type safety consideration for `values: unknown[]`:
+ * - `unknown[]` is intentionally used because columns can hold any JSON-compatible type
+ * - The `type` field (Type enum) indicates the actual runtime type
+ * - Type validation occurs during shredding (shred.ts) and encoding (encode.ts)
+ * - For type-safe access, use the type guards or cast based on the Type enum:
+ *
+ * @example
+ * ```typescript
+ * // Type-safe access pattern based on Type enum
+ * if (column.type === Type.Int32) {
+ *   const values = column.values as number[];
+ *   // TypeScript now knows values is number[]
+ * }
+ *
+ * // Or use typed Column
+ * const numColumn: Column<number> = {
+ *   path: 'age',
+ *   type: Type.Int32,
+ *   nullable: false,
+ *   values: [25, 30, 35],
+ *   nulls: [false, false, false],
+ * };
+ * ```
+ *
+ * @see Type enum for column type discriminators
+ * @see validateColumn in encode.ts for runtime type validation
+ */
+export interface Column<T = unknown> {
+  /** Dot-notation path (e.g., "user.name") */
+  path: string;
+  /** Column data type (discriminator for values array) */
   type: Type;
+  /** Whether column accepts null values */
   nullable: boolean;
-  values: unknown[];   // Raw values before encoding
-  nulls: NullBitmap;   // Null bitmap (dense or sparse representation)
+  /**
+   * Raw values before encoding.
+   * Type is determined by the `type` field - use type guards or cast accordingly.
+   */
+  values: T[];
+  /** Null bitmap (dense or sparse representation) */
+  nulls: NullBitmap;
 }
 
 /** Encoded column */
@@ -229,12 +199,176 @@ export interface EncodedColumn {
   stats: ColumnStats;
 }
 
-/** Column statistics for zone maps */
-export interface ColumnStats {
-  min: unknown;
-  max: unknown;
+/**
+ * Column statistics for zone maps.
+ *
+ * The generic parameter T represents the column's value type (e.g., string, number).
+ * When T is unknown (the default), min/max can hold any comparable value type.
+ *
+ * Type safety consideration:
+ * - `unknown` is intentionally used as the default because columns can hold any JSON-compatible type
+ * - The Type enum indicates the actual runtime type, validated during shredding/encoding
+ * - For type-safe access to min/max values, use the typed accessors:
+ *   - `getNumericStats()` - returns { min: number | null, max: number | null }
+ *   - `getStringStats()` - returns { min: string | null, max: string | null }
+ *   - `isNumericStats()` - type guard for numeric stats
+ *   - `isStringStats()` - type guard for string stats
+ *
+ * @see getNumericStats, getStringStats, isNumericStats, isStringStats in this module
+ *
+ * @example
+ * ```typescript
+ * // Generic usage (most common)
+ * const stats: ColumnStats = { min: 0, max: 100, nullCount: 5, distinctEst: 50 };
+ *
+ * // Typed usage for specific columns
+ * const numStats: ColumnStats<number> = { min: 0, max: 100, nullCount: 5, distinctEst: 50 };
+ * const strStats: ColumnStats<string> = { min: 'a', max: 'z', nullCount: 0, distinctEst: 26 };
+ * ```
+ */
+export interface ColumnStats<T = unknown> {
+  /** Minimum value in the column (or undefined if all null) */
+  min: T | undefined;
+  /** Maximum value in the column (or undefined if all null) */
+  max: T | undefined;
+  /** Count of null values */
   nullCount: number;
-  distinctEst: number;  // HyperLogLog or simple count
+  /** Estimated distinct value count (via HyperLogLog or simple count) */
+  distinctEst: number;
+}
+
+// =============================================================================
+// Type-Safe ColumnStats Accessors (Issue: evodb-lgp2)
+// =============================================================================
+
+/**
+ * Numeric column statistics with typed min/max values.
+ * Use with isNumericStats() type guard or getNumericStats() accessor.
+ */
+export type NumericColumnStats = ColumnStats<number>;
+
+/**
+ * String column statistics with typed min/max values.
+ * Use with isStringStats() type guard or getStringStats() accessor.
+ */
+export type StringColumnStats = ColumnStats<string>;
+
+/**
+ * BigInt column statistics for Int64 columns.
+ */
+export type BigIntColumnStats = ColumnStats<bigint>;
+
+/**
+ * Type guard: check if ColumnStats has numeric min/max values.
+ *
+ * @param stats - The column statistics to check
+ * @returns True if both min and max are numbers (or undefined)
+ *
+ * @example
+ * ```typescript
+ * if (isNumericStats(stats)) {
+ *   // TypeScript knows stats.min and stats.max are number | undefined
+ *   const range = (stats.max ?? 0) - (stats.min ?? 0);
+ * }
+ * ```
+ */
+export function isNumericStats(stats: ColumnStats): stats is NumericColumnStats {
+  return (
+    (stats.min === undefined || typeof stats.min === 'number') &&
+    (stats.max === undefined || typeof stats.max === 'number')
+  );
+}
+
+/**
+ * Type guard: check if ColumnStats has string min/max values.
+ *
+ * @param stats - The column statistics to check
+ * @returns True if both min and max are strings (or undefined)
+ *
+ * @example
+ * ```typescript
+ * if (isStringStats(stats)) {
+ *   // TypeScript knows stats.min and stats.max are string | undefined
+ *   console.log(`Range: "${stats.min}" to "${stats.max}"`);
+ * }
+ * ```
+ */
+export function isStringStats(stats: ColumnStats): stats is StringColumnStats {
+  return (
+    (stats.min === undefined || typeof stats.min === 'string') &&
+    (stats.max === undefined || typeof stats.max === 'string')
+  );
+}
+
+/**
+ * Type guard: check if ColumnStats has bigint min/max values.
+ *
+ * @param stats - The column statistics to check
+ * @returns True if both min and max are bigints (or undefined)
+ */
+export function isBigIntStats(stats: ColumnStats): stats is BigIntColumnStats {
+  return (
+    (stats.min === undefined || typeof stats.min === 'bigint') &&
+    (stats.max === undefined || typeof stats.max === 'bigint')
+  );
+}
+
+/**
+ * Extract numeric min/max from ColumnStats with type safety.
+ * Returns null for min/max if the value is not a number.
+ *
+ * @param stats - The column statistics
+ * @returns Object with typed min/max (number | null)
+ *
+ * @example
+ * ```typescript
+ * const { min, max } = getNumericStats(stats);
+ * if (min !== null && max !== null) {
+ *   const range = max - min;
+ * }
+ * ```
+ */
+export function getNumericStats(stats: ColumnStats): { min: number | null; max: number | null } {
+  return {
+    min: typeof stats.min === 'number' ? stats.min : null,
+    max: typeof stats.max === 'number' ? stats.max : null,
+  };
+}
+
+/**
+ * Extract string min/max from ColumnStats with type safety.
+ * Returns null for min/max if the value is not a string.
+ *
+ * @param stats - The column statistics
+ * @returns Object with typed min/max (string | null)
+ *
+ * @example
+ * ```typescript
+ * const { min, max } = getStringStats(stats);
+ * if (min !== null) {
+ *   console.log(`Minimum value: "${min}"`);
+ * }
+ * ```
+ */
+export function getStringStats(stats: ColumnStats): { min: string | null; max: string | null } {
+  return {
+    min: typeof stats.min === 'string' ? stats.min : null,
+    max: typeof stats.max === 'string' ? stats.max : null,
+  };
+}
+
+/**
+ * Extract bigint min/max from ColumnStats with type safety.
+ * Returns null for min/max if the value is not a bigint.
+ *
+ * @param stats - The column statistics
+ * @returns Object with typed min/max (bigint | null)
+ */
+export function getBigIntStats(stats: ColumnStats): { min: bigint | null; max: bigint | null } {
+  return {
+    min: typeof stats.min === 'bigint' ? stats.min : null,
+    max: typeof stats.max === 'bigint' ? stats.max : null,
+  };
 }
 
 /** Block header (64 bytes) */
@@ -663,3 +797,281 @@ export function rpcEntryToWalEntry<T>(
     checksum,
   };
 }
+
+// =============================================================================
+// Generic Constraint Types (TDD Issue: evodb-aqap)
+// =============================================================================
+
+/**
+ * Base constraint for document types.
+ * Ensures type is a plain object with string keys.
+ *
+ * @example
+ * ```typescript
+ * interface User extends DocumentConstraint {
+ *   id: string;
+ *   name: string;
+ *   age: number;
+ * }
+ *
+ * function insertDocument<T extends DocumentConstraint>(doc: T): T {
+ *   return doc;
+ * }
+ * ```
+ */
+export type DocumentConstraint = Record<string, unknown>;
+
+/**
+ * Constraint for documents that must have an 'id' field.
+ *
+ * @example
+ * ```typescript
+ * function getDocumentId<T extends DocumentWithId>(doc: T): string {
+ *   return doc.id;
+ * }
+ * ```
+ */
+export interface DocumentWithId extends DocumentConstraint {
+  id: string;
+}
+
+/**
+ * Extracts keys of a specific value type from an object type.
+ *
+ * @typeParam T - The object type to extract keys from
+ * @typeParam V - The value type to filter by
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; active: boolean; }
+ *
+ * type NumericKeys = KeysOfType<User, number>; // 'age'
+ * type StringKeys = KeysOfType<User, string>;  // 'id' | 'name'
+ * type BooleanKeys = KeysOfType<User, boolean>; // 'active'
+ * ```
+ */
+export type KeysOfType<T, V> = {
+  [K in keyof T]: T[K] extends V ? K : never;
+}[keyof T];
+
+/**
+ * Extracts string-typed field names from a document type.
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; }
+ * type StringFields = StringFieldsOf<User>; // 'id' | 'name'
+ * ```
+ */
+export type StringFieldsOf<T> = KeysOfType<T, string>;
+
+/**
+ * Extracts numeric-typed field names from a document type.
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; score: number; }
+ * type NumericFields = NumericFieldsOf<User>; // 'age' | 'score'
+ * ```
+ */
+export type NumericFieldsOf<T> = KeysOfType<T, number>;
+
+/**
+ * Extracts boolean-typed field names from a document type.
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; active: boolean; verified: boolean; }
+ * type BooleanFields = BooleanFieldsOf<User>; // 'active' | 'verified'
+ * ```
+ */
+export type BooleanFieldsOf<T> = KeysOfType<T, boolean>;
+
+/**
+ * Field path type (string keys only).
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; }
+ * type UserFields = FieldPath<User>; // 'id' | 'name' | 'age'
+ * ```
+ */
+export type FieldPath<T> = keyof T & string;
+
+/**
+ * Template literal type for readable field errors.
+ * Returns `never` for valid fields, error message string for invalid fields.
+ *
+ * @typeParam T - The document type
+ * @typeParam K - The field key to validate
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; }
+ *
+ * type Valid = InvalidFieldError<User, 'id'>; // never
+ * type Invalid = InvalidFieldError<User, 'foo'>; // "Field 'foo' does not exist on type"
+ * ```
+ */
+export type InvalidFieldError<T, K> = K extends keyof T
+  ? never
+  : `Field '${K & string}' does not exist on type`;
+
+/**
+ * Validates that all fields in K exist on type T.
+ * Returns the fields if valid, error type if not.
+ *
+ * @typeParam T - The document type
+ * @typeParam K - The field keys to validate (array)
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; }
+ *
+ * type Valid = ValidateFields<User, ['id', 'name']>; // ['id', 'name']
+ * type Invalid = ValidateFields<User, ['id', 'foo']>; // contains error
+ * ```
+ */
+export type ValidateFields<T, K extends readonly string[]> = {
+  [I in keyof K]: K[I] extends keyof T ? K[I] : InvalidFieldError<T, K[I]>;
+};
+
+/**
+ * Type-safe index definition.
+ * Ensures index fields exist on the document type.
+ *
+ * @typeParam T - The document type
+ * @typeParam K - The field key union for indexed fields
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; email: string; createdAt: number; }
+ *
+ * // Valid index definition
+ * const emailIndex: TypedIndexFields<User, 'email'> = {
+ *   fields: ['email'],
+ *   unique: true,
+ * };
+ *
+ * // TypeScript error: 'invalid' is not a key of User
+ * const badIndex: TypedIndexFields<User, 'invalid'> = { ... };
+ * ```
+ */
+export interface TypedIndexFields<
+  T extends DocumentConstraint,
+  K extends keyof T = keyof T,
+> {
+  /** Fields to index (must exist on document type) */
+  fields: K[];
+  /** Whether index enforces uniqueness */
+  unique?: boolean;
+}
+
+/**
+ * Type-safe partial update type.
+ * Ensures update values match their field types.
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; }
+ *
+ * // Valid update
+ * const update: TypedUpdate<User> = { name: 'New Name', age: 30 };
+ *
+ * // TypeScript error: 'age' should be number
+ * const badUpdate: TypedUpdate<User> = { age: 'not a number' };
+ * ```
+ */
+export type TypedUpdate<T> = Partial<T>;
+
+/**
+ * Type-safe query filter type.
+ * Ensures filter values match their field types.
+ *
+ * @typeParam T - The document type
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; active: boolean; age: number; }
+ *
+ * // Valid filter
+ * const filter: TypedFilter<User> = { active: true, age: 25 };
+ *
+ * // TypeScript error: 'active' should be boolean
+ * const badFilter: TypedFilter<User> = { active: 'yes' };
+ * ```
+ */
+export type TypedFilter<T> = Partial<T>;
+
+/**
+ * Type-safe field accessor function type.
+ * Ensures field access returns the correct type.
+ *
+ * @typeParam T - The document type
+ * @typeParam K - The field key
+ *
+ * @example
+ * ```typescript
+ * function getField<T, K extends keyof T>(obj: T, key: K): T[K] {
+ *   return obj[key];
+ * }
+ *
+ * interface User { name: string; age: number; }
+ * const user: User = { name: 'Alice', age: 30 };
+ *
+ * const name = getField(user, 'name'); // type: string
+ * const age = getField(user, 'age');   // type: number
+ * ```
+ */
+export type TypedFieldAccessor<T, K extends keyof T> = (obj: T, key: K) => T[K];
+
+/**
+ * Infers the element type from an array type.
+ *
+ * @typeParam T - The array type
+ *
+ * @example
+ * ```typescript
+ * type Elements = ArrayElement<string[]>; // string
+ * type Items = ArrayElement<User[]>;      // User
+ * ```
+ */
+export type ArrayElement<T> = T extends readonly (infer E)[] ? E : never;
+
+/**
+ * Makes specified fields required in a type.
+ *
+ * @typeParam T - The base type
+ * @typeParam K - The fields to make required
+ *
+ * @example
+ * ```typescript
+ * interface User { id?: string; name?: string; age?: number; }
+ * type RequiredIdUser = RequireFields<User, 'id'>; // id is required
+ * ```
+ */
+export type RequireFields<T, K extends keyof T> = T & Required<Pick<T, K>>;
+
+/**
+ * Makes specified fields optional in a type.
+ *
+ * @typeParam T - The base type
+ * @typeParam K - The fields to make optional
+ *
+ * @example
+ * ```typescript
+ * interface User { id: string; name: string; age: number; }
+ * type OptionalAgeUser = OptionalFields<User, 'age'>; // age is optional
+ * ```
+ */
+export type OptionalFields<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;

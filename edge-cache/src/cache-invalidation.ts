@@ -761,13 +761,19 @@ export class CacheInvalidationManager {
     // Start batch timer if not already running
     if (!this.batchTimer) {
       this.batchTimer = setTimeout(() => {
-        this.flushPendingInvalidations().catch(console.error);
+        this.flushPendingInvalidations().catch(() => {
+          // Flush error - will be retried on next batch
+          // Note: In production, use @evodb/observability logger
+        });
       }, this.batchWindow);
     }
 
     // Flush if batch size exceeded
     if (this.pendingPaths.size >= this.maxBatchSize) {
-      this.flushPendingInvalidations().catch(console.error);
+      this.flushPendingInvalidations().catch(() => {
+        // Flush error - will be retried on next batch
+        // Note: In production, use @evodb/observability logger
+      });
     }
   }
 

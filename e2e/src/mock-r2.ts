@@ -10,7 +10,7 @@ import type {
   SimpleR2Object as R2Object,
   SimpleR2ListOptions as R2ListOptions,
   SimpleR2Objects as R2Objects,
-} from '@evodb/query';
+} from '@evodb/core';
 
 /**
  * In-memory R2 object implementation

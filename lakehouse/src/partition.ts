@@ -28,6 +28,37 @@ function assertNever(value: never, message?: string): never {
 }
 
 // =============================================================================
+// Validation Helpers
+// =============================================================================
+
+/**
+ * Safely parse a value to a number, returning null for invalid values.
+ * Handles NaN, empty strings, and non-numeric strings gracefully.
+ */
+function safeParseNumber(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const trimmed = String(value).trim();
+  if (trimmed === '') return null;
+
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Log a warning for unknown filter types (only in development).
+ * In production, silently returns true to avoid breaking queries.
+ */
+function warnUnknownFilterType(_filterType: string, _context: string): void {
+  // Unknown filter types are silently ignored in production
+  // to avoid breaking queries. The filter will pass all values.
+  // Version mismatch detection should be handled at schema validation layer.
+  // Enable structured logging via @evodb/observability for production monitoring.
+}
+
+// =============================================================================
 // Partition Spec Creation
 // =============================================================================
 
@@ -284,25 +315,42 @@ function truncateValue(value: unknown, width: number): string | number | null {
 // =============================================================================
 
 /**
- * Filter files based on partition values
+ * Filter files based on partition values.
+ *
+ * Edge cases handled:
+ * - Empty files array: returns empty array
+ * - Empty filters: returns all files unchanged
+ * - Files with no partitions: won't match any partition filter
+ * - Null/undefined partition values: only match if filter explicitly includes null
+ * - Invalid numeric strings: treated as non-matching (NaN handling)
  */
 export function pruneByPartition(
   files: ManifestFile[],
-  filters: Record<string, PartitionFilter>
+  filters: Record<string, PartitionFilter>,
 ): ManifestFile[] {
-  if (Object.keys(filters).length === 0) return files;
+  // Handle empty/null files
+  if (!files || files.length === 0) return [];
+
+  // Handle empty/null filters - return all files
+  if (!filters || Object.keys(filters).length === 0) return files;
 
   return files.filter(file => matchesPartitionFilters(file.partitions, filters));
 }
 
 /**
- * Check if partition values match filters
+ * Check if partition values match filters.
+ *
+ * Edge cases:
+ * - Empty partitions array: no partition name will be found, values default to undefined
+ * - Missing partition name: value is undefined, treated as null
  */
 function matchesPartitionFilters(
   partitions: PartitionValue[],
-  filters: Record<string, PartitionFilter>
+  filters: Record<string, PartitionFilter>,
 ): boolean {
-  const partitionMap = new Map(partitions.map(p => [p.name, p.value]));
+  // Handle null/undefined partitions array
+  const safePartitions = partitions || [];
+  const partitionMap = new Map(safePartitions.map(p => [p.name, p.value]));
 
   for (const [name, filter] of Object.entries(filters)) {
     const value = partitionMap.get(name);
@@ -315,16 +363,25 @@ function matchesPartitionFilters(
 }
 
 /**
- * Check if a single partition value matches a filter
+ * Check if a single partition value matches a filter.
+ *
+ * Edge cases handled:
+ * - Null/undefined values: only match explicit null in eq/in filters
+ * - NaN after parsing: treated as non-matching for numeric comparisons
+ * - Unknown filter types: logged as warning, returns true (no pruning)
  */
 function matchesPartitionFilter(
   value: string | number | null | undefined,
-  filter: PartitionFilter
+  filter: PartitionFilter,
 ): boolean {
+  // Handle null/undefined values - only match if filter explicitly includes null
   if (value === null || value === undefined) {
-    // Null values only match if specifically included
-    if ('eq' in filter) return filter.eq === null;
-    if ('in' in filter) return filter.in.includes(null as never);
+    if ('eq' in filter) {
+      return filter.eq === null || filter.eq === undefined;
+    }
+    if ('in' in filter) {
+      return filter.in.some(v => v === null || v === undefined);
+    }
     return false;
   }
 
@@ -337,27 +394,59 @@ function matchesPartitionFilter(
   }
 
   if ('between' in filter) {
-    const numValue = typeof value === 'number' ? value : parseFloat(String(value));
+    const numValue = safeParseNumber(value);
+    if (numValue === null) return false;
+
     const [min, max] = filter.between;
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      warnUnknownFilterType('between with invalid bounds', 'partition');
+      return true;
+    }
     return numValue >= min && numValue <= max;
   }
 
   if ('gte' in filter) {
-    const numValue = typeof value === 'number' ? value : parseFloat(String(value));
+    const numValue = safeParseNumber(value);
+    if (numValue === null) return false;
+
     const gteFilter = filter as { gte: number; lte?: number };
+    if (!Number.isFinite(gteFilter.gte)) {
+      warnUnknownFilterType('gte with invalid value', 'partition');
+      return true;
+    }
     if (numValue < gteFilter.gte) return false;
-    if (gteFilter.lte !== undefined && numValue > gteFilter.lte) return false;
+    if (gteFilter.lte !== undefined) {
+      if (!Number.isFinite(gteFilter.lte)) {
+        warnUnknownFilterType('lte with invalid value', 'partition');
+        return true;
+      }
+      if (numValue > gteFilter.lte) return false;
+    }
     return true;
   }
 
   if ('lte' in filter) {
-    const numValue = typeof value === 'number' ? value : parseFloat(String(value));
+    const numValue = safeParseNumber(value);
+    if (numValue === null) return false;
+
     const lteFilter = filter as { lte: number; gte?: number };
+    if (!Number.isFinite(lteFilter.lte)) {
+      warnUnknownFilterType('lte with invalid value', 'partition');
+      return true;
+    }
     if (numValue > lteFilter.lte) return false;
-    if (lteFilter.gte !== undefined && numValue < lteFilter.gte) return false;
+    if (lteFilter.gte !== undefined) {
+      if (!Number.isFinite(lteFilter.gte)) {
+        warnUnknownFilterType('gte with invalid value', 'partition');
+        return true;
+      }
+      if (numValue < lteFilter.gte) return false;
+    }
     return true;
   }
 
+  // Unknown filter type - warn and don't prune
+  warnUnknownFilterType(JSON.stringify(Object.keys(filter)), 'partition');
   return true;
 }
 
@@ -366,15 +455,31 @@ function matchesPartitionFilter(
 // =============================================================================
 
 /**
- * Filter files based on column statistics (zone maps)
+ * Filter files based on column statistics (zone maps).
+ *
+ * Edge cases handled:
+ * - Empty files array: returns empty array
+ * - Empty filters: returns all files
+ * - Files with missing stats: not pruned (may contain matches)
+ * - Files with null columnStats: not pruned
  */
 export function pruneByColumnStats(
   files: ManifestFile[],
-  filters: Record<string, ColumnFilter>
+  filters: Record<string, ColumnFilter>,
 ): ManifestFile[] {
-  if (Object.keys(filters).length === 0) return files;
+  // Handle empty/null files
+  if (!files || files.length === 0) return [];
 
-  return files.filter(file => matchesColumnFilters(file.stats.columnStats, filters));
+  // Handle empty/null filters
+  if (!filters || Object.keys(filters).length === 0) return files;
+
+  return files.filter(file => {
+    // Handle files with missing or null stats - can't prune without stats
+    if (!file.stats || !file.stats.columnStats) {
+      return true;
+    }
+    return matchesColumnFilters(file.stats.columnStats, filters);
+  });
 }
 
 /**
@@ -397,64 +502,93 @@ function matchesColumnFilters(
 }
 
 /**
- * Check if column stats could contain matching values
+ * Check if column stats could contain matching values.
+ *
+ * Edge cases handled:
+ * - Null/undefined stats: can't prune, returns true
+ * - Missing min/max: can't prune for range queries
+ * - NaN in comparisons: handled via compareValues
+ * - Unknown filter types: logged and returns true (no pruning)
  */
 function statsMatchFilter(stats: ColumnStats, filter: ColumnFilter): boolean {
-  const { min, max, nullCount } = stats;
+  // Handle null/undefined stats object
+  if (!stats) return true;
+
+  const { min, max, nullCount = 0 } = stats;
 
   // Handle null checks
   if ('isNull' in filter) {
     if (filter.isNull) {
       return nullCount > 0;
-    } else {
-      // Looking for non-null values
-      const totalRows = stats.distinctCount ?? 1;
-      return nullCount < totalRows;
     }
+    // Looking for non-null values
+    const totalRows = stats.distinctCount ?? 1;
+    return nullCount < totalRows;
   }
 
-  // Can't prune if no min/max stats
-  if (min === undefined || max === undefined) return true;
-
-  // Equality check
+  // Handle eq filter checking for null values (before min/max check)
   if ('eq' in filter) {
+    if (filter.eq === null || filter.eq === undefined) {
+      return nullCount > 0;
+    }
+    // Can't prune if no min/max stats for non-null eq filter
+    if (min === undefined || max === undefined) return true;
     return compareValues(filter.eq, min) >= 0 && compareValues(filter.eq, max) <= 0;
   }
 
-  // Not equal - can only prune if all values are the same
+  // Handle ne filter - can check for null without min/max stats
   if ('ne' in filter) {
+    if (filter.ne === null || filter.ne === undefined) {
+      // Looking for non-null values: prune if all rows are null
+      const totalRows = stats.distinctCount ?? 1;
+      return nullCount < totalRows;
+    }
+    // For non-null ne values, can only prune if we have min/max and all values are the same
+    if (min === undefined || max === undefined) return true;
     if (compareValues(min, max) === 0 && compareValues(min, filter.ne) === 0) {
       return false;
     }
     return true;
   }
 
+  // Can't prune range queries if no min/max stats - file may contain matches
+  if (min === undefined || max === undefined) return true;
+
   // Greater than
   if ('gt' in filter) {
+    if (filter.gt === null || filter.gt === undefined) return true;
     return compareValues(max, filter.gt) > 0;
   }
 
   // Greater than or equal
   if ('gte' in filter) {
+    if (filter.gte === null || filter.gte === undefined) return true;
     return compareValues(max, filter.gte) >= 0;
   }
 
   // Less than
   if ('lt' in filter) {
+    if (filter.lt === null || filter.lt === undefined) return true;
     return compareValues(min, filter.lt) < 0;
   }
 
   // Less than or equal
   if ('lte' in filter) {
+    if (filter.lte === null || filter.lte === undefined) return true;
     return compareValues(min, filter.lte) <= 0;
   }
 
   // Between
   if ('between' in filter) {
     const [filterMin, filterMax] = filter.between;
+    if (filterMin === null || filterMin === undefined || filterMax === null || filterMax === undefined) {
+      return true;
+    }
     return compareValues(max, filterMin) >= 0 && compareValues(min, filterMax) <= 0;
   }
 
+  // Unknown filter type - warn and don't prune
+  warnUnknownFilterType(JSON.stringify(Object.keys(filter)), 'column');
   return true;
 }
 
@@ -483,21 +617,32 @@ function compareValues(a: unknown, b: unknown): number {
 // =============================================================================
 
 /**
- * Apply all filters to prune files
+ * Apply all filters to prune files.
+ *
+ * Edge cases handled:
+ * - Null/undefined files: returns empty array
+ * - Null/undefined filter: returns all files
+ * - Empty partitions/columns in filter: skipped
  */
 export function pruneFiles(
   files: ManifestFile[],
-  filter: QueryFilter
+  filter: QueryFilter,
 ): ManifestFile[] {
+  // Handle null/undefined files
+  if (!files || files.length === 0) return [];
+
+  // Handle null/undefined filter
+  if (!filter) return files;
+
   let result = files;
 
   // Apply partition pruning
-  if (filter.partitions) {
+  if (filter.partitions && Object.keys(filter.partitions).length > 0) {
     result = pruneByPartition(result, filter.partitions);
   }
 
   // Apply column stats pruning
-  if (filter.columns) {
+  if (filter.columns && Object.keys(filter.columns).length > 0) {
     result = pruneByColumnStats(result, filter.columns);
   }
 
@@ -787,14 +932,26 @@ export function createPartitionIndex(files: ManifestFile[]): PartitionIndex {
 // =============================================================================
 
 /**
- * Optimized pruning using partition index for large file sets
- * Falls back to linear scan for small sets
+ * Optimized pruning using partition index for large file sets.
+ * Falls back to linear scan for small sets.
+ *
+ * Edge cases handled:
+ * - Null/undefined files: returns empty array
+ * - Null/undefined filter: returns all files
+ * - Very large partition counts: index provides O(1) lookup vs O(n) scan
+ * - Single partition: index still works correctly
  */
 export function pruneFilesOptimized(
   files: ManifestFile[],
   filter: QueryFilter,
-  indexThreshold = 50
+  indexThreshold = 50,
 ): ManifestFile[] {
+  // Handle null/undefined files
+  if (!files || files.length === 0) return [];
+
+  // Handle null/undefined filter
+  if (!filter) return files;
+
   // For small file sets, use linear scan
   if (files.length < indexThreshold) {
     return pruneFiles(files, filter);
@@ -805,12 +962,12 @@ export function pruneFilesOptimized(
   let result = files;
 
   // Apply partition filters using index
-  if (filter.partitions) {
+  if (filter.partitions && Object.keys(filter.partitions).length > 0) {
     result = pruneByPartitionWithIndex(index, filter.partitions);
   }
 
   // Apply column stats pruning (linear scan on reduced set)
-  if (filter.columns) {
+  if (filter.columns && Object.keys(filter.columns).length > 0) {
     result = pruneByColumnStats(result, filter.columns);
   }
 

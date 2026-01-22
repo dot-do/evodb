@@ -888,3 +888,589 @@ describe('computePartitionValues Edge Cases', () => {
     expect(typeof values[0].value).toBe('number');
   });
 });
+
+// =============================================================================
+// Comprehensive Edge Case Tests for Partition Pruning
+// =============================================================================
+
+describe('Partition Pruning - Comprehensive Edge Cases', () => {
+  describe('Empty Partitions', () => {
+    it('should return empty array when files array is empty', () => {
+      const result = pruneByPartition([], { year: { eq: 2026 } });
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array when files is null/undefined', () => {
+      const result1 = pruneByPartition(null as unknown as ManifestFile[], { year: { eq: 2026 } });
+      expect(result1).toEqual([]);
+
+      const result2 = pruneByPartition(undefined as unknown as ManifestFile[], { year: { eq: 2026 } });
+      expect(result2).toEqual([]);
+    });
+
+    it('should return all files when filter is empty object', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'year', value: 2026 }], 100),
+      ];
+      const result = pruneByPartition(files, {});
+      expect(result).toHaveLength(1);
+    });
+
+    it('should return all files when filter is null/undefined', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'year', value: 2026 }], 100),
+      ];
+      const result1 = pruneByPartition(files, null as unknown as Record<string, never>);
+      expect(result1).toHaveLength(1);
+
+      const result2 = pruneByPartition(files, undefined as unknown as Record<string, never>);
+      expect(result2).toHaveLength(1);
+    });
+
+    it('should handle files with empty partitions array', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100),
+        createTestFile('f2', [{ name: 'year', value: 2026 }], 100),
+      ];
+      const result = pruneByPartition(files, { year: { eq: 2026 } });
+      // f1 has no partitions, so it won't match year=2026
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should handle files with null partitions property', () => {
+      const file1 = createTestFile('f1', [], 100);
+      (file1 as { partitions: PartitionValue[] | null }).partitions = null;
+      const files: ManifestFile[] = [
+        file1,
+        createTestFile('f2', [{ name: 'year', value: 2026 }], 100),
+      ];
+      const result = pruneByPartition(files, { year: { eq: 2026 } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+  });
+
+  describe('Single Partition', () => {
+    it('should correctly filter single partition with single file', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'region', value: 'us' }], 100),
+      ];
+      const result = pruneByPartition(files, { region: { eq: 'us' } });
+      expect(result).toHaveLength(1);
+    });
+
+    it('should correctly prune single partition with single file', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'region', value: 'us' }], 100),
+      ];
+      const result = pruneByPartition(files, { region: { eq: 'eu' } });
+      expect(result).toHaveLength(0);
+    });
+
+    it('should handle single file with single partition and IN filter', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'type', value: 'A' }], 100),
+      ];
+      const result = pruneByPartition(files, { type: { in: ['A', 'B', 'C'] } });
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('Overlapping Partition Ranges', () => {
+    it('should handle overlapping range filters correctly', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'month', value: 1 }], 100),
+        createTestFile('f2', [{ name: 'month', value: 3 }], 100),
+        createTestFile('f3', [{ name: 'month', value: 5 }], 100),
+        createTestFile('f4', [{ name: 'month', value: 7 }], 100),
+      ];
+
+      // Range 2-6 should include months 3 and 5
+      const result = pruneByPartition(files, { month: { between: [2, 6] } });
+      expect(result).toHaveLength(2);
+      expect(result.map(f => f.path)).toContain('f2');
+      expect(result.map(f => f.path)).toContain('f3');
+    });
+
+    it('should handle boundary values in between filter', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'value', value: 10 }], 100),
+        createTestFile('f2', [{ name: 'value', value: 20 }], 100),
+        createTestFile('f3', [{ name: 'value', value: 30 }], 100),
+      ];
+
+      // Exact boundary match
+      const result = pruneByPartition(files, { value: { between: [10, 20] } });
+      expect(result).toHaveLength(2);
+      expect(result.map(f => f.path)).toContain('f1');
+      expect(result.map(f => f.path)).toContain('f2');
+    });
+
+    it('should handle gte/lte filters at exact boundary', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'score', value: 100 }], 100),
+        createTestFile('f2', [{ name: 'score', value: 200 }], 100),
+      ];
+
+      const gteResult = pruneByPartition(files, { score: { gte: 100 } });
+      expect(gteResult).toHaveLength(2);
+
+      const lteResult = pruneByPartition(files, { score: { lte: 100 } });
+      expect(lteResult).toHaveLength(1);
+      expect(lteResult[0].path).toBe('f1');
+    });
+
+    it('should handle combined gte and lte filters', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'year', value: 2020 }], 100),
+        createTestFile('f2', [{ name: 'year', value: 2025 }], 100),
+        createTestFile('f3', [{ name: 'year', value: 2030 }], 100),
+      ];
+
+      const result = pruneByPartition(files, { year: { gte: 2022, lte: 2028 } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+  });
+
+  describe('Null/Undefined Partition Keys', () => {
+    it('should match files with null partition value when eq filter is null', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'region', value: null }], 100),
+        createTestFile('f2', [{ name: 'region', value: 'us' }], 100),
+      ];
+
+      const result = pruneByPartition(files, { region: { eq: null as unknown as string } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f1');
+    });
+
+    it('should match files with null partition when IN clause contains null', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'category', value: null }], 100),
+        createTestFile('f2', [{ name: 'category', value: 'A' }], 100),
+        createTestFile('f3', [{ name: 'category', value: 'B' }], 100),
+      ];
+
+      const result = pruneByPartition(files, { category: { in: ['A', null as unknown as string] } });
+      expect(result).toHaveLength(2);
+      expect(result.map(f => f.path)).toContain('f1');
+      expect(result.map(f => f.path)).toContain('f2');
+    });
+
+    it('should not match null values with numeric range filters', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'year', value: null }], 100),
+        createTestFile('f2', [{ name: 'year', value: 2026 }], 100),
+      ];
+
+      const result = pruneByPartition(files, { year: { gte: 2020 } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should handle undefined partition values same as null', () => {
+      const file1 = createTestFile('f1', [{ name: 'status', value: undefined as unknown as null }], 100);
+      const files: ManifestFile[] = [
+        file1,
+        createTestFile('f2', [{ name: 'status', value: 'active' }], 100),
+      ];
+
+      const result = pruneByPartition(files, { status: { eq: null as unknown as string } });
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('Very Large Number of Partitions', () => {
+    it('should handle 1000 files with unique partitions efficiently', () => {
+      const files: ManifestFile[] = Array.from({ length: 1000 }, (_, i) =>
+        createTestFile(`f${i}`, [{ name: 'id', value: i }], 100)
+      );
+
+      const start = performance.now();
+      const result = pruneByPartition(files, { id: { eq: 500 } });
+      const duration = performance.now() - start;
+
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f500');
+      // Should complete in reasonable time (< 100ms for linear scan)
+      expect(duration).toBeLessThan(100);
+    });
+
+    it('should handle 10000 files with optimized pruning', () => {
+      const files: ManifestFile[] = Array.from({ length: 10000 }, (_, i) =>
+        createTestFile(`f${i}`, [{ name: 'bucket', value: i % 100 }], 100)
+      );
+
+      const start = performance.now();
+      const result = pruneFilesOptimized(files, { partitions: { bucket: { eq: 50 } } }, 50);
+      const duration = performance.now() - start;
+
+      // Should have 100 files with bucket=50
+      expect(result).toHaveLength(100);
+      // Should complete quickly with index
+      expect(duration).toBeLessThan(200);
+    });
+
+    it('should handle files with many partitions per file', () => {
+      const files: ManifestFile[] = Array.from({ length: 100 }, (_, i) =>
+        createTestFile(`f${i}`, [
+          { name: 'year', value: 2020 + (i % 5) },
+          { name: 'month', value: 1 + (i % 12) },
+          { name: 'day', value: 1 + (i % 28) },
+          { name: 'region', value: ['us', 'eu', 'asia'][i % 3] },
+          { name: 'tier', value: ['free', 'pro', 'enterprise'][i % 3] },
+        ], 100)
+      );
+
+      const result = pruneByPartition(files, {
+        year: { eq: 2022 },
+        month: { in: [1, 2, 3] },
+        region: { eq: 'us' },
+      });
+
+      // Verify filtering works correctly with multiple partition conditions
+      for (const file of result) {
+        const partMap = new Map(file.partitions.map(p => [p.name, p.value]));
+        expect(partMap.get('year')).toBe(2022);
+        expect([1, 2, 3]).toContain(partMap.get('month'));
+        expect(partMap.get('region')).toBe('us');
+      }
+    });
+  });
+
+  describe('NaN and Invalid Numeric Values', () => {
+    it('should not match NaN partition values with numeric filters', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'value', value: 'not-a-number' }], 100),
+        createTestFile('f2', [{ name: 'value', value: 100 }], 100),
+      ];
+
+      const result = pruneByPartition(files, { value: { gte: 50 } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should not match empty string partition values with numeric filters', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'score', value: '' }], 100),
+        createTestFile('f2', [{ name: 'score', value: 75 }], 100),
+      ];
+
+      const result = pruneByPartition(files, { score: { between: [50, 100] } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should handle string representations of numbers correctly', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'version', value: '1.5' }], 100),
+        createTestFile('f2', [{ name: 'version', value: '2.0' }], 100),
+        createTestFile('f3', [{ name: 'version', value: '3.0' }], 100),
+      ];
+
+      const result = pruneByPartition(files, { version: { gte: 2, lte: 2.5 } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should handle Infinity and -Infinity gracefully', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'value', value: 100 }], 100),
+      ];
+
+      // Should not throw and should handle edge cases
+      const result1 = pruneByPartition(files, { value: { gte: -Infinity } });
+      expect(result1).toHaveLength(1);
+
+      const result2 = pruneByPartition(files, { value: { lte: Infinity } });
+      expect(result2).toHaveLength(1);
+    });
+  });
+
+  describe('Boundary Conditions', () => {
+    it('should handle zero values correctly', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'count', value: 0 }], 100),
+        createTestFile('f2', [{ name: 'count', value: 1 }], 100),
+      ];
+
+      const eqResult = pruneByPartition(files, { count: { eq: 0 } });
+      expect(eqResult).toHaveLength(1);
+      expect(eqResult[0].path).toBe('f1');
+
+      const gteResult = pruneByPartition(files, { count: { gte: 0 } });
+      expect(gteResult).toHaveLength(2);
+
+      const lteResult = pruneByPartition(files, { count: { lte: 0 } });
+      expect(lteResult).toHaveLength(1);
+    });
+
+    it('should handle negative values correctly', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'balance', value: -100 }], 100),
+        createTestFile('f2', [{ name: 'balance', value: 0 }], 100),
+        createTestFile('f3', [{ name: 'balance', value: 100 }], 100),
+      ];
+
+      const result = pruneByPartition(files, { balance: { between: [-50, 50] } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+
+    it('should handle very large numbers', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [{ name: 'timestamp', value: Number.MAX_SAFE_INTEGER - 1 }], 100),
+        createTestFile('f2', [{ name: 'timestamp', value: Number.MAX_SAFE_INTEGER }], 100),
+      ];
+
+      const result = pruneByPartition(files, { timestamp: { eq: Number.MAX_SAFE_INTEGER } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+  });
+});
+
+// =============================================================================
+// Comprehensive Edge Case Tests for Column Stats Pruning
+// =============================================================================
+
+describe('Column Stats Pruning - Comprehensive Edge Cases', () => {
+  describe('Empty and Null Cases', () => {
+    it('should return empty array for empty files', () => {
+      const result = pruneByColumnStats([], { age: { gte: 18 } });
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array for null/undefined files', () => {
+      const result1 = pruneByColumnStats(null as unknown as ManifestFile[], { age: { gte: 18 } });
+      expect(result1).toEqual([]);
+
+      const result2 = pruneByColumnStats(undefined as unknown as ManifestFile[], { age: { gte: 18 } });
+      expect(result2).toEqual([]);
+    });
+
+    it('should return all files for empty/null filter', () => {
+      const files: ManifestFile[] = [createTestFile('f1', [], 100)];
+
+      expect(pruneByColumnStats(files, {})).toHaveLength(1);
+      expect(pruneByColumnStats(files, null as unknown as Record<string, never>)).toHaveLength(1);
+    });
+
+    it('should not prune files with missing stats', () => {
+      const file1 = createTestFile('f1', [], 100);
+      (file1 as { stats: null }).stats = null as unknown as typeof file1.stats;
+
+      const files: ManifestFile[] = [
+        file1,
+        createTestFile('f2', [], 100, { age: { min: 20, max: 40, nullCount: 0 } }),
+      ];
+
+      const result = pruneByColumnStats(files, { age: { lte: 15 } });
+      // f1 can't be pruned (no stats), f2 can be pruned (min=20 > 15)
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f1');
+    });
+
+    it('should not prune files with null columnStats', () => {
+      const file1 = createTestFile('f1', [], 100);
+      file1.stats.columnStats = null as unknown as Record<string, never>;
+
+      const files: ManifestFile[] = [file1];
+
+      const result = pruneByColumnStats(files, { age: { gte: 100 } });
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('Null Column Values in Filters', () => {
+    it('should handle eq filter for null values', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { name: { min: 'A', max: 'Z', nullCount: 10 } }),
+        createTestFile('f2', [], 100, { name: { min: 'A', max: 'Z', nullCount: 0 } }),
+      ];
+
+      const result = pruneByColumnStats(files, { name: { eq: null } });
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f1');
+    });
+
+    it('should handle ne filter for null values', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { status: { nullCount: 100, distinctCount: 100 } }),
+        createTestFile('f2', [], 100, { status: { min: 'active', max: 'inactive', nullCount: 0, distinctCount: 50 } }),
+      ];
+
+      const result = pruneByColumnStats(files, { status: { ne: null } });
+      // Looking for non-null values: f1 has only nulls (pruned), f2 has non-nulls (kept)
+      expect(result).toHaveLength(1);
+      expect(result[0].path).toBe('f2');
+    });
+  });
+
+  describe('Missing Min/Max Stats', () => {
+    it('should not prune when min is undefined', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { value: { max: 100, nullCount: 0 } }),
+      ];
+
+      const result = pruneByColumnStats(files, { value: { gte: 200 } });
+      expect(result).toHaveLength(1); // Can't prune without min
+    });
+
+    it('should not prune when max is undefined', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { value: { min: 0, nullCount: 0 } }),
+      ];
+
+      const result = pruneByColumnStats(files, { value: { lte: -100 } });
+      expect(result).toHaveLength(1); // Can't prune without max
+    });
+  });
+
+  describe('Boundary Conditions in Stats', () => {
+    it('should correctly handle exact boundary matches', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { score: { min: 50, max: 100, nullCount: 0 } }),
+      ];
+
+      // Boundary at min
+      expect(pruneByColumnStats(files, { score: { eq: 50 } })).toHaveLength(1);
+      expect(pruneByColumnStats(files, { score: { eq: 49 } })).toHaveLength(0);
+
+      // Boundary at max
+      expect(pruneByColumnStats(files, { score: { eq: 100 } })).toHaveLength(1);
+      expect(pruneByColumnStats(files, { score: { eq: 101 } })).toHaveLength(0);
+    });
+
+    it('should handle between filter at exact boundaries', () => {
+      const files: ManifestFile[] = [
+        createTestFile('f1', [], 100, { value: { min: 10, max: 20, nullCount: 0 } }),
+      ];
+
+      // Filter range completely contains file range
+      expect(pruneByColumnStats(files, { value: { between: [0, 30] } })).toHaveLength(1);
+
+      // Filter range is subset of file range
+      expect(pruneByColumnStats(files, { value: { between: [12, 18] } })).toHaveLength(1);
+
+      // Filter range doesn't overlap
+      expect(pruneByColumnStats(files, { value: { between: [21, 30] } })).toHaveLength(0);
+      expect(pruneByColumnStats(files, { value: { between: [0, 9] } })).toHaveLength(0);
+    });
+  });
+});
+
+// =============================================================================
+// Combined Pruning Edge Cases
+// =============================================================================
+
+describe('Combined Pruning Edge Cases', () => {
+  it('should handle null files in pruneFiles', () => {
+    expect(pruneFiles(null as unknown as ManifestFile[], {})).toEqual([]);
+    expect(pruneFiles(undefined as unknown as ManifestFile[], {})).toEqual([]);
+  });
+
+  it('should handle null filter in pruneFiles', () => {
+    const files: ManifestFile[] = [createTestFile('f1', [], 100)];
+    expect(pruneFiles(files, null as unknown as never)).toHaveLength(1);
+    expect(pruneFiles(files, undefined as unknown as never)).toHaveLength(1);
+  });
+
+  it('should handle null files in pruneFilesOptimized', () => {
+    expect(pruneFilesOptimized(null as unknown as ManifestFile[], {})).toEqual([]);
+    expect(pruneFilesOptimized(undefined as unknown as ManifestFile[], {})).toEqual([]);
+  });
+
+  it('should handle null filter in pruneFilesOptimized', () => {
+    const files: ManifestFile[] = [createTestFile('f1', [], 100)];
+    expect(pruneFilesOptimized(files, null as unknown as never)).toHaveLength(1);
+  });
+
+  it('should handle estimateSelectivity with empty files', () => {
+    const selectivity = estimateSelectivity([], { partitions: { year: { eq: 2026 } } });
+    expect(selectivity).toBe(0);
+  });
+
+  it('should handle analyzePruning with empty files', () => {
+    const stats = analyzePruning([], { partitions: { year: { eq: 2026 } } });
+    expect(stats.totalFiles).toBe(0);
+    expect(stats.overallSelectivity).toBe(0);
+  });
+});
+
+// =============================================================================
+// PartitionIndex Edge Cases
+// =============================================================================
+
+describe('PartitionIndex - Comprehensive Edge Cases', () => {
+  it('should handle empty files array', () => {
+    const index = createPartitionIndex([]);
+    expect(index.getAllFiles()).toHaveLength(0);
+    expect(index.getByValue('year', 2026)).toHaveLength(0);
+    expect(index.getUniqueValues('year')).toHaveLength(0);
+  });
+
+  it('should handle single file index', () => {
+    const files: ManifestFile[] = [
+      createTestFile('f1', [{ name: 'year', value: 2026 }], 100),
+    ];
+    const index = createPartitionIndex(files);
+
+    expect(index.getAllFiles()).toHaveLength(1);
+    expect(index.getByValue('year', 2026)).toHaveLength(1);
+    expect(index.getByValue('year', 2025)).toHaveLength(0);
+    expect(index.getUniqueValues('year')).toEqual([2026]);
+  });
+
+  it('should handle files with no partitions', () => {
+    const files: ManifestFile[] = [
+      createTestFile('f1', [], 100),
+      createTestFile('f2', [], 100),
+    ];
+    const index = createPartitionIndex(files);
+
+    expect(index.getAllFiles()).toHaveLength(2);
+    expect(index.getByValue('year', 2026)).toHaveLength(0);
+    expect(index.getUniqueValues('year')).toHaveLength(0);
+  });
+
+  it('should handle range query with no matching values', () => {
+    const files: ManifestFile[] = [
+      createTestFile('f1', [{ name: 'month', value: 1 }], 100),
+      createTestFile('f2', [{ name: 'month', value: 12 }], 100),
+    ];
+    const index = createPartitionIndex(files);
+
+    const result = index.getByRange('month', 5, 7, true);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should handle getByValues with empty values array', () => {
+    const files: ManifestFile[] = [
+      createTestFile('f1', [{ name: 'type', value: 'A' }], 100),
+    ];
+    const index = createPartitionIndex(files);
+
+    const result = index.getByValues('type', []);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should handle large number of unique partition values', () => {
+    const files: ManifestFile[] = Array.from({ length: 1000 }, (_, i) =>
+      createTestFile(`f${i}`, [{ name: 'id', value: i }], 100)
+    );
+    const index = createPartitionIndex(files);
+
+    expect(index.getUniqueValues('id')).toHaveLength(1000);
+
+    // Test range query performance
+    const start = performance.now();
+    const result = index.getByRange('id', 400, 600, true);
+    const duration = performance.now() - start;
+
+    expect(result).toHaveLength(201); // 400 to 600 inclusive
+    expect(duration).toBeLessThan(50); // Should be fast with binary search
+  });
+});

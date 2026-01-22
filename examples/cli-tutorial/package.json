@@ -1,0 +1,24 @@
+{
+  "name": "@evodb/example-cli-tutorial",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive CLI tutorial for learning EvoDB features",
+  "type": "module",
+  "main": "./src/tutorial.js",
+  "bin": {
+    "evodb-tutorial": "./src/tutorial.js"
+  },
+  "scripts": {
+    "start": "node src/tutorial.js",
+    "tutorial": "node src/tutorial.js"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

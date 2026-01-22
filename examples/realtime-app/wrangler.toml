@@ -1,0 +1,22 @@
+# EvoDB Real-time Subscriptions Example (Placeholder)
+# Cloudflare Workers configuration
+
+name = "evodb-realtime-example"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# TODO: Enable Durable Objects for subscription management
+# [durable_objects]
+# bindings = [
+#   { name = "SUBSCRIPTION_MANAGER", class_name = "SubscriptionManager" }
+# ]
+
+# TODO: Configure migrations when Durable Objects are implemented
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["SubscriptionManager"]
+
+# Uncomment to enable R2 storage persistence
+# [[r2_buckets]]
+# binding = "DATA_BUCKET"
+# bucket_name = "evodb-realtime-data"

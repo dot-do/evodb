@@ -1065,8 +1065,57 @@ export type QueryResult<T = Record<string, unknown>> = EngineQueryResult<T>;
  * // Block-level pruning metrics
  * console.log(`Blocks: ${stats.blocksScanned} scanned, ${stats.blocksPruned} pruned`);
  * console.log(`Block prune ratio: ${(stats.blockPruneRatio * 100).toFixed(1)}%`);
+ *
+ * // Per-operation memory metrics (for identifying bottlenecks)
+ * if (stats.operationMemory) {
+ *   console.log(`Scan memory: ${stats.operationMemory.scan?.peakBytes} bytes`);
+ *   console.log(`Filter memory: ${stats.operationMemory.filter?.peakBytes} bytes`);
+ *   console.log(`Aggregate memory: ${stats.operationMemory.aggregate?.peakBytes} bytes`);
+ * }
  * ```
  */
+
+/**
+ * Memory metrics for a single query operation.
+ *
+ * Provides detailed memory tracking at the operation level (scan, filter,
+ * aggregate, sort, limit, project) to help identify memory bottlenecks.
+ *
+ * @example
+ * ```typescript
+ * const scanMetrics: OperationMemoryMetrics = {
+ *   allocatedBytes: 1024000,
+ *   peakBytes: 1024000,
+ *   releasedBytes: 0,
+ *   inputRows: 10000,
+ *   outputRows: 10000,
+ *   durationMs: 15,
+ * };
+ * ```
+ */
+export interface OperationMemoryMetrics {
+  /** Memory allocated during this operation (bytes) */
+  allocatedBytes: number;
+
+  /** Peak memory usage during this operation (bytes) */
+  peakBytes: number;
+
+  /** Memory released during this operation (bytes) */
+  releasedBytes: number;
+
+  /** Number of rows input to this operation */
+  inputRows: number;
+
+  /** Number of rows output from this operation */
+  outputRows: number;
+
+  /** Duration of this operation (milliseconds) */
+  durationMs: number;
+
+  /** Memory efficiency ratio (output bytes / input bytes) - useful for filter operations */
+  memoryEfficiency?: number;
+}
+
 export interface EngineQueryStats {
   /** Total execution time in milliseconds */
   executionTimeMs: number;
@@ -1109,6 +1158,48 @@ export interface EngineQueryStats {
 
   /** Peak memory usage in bytes */
   peakMemoryBytes: number;
+
+  /** Estimated result set memory in bytes */
+  resultSetBytes?: number;
+
+  /** Estimated bytes per row */
+  estimatedBytesPerRow?: number;
+
+  /** Memory utilization ratio (0.0 to 1.0) */
+  memoryUtilizationRatio?: number;
+
+  /** Per-phase memory metrics for granular tracking */
+  phaseMemory?: {
+    /** Parse phase memory metrics */
+    parse?: { allocatedBytes: number; peakBytes: number; durationMs: number };
+    /** Plan phase memory metrics */
+    plan?: { allocatedBytes: number; peakBytes: number; durationMs: number };
+    /** Execute phase memory metrics */
+    execute?: { allocatedBytes: number; peakBytes: number; durationMs: number };
+    /** Result assembly phase memory metrics */
+    result?: { allocatedBytes: number; peakBytes: number; durationMs: number };
+  };
+
+  /**
+   * Per-operation memory metrics for identifying memory bottlenecks.
+   *
+   * Tracks memory usage at the operation level (scan, filter, aggregate, etc.)
+   * to help identify which operations consume the most memory.
+   */
+  operationMemory?: {
+    /** Scan operation memory metrics (reading data from partitions) */
+    scan?: OperationMemoryMetrics;
+    /** Filter operation memory metrics (predicate evaluation) */
+    filter?: OperationMemoryMetrics;
+    /** Aggregate operation memory metrics (GROUP BY, aggregation functions) */
+    aggregate?: OperationMemoryMetrics;
+    /** Sort operation memory metrics (ORDER BY) */
+    sort?: OperationMemoryMetrics;
+    /** Limit operation memory metrics (LIMIT/OFFSET) */
+    limit?: OperationMemoryMetrics;
+    /** Project operation memory metrics (column projection) */
+    project?: OperationMemoryMetrics;
+  };
 
   /** Total number of blocks (partitions) in the table */
   totalBlocks: number;
@@ -1451,14 +1542,37 @@ export interface TableDataSourceMetadata {
 export type DataSourceFactory = (config: QueryEngineConfig) => TableDataSource;
 
 // =============================================================================
-// R2 Types (from Cloudflare Workers)
+// R2 Types - Imported from @evodb/core (Issue evodb-sdgz)
 // =============================================================================
 
+import type {
+  // Simple R2 types designed for read-only query operations
+  SimpleR2Bucket,
+  SimpleR2Object,
+  SimpleR2Objects,
+  SimpleR2ListOptions,
+  // Full R2 types for advanced operations
+  R2Range as CoreR2Range,
+  R2GetOptions as CoreR2GetOptions,
+  // R2HTTPMetadata and R2ListOptions available from @evodb/core if needed
+} from '@evodb/core';
+
+// Re-export core types for consumers
+export type { SimpleR2Bucket, SimpleR2Object, SimpleR2Objects, SimpleR2ListOptions };
+
+// Re-export R2 types from @evodb/core with query-engine specific aliases
+export type R2Range = CoreR2Range;
+export type R2GetOptions = CoreR2GetOptions;
+
 /**
- * R2 Bucket interface (subset needed for query engine).
+ * R2 Bucket interface for query engine operations.
  *
  * Minimal interface for R2 bucket operations required by the query engine.
- * Compatible with Cloudflare Workers R2 API.
+ * Compatible with Cloudflare Workers R2 API. Supports range reads for
+ * efficient partial file access.
+ *
+ * This is a subset of the full R2Bucket from @evodb/core containing
+ * only the methods needed for query operations.
  */
 export interface R2Bucket {
   get(key: string, options?: R2GetOptions): Promise<R2Object | null>;
@@ -1466,15 +1580,10 @@ export interface R2Bucket {
   list(options?: R2ListOptions): Promise<R2Objects>;
 }
 
-export interface R2GetOptions {
-  range?: R2Range;
-}
-
-export interface R2Range {
-  offset?: number;
-  length?: number;
-}
-
+/**
+ * R2 object metadata for query engine.
+ * Subset of the full R2Object interface from @evodb/core.
+ */
 export interface R2Object {
   key: string;
   size: number;
@@ -1485,17 +1594,27 @@ export interface R2Object {
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
+/**
+ * R2 HTTP metadata for query engine (minimal subset).
+ * For full compatibility, use R2HTTPMetadata from @evodb/core.
+ */
 export interface R2HttpMetadata {
   contentType?: string;
   contentEncoding?: string;
 }
 
+/**
+ * R2 list result for query engine.
+ */
 export interface R2Objects {
   objects: R2Object[];
   truncated: boolean;
   cursor?: string;
 }
 
+/**
+ * R2 list options for query engine.
+ */
 export interface R2ListOptions {
   prefix?: string;
   cursor?: string;

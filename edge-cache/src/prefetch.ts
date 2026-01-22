@@ -197,16 +197,16 @@ function logCacheError(
     errorMessage = String(error);
   }
 
-  // Create structured log entry
-  const logEntry: CacheErrorLog = {
+  // Create structured log entry for metrics tracking
+  const _logEntry: CacheErrorLog = {
     operation,
     key,
     error: errorMessage,
     timestamp: Date.now(),
   };
 
-  // Log the structured error
-  console.error(logEntry);
+  // Error is tracked in metrics above
+  // Note: In production, use @evodb/observability logger for structured logging
 }
 
 /**
@@ -439,9 +439,8 @@ async function warmPartitionInternal(
     // Verify size is within limits
     const contentLength = parseInt(response.headers.get('Content-Length') ?? '0', 10);
     if (!isWithinSizeLimit(contentLength, mode)) {
-      console.warn(
-        `Partition ${partitionPath} exceeds ${mode} mode limit (${contentLength} bytes)`
-      );
+      // Partition exceeds size limit for the mode - skip caching
+      // Note: In production, use @evodb/observability logger for structured logging
       return false;
     }
 
@@ -737,12 +736,12 @@ function extractMaxAge(cacheControl: string): number | undefined {
  * Discover partitions for a table (placeholder - would typically call catalog)
  */
 async function discoverPartitions(
-  table: string,
+  _table: string,
   _config: EdgeCacheConfig // Reserved for future catalog integration
 ): Promise<string[]> {
   // In a real implementation, this would query the catalog
   // For now, return empty array indicating manual partition specification needed
-  console.warn(`Auto-discovery not implemented for table ${table}. Specify partitions explicitly.`);
+  // Note: Callers should specify partitions explicitly until catalog integration is complete
   return [];
 }
 

@@ -51,16 +51,22 @@ import { SUBREQUEST_BUDGETS } from './types.js';
  *
  * @example
  * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
  * try {
  *   await engine.execute(query);
  * } catch (e) {
  *   if (e instanceof SubrequestBudgetExceededError) {
  *     console.log(`Budget: ${e.budget}, Used: ${e.count}, Context: ${e.context}`);
  *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.SUBREQUEST_BUDGET_EXCEEDED) {
+ *     // Handle budget exceeded
+ *   }
  * }
  * ```
  */
-export class SubrequestBudgetExceededError extends Error {
+export class SubrequestBudgetExceededError extends EvoDBError {
   public readonly budget: number;
   public readonly count: number;
   public readonly context: SubrequestContext;
@@ -69,7 +75,10 @@ export class SubrequestBudgetExceededError extends Error {
     const contextLabel = context === 'snippet' ? 'Snippet' : 'Worker';
     super(
       `Subrequest budget exceeded: ${contextLabel} limit is ${budget} subrequests, ` +
-      `but query requires ${count}. Consider reducing partition count or using pagination.`
+      `but query requires ${count}. Consider reducing partition count or using pagination.`,
+      ErrorCode.SUBREQUEST_BUDGET_EXCEEDED,
+      { budget, count, context },
+      'Consider reducing partition count, adding filters, or using pagination.'
     );
     this.name = 'SubrequestBudgetExceededError';
     this.budget = budget;
@@ -180,6 +189,8 @@ import {
   evaluateFilter as coreEvaluateFilter,
   isNumberTuple,
   captureStackTrace,
+  EvoDBError,
+  ErrorCode,
   type FilterPredicate,
 } from '@evodb/core';
 
@@ -325,8 +336,9 @@ function checkAbortSignal(signal?: AbortSignal): void {
 /**
  * Create a promise that rejects when the abort signal fires.
  * Used for racing long operations against abort.
+ * @internal Reserved for future streaming abort implementation
  */
-function createAbortPromise(signal?: AbortSignal): Promise<never> | null {
+function _createAbortPromise(signal?: AbortSignal): Promise<never> | null {
   if (!signal) return null;
 
   return new Promise((_, reject) => {
@@ -351,6 +363,9 @@ function createAbortPromise(signal?: AbortSignal): Promise<never> | null {
   });
 }
 
+// Export for potential future use
+export const createAbortPromise = _createAbortPromise;
+
 /**
  * Maximum column name length
  */
@@ -363,8 +378,25 @@ const MAX_COLUMN_NAME_LENGTH = 256;
 /**
  * Error thrown when query execution exceeds the configured memory limit.
  * This allows callers to catch specifically for memory issues.
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   await engine.execute(query);
+ * } catch (e) {
+ *   if (e instanceof MemoryLimitExceededError) {
+ *     console.log(`Current: ${e.currentBytes}, Limit: ${e.limitBytes}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.MEMORY_LIMIT_EXCEEDED) {
+ *     // Handle memory limit
+ *   }
+ * }
+ * ```
  */
-export class MemoryLimitExceededError extends Error {
+export class MemoryLimitExceededError extends EvoDBError {
   readonly currentBytes: number;
   readonly limitBytes: number;
 
@@ -373,11 +405,15 @@ export class MemoryLimitExceededError extends Error {
     const limitMB = (limitBytes / (1024 * 1024)).toFixed(2);
     super(
       `Memory limit exceeded: current usage ${currentMB}MB exceeds limit of ${limitMB}MB. ` +
-      `Consider adding filters, using LIMIT, or increasing memoryLimitBytes.`
+      `Consider adding filters, using LIMIT, or increasing memoryLimitBytes.`,
+      ErrorCode.MEMORY_LIMIT_EXCEEDED,
+      { currentBytes, limitBytes, currentMB, limitMB },
+      'Consider adding filters, using LIMIT, or increasing memoryLimitBytes.'
     );
     this.name = 'MemoryLimitExceededError';
     this.currentBytes = currentBytes;
     this.limitBytes = limitBytes;
+    captureStackTrace(this, MemoryLimitExceededError);
   }
 }
 
@@ -439,16 +475,166 @@ function estimateRowMemorySize(row: Record<string, unknown>): number {
 }
 
 /**
- * Memory tracker for monitoring memory usage during query execution.
- * Tracks peak memory and throws MemoryLimitExceededError when limit is exceeded.
+ * Query execution phases for granular memory tracking.
+ *
+ * Each phase represents a distinct stage in query execution where
+ * memory is allocated and potentially released.
  */
-class MemoryTracker {
+export type QueryPhase = 'parse' | 'plan' | 'execute' | 'result';
+
+/**
+ * Per-phase memory metrics for detailed tracking.
+ *
+ * Provides granular insight into memory consumption at each
+ * stage of query execution.
+ */
+export interface PhaseMemoryMetrics {
+  /** Memory allocated during this phase (bytes) */
+  allocatedBytes: number;
+  /** Peak memory usage during this phase (bytes) */
+  peakBytes: number;
+  /** Memory released during this phase (bytes) */
+  releasedBytes: number;
+  /** Duration of this phase (milliseconds) */
+  durationMs: number;
+  /** Timestamp when phase started */
+  startedAt: number;
+  /** Timestamp when phase ended */
+  endedAt: number;
+}
+
+/**
+ * Granular memory metrics for query execution.
+ *
+ * Provides detailed memory tracking across all phases of query
+ * execution, enabling performance analysis and optimization.
+ *
+ * @example
+ * ```typescript
+ * const result = await engine.execute(query);
+ * const metrics = result.stats.memoryMetrics;
+ *
+ * console.log(`Parse phase: ${metrics.parse.peakBytes} bytes`);
+ * console.log(`Plan phase: ${metrics.plan.peakBytes} bytes`);
+ * console.log(`Execute phase: ${metrics.execute.peakBytes} bytes`);
+ * console.log(`Result set: ${metrics.resultSetBytes} bytes`);
+ * console.log(`Overall peak: ${metrics.peakBytes} bytes`);
+ * ```
+ */
+export interface GranularMemoryMetrics {
+  /** Memory metrics for parse phase */
+  parse: PhaseMemoryMetrics;
+  /** Memory metrics for plan phase */
+  plan: PhaseMemoryMetrics;
+  /** Memory metrics for execute phase */
+  execute: PhaseMemoryMetrics;
+  /** Memory metrics for result assembly phase */
+  result: PhaseMemoryMetrics;
+  /** Total memory currently allocated (bytes) */
+  currentBytes: number;
+  /** Overall peak memory usage (bytes) */
+  peakBytes: number;
+  /** Estimated result set memory (bytes) */
+  resultSetBytes: number;
+  /** Estimated row memory based on schema (bytes per row) */
+  estimatedBytesPerRow: number;
+  /** Memory limit configured for this query (bytes) */
+  limitBytes: number;
+  /** Memory utilization ratio (0.0 to 1.0) */
+  utilizationRatio: number;
+}
+
+/**
+ * Create empty phase metrics for initialization.
+ */
+function createEmptyPhaseMetrics(): PhaseMemoryMetrics {
+  return {
+    allocatedBytes: 0,
+    peakBytes: 0,
+    releasedBytes: 0,
+    durationMs: 0,
+    startedAt: 0,
+    endedAt: 0,
+  };
+}
+
+/**
+ * Granular memory tracker for monitoring memory usage during query execution.
+ *
+ * Tracks memory at multiple granularities:
+ * - Per-phase tracking (parse, plan, execute, result)
+ * - Peak memory usage (overall and per-phase)
+ * - Result set memory estimation
+ * - Memory release tracking
+ *
+ * Integrates with observability package for metrics export.
+ *
+ * @example
+ * ```typescript
+ * const tracker = new GranularMemoryTracker(128 * 1024 * 1024); // 128MB limit
+ *
+ * tracker.startPhase('parse');
+ * // ... parse query ...
+ * tracker.endPhase('parse');
+ *
+ * tracker.startPhase('plan');
+ * tracker.add(10000); // Track plan memory
+ * tracker.endPhase('plan');
+ *
+ * tracker.startPhase('execute');
+ * tracker.trackRows(rows);
+ * tracker.endPhase('execute');
+ *
+ * const metrics = tracker.getGranularMetrics();
+ * console.log(metrics);
+ * ```
+ */
+export class GranularMemoryTracker {
   private currentBytes: number = 0;
   private peakBytes: number = 0;
   private readonly limitBytes: number;
 
+  private currentPhase: QueryPhase | null = null;
+  private phaseMetrics: Map<QueryPhase, PhaseMemoryMetrics> = new Map();
+  private phaseStartBytes: Map<QueryPhase, number> = new Map();
+
+  private resultSetBytes: number = 0;
+  private estimatedBytesPerRow: number = 0;
+  private rowCount: number = 0;
+
   constructor(limitBytes: number) {
     this.limitBytes = limitBytes;
+    // Initialize all phase metrics
+    const phases: QueryPhase[] = ['parse', 'plan', 'execute', 'result'];
+    for (const phase of phases) {
+      this.phaseMetrics.set(phase, createEmptyPhaseMetrics());
+    }
+  }
+
+  /**
+   * Start tracking a specific phase.
+   */
+  startPhase(phase: QueryPhase): void {
+    this.currentPhase = phase;
+    const metrics = this.phaseMetrics.get(phase);
+    if (metrics) {
+      metrics.startedAt = Date.now();
+    }
+    this.phaseStartBytes.set(phase, this.currentBytes);
+  }
+
+  /**
+   * End tracking a specific phase.
+   */
+  endPhase(phase: QueryPhase): void {
+    const metrics = this.phaseMetrics.get(phase);
+    if (metrics && metrics.startedAt > 0) {
+      metrics.endedAt = Date.now();
+      metrics.durationMs = metrics.endedAt - metrics.startedAt;
+    }
+    if (phase === this.currentPhase) {
+      this.currentPhase = null;
+    }
   }
 
   /**
@@ -460,6 +646,19 @@ class MemoryTracker {
     if (this.currentBytes > this.peakBytes) {
       this.peakBytes = this.currentBytes;
     }
+
+    // Track for current phase
+    if (this.currentPhase) {
+      const metrics = this.phaseMetrics.get(this.currentPhase);
+      if (metrics) {
+        metrics.allocatedBytes += bytes;
+        const phaseUsage = this.currentBytes - (this.phaseStartBytes.get(this.currentPhase) ?? 0);
+        if (phaseUsage > metrics.peakBytes) {
+          metrics.peakBytes = phaseUsage;
+        }
+      }
+    }
+
     this.checkLimit();
   }
 
@@ -470,6 +669,15 @@ class MemoryTracker {
   trackRow(row: Record<string, unknown>): void {
     const rowSize = estimateRowMemorySize(row);
     this.add(rowSize);
+    this.rowCount++;
+
+    // Update bytes per row estimate
+    if (this.estimatedBytesPerRow === 0) {
+      this.estimatedBytesPerRow = rowSize;
+    } else {
+      // Running average
+      this.estimatedBytesPerRow = (this.estimatedBytesPerRow * (this.rowCount - 1) + rowSize) / this.rowCount;
+    }
   }
 
   /**
@@ -480,7 +688,18 @@ class MemoryTracker {
   trackRows(rows: Record<string, unknown>[], checkInterval: number = 100): void {
     let accumulatedBytes = 0;
     for (let i = 0; i < rows.length; i++) {
-      accumulatedBytes += estimateRowMemorySize(rows[i]);
+      const rowSize = estimateRowMemorySize(rows[i]);
+      accumulatedBytes += rowSize;
+      this.rowCount++;
+
+      // Update bytes per row estimate using first few rows
+      if (i < 100) {
+        if (this.estimatedBytesPerRow === 0) {
+          this.estimatedBytesPerRow = rowSize;
+        } else {
+          this.estimatedBytesPerRow = (this.estimatedBytesPerRow * i + rowSize) / (i + 1);
+        }
+      }
 
       // Check limit periodically
       if ((i + 1) % checkInterval === 0) {
@@ -495,10 +714,45 @@ class MemoryTracker {
   }
 
   /**
+   * Estimate result set memory based on row count and schema.
+   * Call this after processing rows to get accurate estimates.
+   */
+  estimateResultSetMemory(resultRows: Record<string, unknown>[]): number {
+    if (resultRows.length === 0) {
+      this.resultSetBytes = 0;
+      return 0;
+    }
+
+    // Sample up to 100 rows for estimation
+    const sampleSize = Math.min(resultRows.length, 100);
+    let totalSampleSize = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      totalSampleSize += estimateRowMemorySize(resultRows[i]);
+    }
+
+    const avgRowSize = totalSampleSize / sampleSize;
+    this.resultSetBytes = Math.ceil(avgRowSize * resultRows.length);
+
+    // Add array overhead (approximately 8 bytes per reference + array object overhead)
+    this.resultSetBytes += 40 + resultRows.length * 8;
+
+    return this.resultSetBytes;
+  }
+
+  /**
    * Release bytes from current memory usage.
    */
   release(bytes: number): void {
+    const released = Math.min(bytes, this.currentBytes);
     this.currentBytes = Math.max(0, this.currentBytes - bytes);
+
+    // Track for current phase
+    if (this.currentPhase) {
+      const metrics = this.phaseMetrics.get(this.currentPhase);
+      if (metrics) {
+        metrics.releasedBytes += released;
+      }
+    }
   }
 
   /**
@@ -526,11 +780,300 @@ class MemoryTracker {
   }
 
   /**
-   * Reset the tracker.
+   * Get estimated result set memory in bytes.
+   */
+  getResultSetBytes(): number {
+    return this.resultSetBytes;
+  }
+
+  /**
+   * Get estimated bytes per row.
+   */
+  getEstimatedBytesPerRow(): number {
+    return this.estimatedBytesPerRow;
+  }
+
+  /**
+   * Get metrics for a specific phase.
+   */
+  getPhaseMetrics(phase: QueryPhase): PhaseMemoryMetrics {
+    return this.phaseMetrics.get(phase) ?? createEmptyPhaseMetrics();
+  }
+
+  /**
+   * Get comprehensive granular memory metrics.
+   *
+   * Returns detailed memory tracking information for all phases
+   * and overall execution.
+   */
+  getGranularMetrics(): GranularMemoryMetrics {
+    const utilizationRatio = this.limitBytes !== Infinity
+      ? this.peakBytes / this.limitBytes
+      : 0;
+
+    return {
+      parse: this.getPhaseMetrics('parse'),
+      plan: this.getPhaseMetrics('plan'),
+      execute: this.getPhaseMetrics('execute'),
+      result: this.getPhaseMetrics('result'),
+      currentBytes: this.currentBytes,
+      peakBytes: this.peakBytes,
+      resultSetBytes: this.resultSetBytes,
+      estimatedBytesPerRow: this.estimatedBytesPerRow,
+      limitBytes: this.limitBytes,
+      utilizationRatio,
+    };
+  }
+
+  /**
+   * Reset the tracker for a new query.
    */
   reset(): void {
     this.currentBytes = 0;
     // Note: peak is not reset as it represents the max during the query
+  }
+}
+
+// =============================================================================
+// Operation-Level Memory Tracking
+// =============================================================================
+
+/**
+ * Query operation types for per-operation memory tracking.
+ *
+ * Maps to the operations in a query execution plan:
+ * - scan: Reading data from partitions
+ * - filter: Evaluating predicates
+ * - aggregate: GROUP BY and aggregation functions
+ * - sort: ORDER BY operations
+ * - limit: LIMIT/OFFSET operations
+ * - project: Column projection
+ */
+export type QueryOperationType = 'scan' | 'filter' | 'aggregate' | 'sort' | 'limit' | 'project';
+
+/**
+ * Per-operation memory metrics for detailed tracking.
+ *
+ * Provides granular insight into memory consumption at each
+ * operation level during query execution.
+ */
+export interface OperationMemoryMetricsInternal {
+  /** Memory allocated during this operation (bytes) */
+  allocatedBytes: number;
+  /** Peak memory usage during this operation (bytes) */
+  peakBytes: number;
+  /** Memory released during this operation (bytes) */
+  releasedBytes: number;
+  /** Number of rows input to this operation */
+  inputRows: number;
+  /** Number of rows output from this operation */
+  outputRows: number;
+  /** Duration of this operation (milliseconds) */
+  durationMs: number;
+  /** Timestamp when operation started */
+  startedAt: number;
+  /** Timestamp when operation ended */
+  endedAt: number;
+  /** Memory efficiency ratio (output bytes / input bytes) */
+  memoryEfficiency?: number;
+}
+
+/**
+ * Complete per-operation memory metrics for query execution.
+ */
+export interface OperationMemoryReport {
+  /** Scan operation metrics */
+  scan?: OperationMemoryMetricsInternal;
+  /** Filter operation metrics */
+  filter?: OperationMemoryMetricsInternal;
+  /** Aggregate operation metrics */
+  aggregate?: OperationMemoryMetricsInternal;
+  /** Sort operation metrics */
+  sort?: OperationMemoryMetricsInternal;
+  /** Limit operation metrics */
+  limit?: OperationMemoryMetricsInternal;
+  /** Project operation metrics */
+  project?: OperationMemoryMetricsInternal;
+}
+
+/**
+ * Create empty operation memory metrics for initialization.
+ */
+function createEmptyOperationMetrics(): OperationMemoryMetricsInternal {
+  return {
+    allocatedBytes: 0,
+    peakBytes: 0,
+    releasedBytes: 0,
+    inputRows: 0,
+    outputRows: 0,
+    durationMs: 0,
+    startedAt: 0,
+    endedAt: 0,
+    memoryEfficiency: 1.0,
+  };
+}
+
+/**
+ * Operation-level memory tracker for identifying memory bottlenecks.
+ *
+ * Extends GranularMemoryTracker to add per-operation tracking that helps
+ * identify which operations (scan, filter, aggregate, sort, limit, project)
+ * consume the most memory during query execution.
+ *
+ * @example
+ * ```typescript
+ * const tracker = new OperationMemoryTracker(128 * 1024 * 1024); // 128MB limit
+ *
+ * // Track scan operation
+ * tracker.startOperation('scan', rows.length);
+ * tracker.trackRows(rows);
+ * tracker.endOperation('scan', rows.length);
+ *
+ * // Track filter operation
+ * tracker.startOperation('filter', rows.length);
+ * const filtered = rows.filter(predicate);
+ * tracker.add(estimateFilterMemory()); // Predicate evaluation overhead
+ * tracker.endOperation('filter', filtered.length);
+ *
+ * // Get operation metrics
+ * const report = tracker.getOperationReport();
+ * console.log(`Scan peak: ${report.scan?.peakBytes} bytes`);
+ * console.log(`Filter peak: ${report.filter?.peakBytes} bytes`);
+ * ```
+ */
+export class OperationMemoryTracker extends GranularMemoryTracker {
+  private currentOperation: QueryOperationType | null = null;
+  private operationMetrics: Map<QueryOperationType, OperationMemoryMetricsInternal> = new Map();
+  private operationStartBytes: Map<QueryOperationType, number> = new Map();
+
+  constructor(limitBytes: number) {
+    super(limitBytes);
+    // Initialize all operation metrics
+    const operations: QueryOperationType[] = ['scan', 'filter', 'aggregate', 'sort', 'limit', 'project'];
+    for (const op of operations) {
+      this.operationMetrics.set(op, createEmptyOperationMetrics());
+    }
+  }
+
+  /**
+   * Start tracking a specific operation.
+   * @param operation - The operation type to track
+   * @param inputRows - Number of rows being input to this operation
+   */
+  startOperation(operation: QueryOperationType, inputRows: number = 0): void {
+    this.currentOperation = operation;
+    const metrics = this.operationMetrics.get(operation);
+    if (metrics) {
+      metrics.startedAt = Date.now();
+      metrics.inputRows = inputRows;
+    }
+    this.operationStartBytes.set(operation, this.getCurrentBytes());
+  }
+
+  /**
+   * End tracking a specific operation.
+   * @param operation - The operation type to end
+   * @param outputRows - Number of rows output from this operation
+   */
+  endOperation(operation: QueryOperationType, outputRows: number = 0): void {
+    const metrics = this.operationMetrics.get(operation);
+    if (metrics && metrics.startedAt > 0) {
+      metrics.endedAt = Date.now();
+      metrics.durationMs = metrics.endedAt - metrics.startedAt;
+      metrics.outputRows = outputRows;
+
+      // Calculate memory efficiency if we have input data
+      if (metrics.inputRows > 0) {
+        const inputBytesEstimate = metrics.allocatedBytes;
+        const outputBytesEstimate = outputRows > 0 ? (metrics.allocatedBytes * outputRows / metrics.inputRows) : 0;
+        metrics.memoryEfficiency = inputBytesEstimate > 0 ? outputBytesEstimate / inputBytesEstimate : 1.0;
+      }
+    }
+    if (operation === this.currentOperation) {
+      this.currentOperation = null;
+    }
+  }
+
+  /**
+   * Override add to track memory for current operation.
+   */
+  override add(bytes: number): void {
+    super.add(bytes);
+
+    // Track for current operation
+    if (this.currentOperation) {
+      const metrics = this.operationMetrics.get(this.currentOperation);
+      if (metrics) {
+        metrics.allocatedBytes += bytes;
+        const operationUsage = this.getCurrentBytes() - (this.operationStartBytes.get(this.currentOperation) ?? 0);
+        if (operationUsage > metrics.peakBytes) {
+          metrics.peakBytes = operationUsage;
+        }
+      }
+    }
+  }
+
+  /**
+   * Override release to track memory for current operation.
+   */
+  override release(bytes: number): void {
+    // Track for current operation before calling super
+    if (this.currentOperation) {
+      const metrics = this.operationMetrics.get(this.currentOperation);
+      if (metrics) {
+        metrics.releasedBytes += Math.min(bytes, this.getCurrentBytes());
+      }
+    }
+    super.release(bytes);
+  }
+
+  /**
+   * Get metrics for a specific operation.
+   */
+  getOperationMetrics(operation: QueryOperationType): OperationMemoryMetricsInternal {
+    return this.operationMetrics.get(operation) ?? createEmptyOperationMetrics();
+  }
+
+  /**
+   * Get comprehensive operation memory report.
+   *
+   * Returns detailed memory tracking information for all operations.
+   */
+  getOperationReport(): OperationMemoryReport {
+    const report: OperationMemoryReport = {};
+
+    // Only include operations that were actually executed
+    for (const [op, metrics] of this.operationMetrics.entries()) {
+      if (metrics.startedAt > 0) {
+        report[op] = { ...metrics };
+      }
+    }
+
+    return report;
+  }
+
+  /**
+   * Get the operation with highest peak memory usage.
+   */
+  getMemoryBottleneck(): { operation: QueryOperationType; metrics: OperationMemoryMetricsInternal } | null {
+    let maxPeak = 0;
+    let bottleneck: QueryOperationType | null = null;
+
+    for (const [op, metrics] of this.operationMetrics.entries()) {
+      if (metrics.peakBytes > maxPeak) {
+        maxPeak = metrics.peakBytes;
+        bottleneck = op;
+      }
+    }
+
+    if (bottleneck) {
+      return {
+        operation: bottleneck,
+        metrics: this.operationMetrics.get(bottleneck)!,
+      };
+    }
+
+    return null;
   }
 }
 
@@ -1921,11 +2464,14 @@ export class QueryEngine {
     const timeoutMs = query.hints?.timeoutMs || this.config.defaultTimeoutMs || 30000;
     const memoryLimit = query.hints?.memoryLimitBytes || this.config.memoryLimitBytes || Infinity;
 
-    // Initialize memory tracker
-    const memoryTracker = new MemoryTracker(memoryLimit);
+    // Initialize operation-level memory tracker with phase tracking
+    const memoryTracker = new OperationMemoryTracker(memoryLimit);
 
     // Initialize subrequest tracker
     const subrequestTracker = this.createSubrequestTracker();
+
+    // Start parse phase for memory tracking
+    memoryTracker.startPhase('parse');
 
     // Get table data from data source
     const tableMetadata = await this.dataSource.getTableMetadata(query.table);
@@ -1954,10 +2500,18 @@ export class QueryEngine {
       }
     }
 
+    // End parse phase and start plan phase
+    memoryTracker.endPhase('parse');
+    memoryTracker.startPhase('plan');
+
     // Get rows from data source with memory tracking
     // Use duck typing to check for optional getTableRows method (optimization for test data sources)
     const dataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
     let rows: Record<string, unknown>[];
+
+    // Start scan operation tracking
+    memoryTracker.startOperation('scan', 0);
+
     if (dataSourceWithRows.getTableRows) {
       // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
       rows = dataSourceWithRows.getTableRows(query.table) ?? [];
@@ -1980,8 +2534,15 @@ export class QueryEngine {
       }
     }
 
+    // End scan operation tracking
+    memoryTracker.endOperation('scan', rows.length);
+
     // Check for abort after data loading
     checkAbortSignal(signal);
+
+    // End plan phase and start execute phase
+    memoryTracker.endPhase('plan');
+    memoryTracker.startPhase('execute');
 
     let partitions = tableMetadata.partitions;
     const schema = tableMetadata.schema;
@@ -2047,6 +2608,9 @@ export class QueryEngine {
 
     // Apply predicate filters with periodic abort checks for large datasets
     if (query.predicates && query.predicates.length > 0) {
+      // Start filter operation tracking
+      memoryTracker.startOperation('filter', filteredRows.length);
+
       // Assign to local const for type narrowing in closure
       const predicates = query.predicates;
 
@@ -2069,6 +2633,9 @@ export class QueryEngine {
           this.matchesAllPredicates(row, predicates)
         );
       }
+
+      // End filter operation tracking
+      memoryTracker.endOperation('filter', filteredRows.length);
     }
 
     // Check for abort after filtering
@@ -2083,6 +2650,10 @@ export class QueryEngine {
       // Check for abort before aggregation
       checkAbortSignal(signal);
 
+      // Start aggregate operation tracking
+      const aggregateInputRows = filteredRows.length;
+      memoryTracker.startOperation('aggregate', aggregateInputRows);
+
       filteredRows = await this.applyAggregations(
         filteredRows,
         query.aggregations,
@@ -2090,12 +2661,19 @@ export class QueryEngine {
         query.predicates
       );
 
+      // End aggregate operation tracking
+      memoryTracker.endOperation('aggregate', filteredRows.length);
+
       // Check for abort after aggregation
       checkAbortSignal(signal);
     }
 
     // Apply column projection
     if (query.projection) {
+      // Start project operation tracking
+      const projectInputRows = filteredRows.length;
+      memoryTracker.startOperation('project', projectInputRows);
+
       const projection = query.projection;
       filteredRows = filteredRows.map(row => {
         const projected: Record<string, unknown> = {};
@@ -2112,22 +2690,43 @@ export class QueryEngine {
 
         return projected;
       });
+
+      // End project operation tracking
+      memoryTracker.endOperation('project', filteredRows.length);
     }
 
     // Apply sorting
     if (query.orderBy && query.orderBy.length > 0) {
+      // Start sort operation tracking
+      const sortInputRows = filteredRows.length;
+      memoryTracker.startOperation('sort', sortInputRows);
+
       filteredRows = this.resultProcessor.sort(filteredRows, query.orderBy);
+
+      // End sort operation tracking
+      memoryTracker.endOperation('sort', filteredRows.length);
     }
 
     // Calculate total before limit
     const totalRowCount = filteredRows.length;
 
+    // End execute phase and start result phase
+    memoryTracker.endPhase('execute');
+    memoryTracker.startPhase('result');
+
     // Apply limit and offset
     const hasMore = query.limit !== undefined && filteredRows.length > query.limit;
     if (query.limit !== undefined || query.offset !== undefined) {
+      // Start limit operation tracking
+      const limitInputRows = filteredRows.length;
+      memoryTracker.startOperation('limit', limitInputRows);
+
       const offset = query.offset || 0;
       const limit = query.limit || filteredRows.length;
       filteredRows = filteredRows.slice(offset, offset + limit);
+
+      // End limit operation tracking
+      memoryTracker.endOperation('limit', filteredRows.length);
     }
 
     const executionTimeMs = Date.now() - startTime;
@@ -2152,6 +2751,32 @@ export class QueryEngine {
     const blocksPruned = partitionsPruned;
     const blockPruneRatio = totalBlocks > 0 ? blocksPruned / totalBlocks : 0;
 
+    // Estimate result set memory and end result phase
+    memoryTracker.estimateResultSetMemory(filteredRows);
+    memoryTracker.endPhase('result');
+
+    // Get granular memory metrics
+    const granularMetrics = memoryTracker.getGranularMetrics();
+
+    // Get operation-level memory metrics
+    const operationReport = memoryTracker.getOperationReport();
+
+    // Build operation memory stats (only include operations that were executed)
+    const operationMemory: Record<string, { allocatedBytes: number; peakBytes: number; releasedBytes: number; inputRows: number; outputRows: number; durationMs: number; memoryEfficiency?: number }> = {};
+    for (const [op, metrics] of Object.entries(operationReport)) {
+      if (metrics) {
+        operationMemory[op] = {
+          allocatedBytes: metrics.allocatedBytes,
+          peakBytes: metrics.peakBytes,
+          releasedBytes: metrics.releasedBytes,
+          inputRows: metrics.inputRows,
+          outputRows: metrics.outputRows,
+          durationMs: metrics.durationMs,
+          memoryEfficiency: metrics.memoryEfficiency,
+        };
+      }
+    }
+
     const stats: QueryStats = {
       executionTimeMs,
       planningTimeMs,
@@ -2167,6 +2792,34 @@ export class QueryEngine {
       bloomFilterChecks,
       bloomFilterHits,
       peakMemoryBytes: memoryTracker.getPeakBytes(),
+      // Granular memory metrics
+      resultSetBytes: granularMetrics.resultSetBytes,
+      estimatedBytesPerRow: granularMetrics.estimatedBytesPerRow,
+      memoryUtilizationRatio: granularMetrics.utilizationRatio,
+      phaseMemory: {
+        parse: {
+          allocatedBytes: granularMetrics.parse.allocatedBytes,
+          peakBytes: granularMetrics.parse.peakBytes,
+          durationMs: granularMetrics.parse.durationMs,
+        },
+        plan: {
+          allocatedBytes: granularMetrics.plan.allocatedBytes,
+          peakBytes: granularMetrics.plan.peakBytes,
+          durationMs: granularMetrics.plan.durationMs,
+        },
+        execute: {
+          allocatedBytes: granularMetrics.execute.allocatedBytes,
+          peakBytes: granularMetrics.execute.peakBytes,
+          durationMs: granularMetrics.execute.durationMs,
+        },
+        result: {
+          allocatedBytes: granularMetrics.result.allocatedBytes,
+          peakBytes: granularMetrics.result.peakBytes,
+          durationMs: granularMetrics.result.durationMs,
+        },
+      },
+      // Per-operation memory metrics for identifying bottlenecks
+      operationMemory: Object.keys(operationMemory).length > 0 ? operationMemory : undefined,
       // Block-level pruning metrics
       totalBlocks,
       blocksScanned,
@@ -2677,4 +3330,171 @@ export function createCacheManager(config: QueryEngineConfig): CacheManager {
  */
 export function createResultProcessor(): ResultProcessor {
   return new ResultProcessor();
+}
+
+// =============================================================================
+// Observability Integration
+// =============================================================================
+
+/**
+ * Record memory metrics to an observability registry.
+ *
+ * This function takes query stats and records memory-related metrics
+ * to gauges and histograms in an observability registry.
+ *
+ * @example
+ * ```typescript
+ * import { createMetricsRegistry, createGauge, createHistogram } from '@evodb/observability';
+ * import { recordMemoryMetrics } from '@evodb/query';
+ *
+ * const registry = createMetricsRegistry();
+ *
+ * // Create metrics
+ * const memoryGauge = createGauge(registry, {
+ *   name: 'evodb_query_memory_bytes',
+ *   help: 'Memory usage during query execution',
+ *   labelNames: ['phase', 'type'],
+ * });
+ *
+ * // After query execution
+ * recordMemoryMetrics(result.stats, memoryGauge);
+ * ```
+ */
+export function recordMemoryMetrics(
+  stats: QueryStats,
+  gaugeLabels: (labels: { phase: string; type: string }) => { set: (value: number) => void }
+): void {
+  // Record peak memory
+  gaugeLabels({ phase: 'total', type: 'peak' }).set(stats.peakMemoryBytes);
+
+  // Record result set memory if available
+  if (stats.resultSetBytes !== undefined) {
+    gaugeLabels({ phase: 'total', type: 'result_set' }).set(stats.resultSetBytes);
+  }
+
+  // Record per-phase metrics if available
+  if (stats.phaseMemory) {
+    const phases = ['parse', 'plan', 'execute', 'result'] as const;
+    for (const phase of phases) {
+      const phaseMetrics = stats.phaseMemory[phase];
+      if (phaseMetrics) {
+        gaugeLabels({ phase, type: 'allocated' }).set(phaseMetrics.allocatedBytes);
+        gaugeLabels({ phase, type: 'peak' }).set(phaseMetrics.peakBytes);
+      }
+    }
+  }
+}
+
+/**
+ * Create a memory metrics observer for use with query engine.
+ *
+ * Returns a callback that can be used to record memory metrics
+ * after each query execution.
+ *
+ * @example
+ * ```typescript
+ * import { createMetricsRegistry, createGauge, createHistogram } from '@evodb/observability';
+ * import { createMemoryMetricsObserver, createQueryEngine } from '@evodb/query';
+ *
+ * const registry = createMetricsRegistry();
+ * const observer = createMemoryMetricsObserver(registry);
+ *
+ * const engine = createQueryEngine(config);
+ * const result = await engine.execute(query);
+ *
+ * // Record metrics after query
+ * observer.record(result.stats, query.table);
+ * ```
+ */
+export interface MemoryMetricsObserver {
+  record(stats: QueryStats, tableName: string): void;
+}
+
+/**
+ * Configuration for memory metrics observer.
+ */
+export interface MemoryMetricsObserverConfig {
+  /** Prefix for metric names (default: 'evodb_query') */
+  metricPrefix?: string;
+  /** Whether to record per-phase metrics (default: true) */
+  recordPhaseMetrics?: boolean;
+  /** Whether to record memory utilization histogram (default: true) */
+  recordUtilizationHistogram?: boolean;
+}
+
+/**
+ * Create a factory function for memory metrics observer.
+ *
+ * The returned factory can be called with a metrics registry to create
+ * an observer that records query memory metrics.
+ *
+ * This function returns a factory to avoid coupling with @evodb/observability
+ * at the type level while still providing integration capabilities.
+ */
+export function createMemoryMetricsObserverFactory(
+  config: MemoryMetricsObserverConfig = {}
+): (registry: {
+  createGauge: (config: { name: string; help: string; labelNames: string[] }) => {
+    labels: (labels: Record<string, string>) => { set: (value: number) => void };
+  };
+  createHistogram: (config: { name: string; help: string; labelNames: string[]; buckets: number[] }) => {
+    labels: (labels: Record<string, string>) => { observe: (value: number) => void };
+  };
+}) => MemoryMetricsObserver {
+  const prefix = config.metricPrefix ?? 'evodb_query';
+  const recordPhase = config.recordPhaseMetrics ?? true;
+  const recordUtilization = config.recordUtilizationHistogram ?? true;
+
+  return (registry) => {
+    // Create gauges for memory tracking
+    const memoryGauge = registry.createGauge({
+      name: `${prefix}_memory_bytes`,
+      help: 'Memory usage during query execution in bytes',
+      labelNames: ['table', 'phase', 'type'],
+    });
+
+    // Create histogram for memory utilization if enabled
+    const utilizationHistogram = recordUtilization
+      ? registry.createHistogram({
+        name: `${prefix}_memory_utilization`,
+        help: 'Memory utilization ratio during query execution',
+        labelNames: ['table'],
+        buckets: [0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0],
+      })
+      : null;
+
+    return {
+      record(stats: QueryStats, tableName: string): void {
+        // Record peak memory
+        memoryGauge.labels({ table: tableName, phase: 'total', type: 'peak' }).set(stats.peakMemoryBytes);
+
+        // Record result set memory
+        if (stats.resultSetBytes !== undefined) {
+          memoryGauge.labels({ table: tableName, phase: 'total', type: 'result_set' }).set(stats.resultSetBytes);
+        }
+
+        // Record bytes per row estimate
+        if (stats.estimatedBytesPerRow !== undefined) {
+          memoryGauge.labels({ table: tableName, phase: 'total', type: 'bytes_per_row' }).set(stats.estimatedBytesPerRow);
+        }
+
+        // Record per-phase metrics
+        if (recordPhase && stats.phaseMemory) {
+          const phases = ['parse', 'plan', 'execute', 'result'] as const;
+          for (const phase of phases) {
+            const phaseMetrics = stats.phaseMemory[phase];
+            if (phaseMetrics) {
+              memoryGauge.labels({ table: tableName, phase, type: 'allocated' }).set(phaseMetrics.allocatedBytes);
+              memoryGauge.labels({ table: tableName, phase, type: 'peak' }).set(phaseMetrics.peakBytes);
+            }
+          }
+        }
+
+        // Record utilization histogram
+        if (utilizationHistogram && stats.memoryUtilizationRatio !== undefined) {
+          utilizationHistogram.labels({ table: tableName }).observe(stats.memoryUtilizationRatio);
+        }
+      },
+    };
+  };
 }

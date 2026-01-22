@@ -194,6 +194,23 @@ export interface QueryResult<T = Record<string, unknown>> {
 }
 
 /**
+ * Interface for objects that can execute queries.
+ * This allows QueryBuilder to work with EvoDB or any compatible query executor.
+ */
+export interface QueryExecutor {
+  executeQuery<T>(
+    table: string,
+    predicates: FilterPredicate[],
+    projection: string[] | null,
+    sortSpecs: SortSpec[],
+    aggregateSpecs: AggregateSpec[],
+    groupByColumns: string[],
+    limit: number | null,
+    offset: number
+  ): Promise<QueryResult<T>>;
+}
+
+/**
  * Update operation result
  */
 export interface UpdateResult<T = Record<string, unknown>> {
@@ -295,7 +312,7 @@ function mapOperator(op: UserFilterOperator): FilterOperator {
  * ```
  */
 export class QueryBuilder<T = Record<string, unknown>> {
-  private readonly evodb: EvoDB;
+  private readonly executor: QueryExecutor;
   private readonly tableName: string;
   private predicates: FilterPredicate[] = [];
   private projection: string[] | null = null;
@@ -305,8 +322,8 @@ export class QueryBuilder<T = Record<string, unknown>> {
   private limitCount: number | null = null;
   private offsetCount: number = 0;
 
-  constructor(evodb: EvoDB, tableName: string) {
-    this.evodb = evodb;
+  constructor(executor: QueryExecutor, tableName: string) {
+    this.executor = executor;
     this.tableName = tableName;
   }
 
@@ -393,7 +410,7 @@ export class QueryBuilder<T = Record<string, unknown>> {
    * Execute the query and return results
    */
   async execute(): Promise<T[]> {
-    const result = await this.evodb.executeQuery<T>(
+    const result = await this.executor.executeQuery<T>(
       this.tableName,
       this.predicates,
       this.projection,
@@ -410,7 +427,7 @@ export class QueryBuilder<T = Record<string, unknown>> {
    * Execute and return full result with metadata
    */
   async executeWithMeta(): Promise<QueryResult<T>> {
-    return this.evodb.executeQuery<T>(
+    return this.executor.executeQuery<T>(
       this.tableName,
       this.predicates,
       this.projection,

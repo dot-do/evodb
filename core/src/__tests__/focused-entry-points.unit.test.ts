@@ -39,15 +39,11 @@ describe('Focused Entry Points (evodb-9s8)', () => {
       expect(types.MAGIC).toBeDefined();
       expect(types.VERSION).toBeDefined();
 
-      // Branded type constructors
+      // Branded type constructors (BlockId, TableId only - evodb-cn6)
       expect(types.blockId).toBeDefined();
-      expect(types.schemaId).toBeDefined();
-      expect(types.snapshotId).toBeDefined();
-      expect(types.batchId).toBeDefined();
-      expect(types.walId).toBeDefined();
       expect(types.tableId).toBeDefined();
 
-      // Type guards for branded types (BlockId and TableId only per evodb-3ju)
+      // Type guards for branded types (BlockId, TableId only - evodb-cn6)
       expect(types.isValidBlockId).toBeDefined();
       expect(types.isValidTableId).toBeDefined();
 

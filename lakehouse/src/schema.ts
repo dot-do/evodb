@@ -10,6 +10,7 @@ import type {
   ColumnType,
 } from './types.js';
 import { schemaPath } from './types.js';
+import { EvoDBError, ErrorCode, ValidationError, captureStackTrace } from '@evodb/core';
 
 // =============================================================================
 // Exhaustiveness Check Helper
@@ -441,9 +442,31 @@ export function deserializeSchema(json: string): Schema {
 // Error Types
 // =============================================================================
 
-export class SchemaError extends Error {
-  constructor(message: string) {
-    super(message);
+/**
+ * Error thrown when schema operations fail.
+ * Extends ValidationError for consistent error hierarchy.
+ *
+ * @example
+ * ```typescript
+ * import { EvoDBError, ErrorCode } from '@evodb/core';
+ *
+ * try {
+ *   evolveSchema(schema, changes);
+ * } catch (e) {
+ *   if (e instanceof SchemaError) {
+ *     console.log(`Schema error: ${e.message}`);
+ *   }
+ *   // Or catch all EvoDB errors
+ *   if (e instanceof EvoDBError && e.code === ErrorCode.SCHEMA_ERROR) {
+ *     // Handle schema error
+ *   }
+ * }
+ * ```
+ */
+export class SchemaError extends ValidationError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, ErrorCode.SCHEMA_ERROR, details, 'Check schema definition and ensure compatibility.');
     this.name = 'SchemaError';
+    captureStackTrace(this, SchemaError);
   }
 }

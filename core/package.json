@@ -81,6 +81,38 @@
     "./metrics-types": {
       "types": "./dist/metrics-types.d.ts",
       "import": "./dist/metrics-types.js"
+    },
+    "./validation": {
+      "types": "./dist/validation/index.d.ts",
+      "import": "./dist/validation/index.js"
+    },
+    "./sync": {
+      "types": "./dist/sync/index.d.ts",
+      "import": "./dist/sync/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "types": ["./dist/types/index.d.ts"],
+      "encoding": ["./dist/encoding/index.d.ts"],
+      "shredding": ["./dist/shredding/index.d.ts"],
+      "block": ["./dist/block/index.d.ts"],
+      "storage": ["./dist/storage/index.d.ts"],
+      "wal": ["./dist/wal/index.d.ts"],
+      "schema": ["./dist/schema/index.d.ts"],
+      "query": ["./dist/query/index.d.ts"],
+      "snippet": ["./dist/snippet/index.d.ts"],
+      "partition": ["./dist/partition/index.d.ts"],
+      "merge": ["./dist/merge/index.d.ts"],
+      "constants": ["./dist/constants/index.d.ts"],
+      "errors": ["./dist/errors/index.d.ts"],
+      "guards": ["./dist/guards/index.d.ts"],
+      "evodb": ["./dist/evodb/index.d.ts"],
+      "logging": ["./dist/logging/index.d.ts"],
+      "tracing": ["./dist/tracing/index.d.ts"],
+      "metrics-types": ["./dist/metrics-types.d.ts"],
+      "validation": ["./dist/validation/index.d.ts"],
+      "sync": ["./dist/sync/index.d.ts"]
     }
   },
   "files": [
