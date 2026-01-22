@@ -2507,72 +2507,29 @@ export class QueryEngine {
     memoryTracker.endPhase('parse');
     memoryTracker.startPhase('plan');
 
-    // Get rows from data source with memory tracking
     // Use duck typing to check for optional getTableRows method (optimization for test data sources)
     const dataSourceWithRows = this.dataSource as TableDataSource & { getTableRows?: (table: string) => Record<string, unknown>[] | null };
-    let rows: Record<string, unknown>[];
 
-    // Start scan operation tracking
-    memoryTracker.startOperation('scan', 0);
+    // Zone map pruning BEFORE loading data (critical for memory efficiency)
+    let partitions = tableMetadata.partitions;
+    let partitionsPruned = 0;
+    let zoneMapEffectiveness = 0;
 
-    if (dataSourceWithRows.getTableRows) {
-      // Optimized path for data sources that provide direct row access (e.g., MockDataSource)
-      rows = dataSourceWithRows.getTableRows(query.table) ?? [];
-      // Track memory for loaded rows (check every 100 rows for efficiency)
-      memoryTracker.trackRows(rows, 100);
-      // Track subrequests for partitions
-      subrequestTracker.increment(tableMetadata.partitions.length);
-    } else {
-      // Standard path: read from all partitions with memory tracking
-      rows = [];
-      for (const partition of tableMetadata.partitions) {
-        // Check for abort between partition reads
-        checkAbortSignal(signal);
-        // Track subrequest for this partition read
-        subrequestTracker.increment();
-        const partitionRows = await this.dataSource.readPartition(partition);
-        // Track memory for partition rows
-        memoryTracker.trackRows(partitionRows, 100);
-        rows.push(...partitionRows);
+    if (query.predicates && query.predicates.length > 0 && !query.hints?.skipZoneMapPruning) {
+      const { selected, pruned } = this.zoneMapOptimizer.prunePartitions(partitions, query.predicates);
+      partitions = selected;
+      partitionsPruned = pruned.length;
+      if (partitions.length + partitionsPruned > 0) {
+        zoneMapEffectiveness = partitionsPruned / (partitions.length + partitionsPruned);
       }
     }
 
-    // End scan operation tracking
-    memoryTracker.endOperation('scan', rows.length);
-
-    // Check for abort after data loading
-    checkAbortSignal(signal);
-
-    // End plan phase and start execute phase
-    memoryTracker.endPhase('plan');
-    memoryTracker.startPhase('execute');
-
-    let partitions = tableMetadata.partitions;
+    const partitionsScanned = partitions.length;
     const schema = tableMetadata.schema;
     const planningTimeMs = Date.now() - planningStart;
     const ioStart = Date.now();
 
-    // Validate column references in predicates
-    if (query.predicates && rows.length > 0) {
-      const firstRow = rows[0];
-      for (const predicate of query.predicates) {
-        // Skip validation for aggregation result columns (like total_spent in HAVING)
-        const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
-        if (isAggAlias) continue;
-
-        // Check if column exists in schema or first row
-        const columnExists =
-          (Object.keys(schema).length > 0 && schema[predicate.column]) ||
-          predicate.column in firstRow ||
-          predicate.column.includes('.'); // Allow nested columns
-
-        if (!columnExists) {
-          throw new Error(`Column not found: ${predicate.column}`);
-        }
-      }
-    }
-
-    // Apply bloom filter checks BEFORE zone map pruning (for all partitions)
+    // Bloom filter checks BEFORE loading data
     let bloomFilterChecks = 0;
     let bloomFilterHits = 0;
 
@@ -2589,62 +2546,127 @@ export class QueryEngine {
       }
     }
 
-    // Apply zone map pruning if predicates exist
-    let partitionsScanned = partitions.length;
-    let partitionsPruned = 0;
-    let zoneMapEffectiveness = 0;
+    // Start scan operation tracking
+    memoryTracker.startOperation('scan', 0);
 
-    if (query.predicates && query.predicates.length > 0 && !query.hints?.skipZoneMapPruning) {
-      const { selected, pruned } = this.zoneMapOptimizer.prunePartitions(partitions, query.predicates);
-      partitions = selected;
-      partitionsPruned = pruned.length;
-      partitionsScanned = selected.length;
+    // MEMORY-EFFICIENT STREAMING: Filter rows AS they are loaded from each partition
+    // This prevents loading all 100MB+ datasets into memory before filtering
+    let filteredRows: Record<string, unknown>[] = [];
+    let rowsScanned = 0;
+    let columnValidated = false;
+    const predicates = query.predicates;
+    const hasAggregations = query.aggregations && query.aggregations.length > 0;
+    const hasOrderBy = query.orderBy && query.orderBy.length > 0;
+    const hasPredicates = predicates && predicates.length > 0;
 
-      if (partitions.length + partitionsPruned > 0) {
-        zoneMapEffectiveness = partitionsPruned / (partitions.length + partitionsPruned);
+    // Determine if we can use early termination (only when no aggregations/sorting needed)
+    const canEarlyTerminate = query.limit !== undefined && !hasAggregations && !hasOrderBy;
+    const earlyTerminateLimit = canEarlyTerminate && query.limit !== undefined
+      ? (query.offset || 0) + query.limit
+      : Infinity;
+
+    if (dataSourceWithRows.getTableRows) {
+      // Optimized path: direct row access (e.g., MockDataSource)
+      const allRows = dataSourceWithRows.getTableRows(query.table) ?? [];
+      rowsScanned = allRows.length;
+      subrequestTracker.increment(tableMetadata.partitions.length);
+
+      // Track memory for the scan operation (all rows loaded by data source)
+      memoryTracker.trackRows(allRows, 100);
+      memoryTracker.endOperation('scan', rowsScanned);
+
+      // Start filter operation if we have predicates
+      if (hasPredicates) {
+        memoryTracker.startOperation('filter', rowsScanned);
       }
-    }
 
-    // Filter rows based on partitions
-    // In a real implementation, this would read from R2
-    let filteredRows = [...rows];
-
-    // Apply predicate filters with periodic abort checks for large datasets
-    if (query.predicates && query.predicates.length > 0) {
-      // Start filter operation tracking
-      memoryTracker.startOperation('filter', filteredRows.length);
-
-      // Assign to local const for type narrowing in closure
-      const predicates = query.predicates;
-
-      // For large datasets, check abort periodically during filtering
-      if (rows.length > 1000) {
-        const result: Record<string, unknown>[] = [];
-        const checkInterval = 500; // Check every 500 rows
-
-        for (let i = 0; i < filteredRows.length; i++) {
-          if (i % checkInterval === 0) {
-            checkAbortSignal(signal);
+      // Stream through rows, filtering as we go to minimize memory usage
+      for (const row of allRows) {
+        // Column validation on first row only
+        if (!columnValidated && hasPredicates) {
+          for (const predicate of predicates) {
+            const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
+            if (isAggAlias) continue;
+            const columnExists =
+              (Object.keys(schema).length > 0 && schema[predicate.column]) ||
+              predicate.column in row ||
+              predicate.column.includes('.');
+            if (!columnExists) {
+              throw new Error(`Column not found: ${predicate.column}`);
+            }
           }
-          if (this.matchesAllPredicates(filteredRows[i], predicates)) {
-            result.push(filteredRows[i]);
+          columnValidated = true;
+        }
+
+        // Apply filter immediately - only keep matching rows in memory
+        if (!hasPredicates || this.matchesAllPredicates(row, predicates)) {
+          filteredRows.push(row);
+          // Early termination when we have enough rows
+          if (filteredRows.length >= earlyTerminateLimit) break;
+        }
+      }
+
+      // End filter operation if we had predicates
+      if (hasPredicates) {
+        memoryTracker.endOperation('filter', filteredRows.length);
+      }
+    } else {
+      // Standard path: read from partitions with streaming filter
+      // This is the critical path for 100MB+ datasets
+      for (const partition of partitions) {
+        checkAbortSignal(signal);
+        subrequestTracker.increment();
+
+        const partitionRows = await this.dataSource.readPartition(partition);
+        rowsScanned += partitionRows.length;
+
+        // Stream through partition rows, filtering immediately
+        // Do NOT accumulate all rows first - filter as we go
+        for (const row of partitionRows) {
+          // Column validation on first row only
+          if (!columnValidated && hasPredicates) {
+            for (const predicate of predicates) {
+              const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
+              if (isAggAlias) continue;
+              const columnExists =
+                (Object.keys(schema).length > 0 && schema[predicate.column]) ||
+                predicate.column in row ||
+                predicate.column.includes('.');
+              if (!columnExists) {
+                throw new Error(`Column not found: ${predicate.column}`);
+              }
+            }
+            columnValidated = true;
+          }
+
+          // Apply filter immediately - only keep matching rows in memory
+          if (!hasPredicates || this.matchesAllPredicates(row, predicates)) {
+            filteredRows.push(row);
+            memoryTracker.trackRow(row);
           }
         }
-        filteredRows = result;
-      } else {
-        filteredRows = filteredRows.filter(row =>
-          this.matchesAllPredicates(row, predicates)
-        );
+
+        // Early termination when we have enough rows (only for simple queries without aggregation/sort)
+        if (filteredRows.length >= earlyTerminateLimit) break;
       }
 
-      // End filter operation tracking
-      memoryTracker.endOperation('filter', filteredRows.length);
+      // End scan operation (for partition-based loading)
+      memoryTracker.endOperation('scan', rowsScanned);
+
+      // Track filter operation metrics separately (even though filtering happened during scan)
+      if (hasPredicates) {
+        memoryTracker.startOperation('filter', rowsScanned);
+        memoryTracker.endOperation('filter', filteredRows.length);
+      }
     }
 
-    // Check for abort after filtering
+    // Check for abort after data loading and filtering
     checkAbortSignal(signal);
 
-    const rowsScanned = rows.length;
+    // End plan phase and start execute phase
+    memoryTracker.endPhase('plan');
+    memoryTracker.startPhase('execute');
+
     const rowsMatched = filteredRows.length;
     const ioTimeMs = Date.now() - ioStart;
 

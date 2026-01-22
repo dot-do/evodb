@@ -796,51 +796,8 @@ export class UnifiedQueryEngine implements CacheableQueryExecutor, StreamingQuer
       if (memoryLimit < 1000000) throw new Error('Memory limit exceeded');
     }
 
-    let rows: Record<string, unknown>[];
-    if (dataSourceWithRows.getTableRows) {
-      rows = dataSourceWithRows.getTableRows(query.table) ?? [];
-      memoryTracker.trackRows(rows, 100);
-      subrequestTracker.increment(tableMetadata.partitions.length);
-    } else {
-      rows = [];
-      for (const partition of tableMetadata.partitions) {
-        checkAbortSignal(signal);
-        subrequestTracker.increment();
-        const partitionRows = await this.dataSource!.readPartition(partition);
-        memoryTracker.trackRows(partitionRows, 100);
-        rows.push(...partitionRows);
-      }
-    }
-
-    checkAbortSignal(signal);
-
-    // Validate column references in predicates
-    if (query.predicates && rows.length > 0) {
-      const firstRow = rows[0];
-      const schema = tableMetadata.schema;
-      for (const predicate of query.predicates) {
-        // Skip validation for aggregation result columns (like total_spent in HAVING)
-        const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
-        if (isAggAlias) continue;
-
-        // Check if column exists in schema or first row
-        const columnExists =
-          (Object.keys(schema).length > 0 && schema[predicate.column]) ||
-          predicate.column in firstRow ||
-          predicate.column.includes('.'); // Allow nested columns
-
-        if (!columnExists) {
-          throw new Error(`Column not found: ${predicate.column}`);
-        }
-      }
-    }
-
+    // Zone map pruning BEFORE loading data (optimization)
     let partitions = tableMetadata.partitions;
-    const planningTimeMs = Date.now() - planningStart;
-    const ioStart = Date.now();
-
-    // Zone map pruning
-    let partitionsScanned = partitions.length;
     let partitionsPruned = 0;
     let zoneMapEffectiveness = 0;
 
@@ -848,11 +805,14 @@ export class UnifiedQueryEngine implements CacheableQueryExecutor, StreamingQuer
       const { selected, pruned } = this.zoneMapOptimizer!.prunePartitions(partitions, query.predicates);
       partitions = selected;
       partitionsPruned = pruned.length;
-      partitionsScanned = selected.length;
       if (partitions.length + partitionsPruned > 0) {
         zoneMapEffectiveness = partitionsPruned / (partitions.length + partitionsPruned);
       }
     }
+
+    const partitionsScanned = partitions.length;
+    const planningTimeMs = Date.now() - planningStart;
+    const ioStart = Date.now();
 
     // Bloom filter checks
     let bloomFilterChecks = 0, bloomFilterHits = 0;
@@ -867,17 +827,97 @@ export class UnifiedQueryEngine implements CacheableQueryExecutor, StreamingQuer
       }
     }
 
-    // Filter rows
-    let filteredRows = [...rows];
-    if (query.predicates && query.predicates.length > 0) {
-      const predicates = query.predicates;
-      filteredRows = filteredRows.filter(row => this.matchesAllPredicates(row, predicates));
+    // MEMORY-EFFICIENT STREAMING: Filter rows AS they are loaded from each partition
+    // This prevents loading all data into memory before filtering
+    let filteredRows: Record<string, unknown>[] = [];
+    let rowsScanned = 0;
+    let columnValidated = false;
+    const predicates = query.predicates;
+    const hasAggregations = query.aggregations && query.aggregations.length > 0;
+    const hasOrderBy = query.orderBy && query.orderBy.length > 0;
+
+    // Determine if we can use early termination (only when no aggregations/sorting needed)
+    const canEarlyTerminate = query.limit !== undefined && !hasAggregations && !hasOrderBy;
+    const earlyTerminateLimit = canEarlyTerminate && query.limit !== undefined
+      ? (query.offset || 0) + query.limit
+      : Infinity;
+
+    if (dataSourceWithRows.getTableRows) {
+      // Optimized path: direct row access (e.g., MockDataSource)
+      const allRows = dataSourceWithRows.getTableRows(query.table) ?? [];
+      rowsScanned = allRows.length;
+      subrequestTracker.increment(tableMetadata.partitions.length);
+
+      // Stream through rows, filtering as we go
+      for (const row of allRows) {
+        // Column validation on first row
+        if (!columnValidated && predicates && predicates.length > 0) {
+          const schema = tableMetadata.schema;
+          for (const predicate of predicates) {
+            const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
+            if (isAggAlias) continue;
+            const columnExists =
+              (Object.keys(schema).length > 0 && schema[predicate.column]) ||
+              predicate.column in row ||
+              predicate.column.includes('.');
+            if (!columnExists) {
+              throw new Error(`Column not found: ${predicate.column}`);
+            }
+          }
+          columnValidated = true;
+        }
+
+        // Apply filter immediately
+        if (!predicates || predicates.length === 0 || this.matchesAllPredicates(row, predicates)) {
+          filteredRows.push(row);
+          // Early termination when we have enough rows
+          if (filteredRows.length >= earlyTerminateLimit) break;
+        }
+      }
+      memoryTracker.trackRows(filteredRows, 100);
+    } else {
+      // Standard path: read from partitions with streaming filter
+      for (const partition of partitions) {
+        checkAbortSignal(signal);
+        subrequestTracker.increment();
+
+        const partitionRows = await this.dataSource!.readPartition(partition);
+        rowsScanned += partitionRows.length;
+
+        // Stream through partition rows, filtering as we go
+        for (const row of partitionRows) {
+          // Column validation on first row
+          if (!columnValidated && predicates && predicates.length > 0) {
+            const schema = tableMetadata.schema;
+            for (const predicate of predicates) {
+              const isAggAlias = query.aggregations?.some((a) => a.alias === predicate.column);
+              if (isAggAlias) continue;
+              const columnExists =
+                (Object.keys(schema).length > 0 && schema[predicate.column]) ||
+                predicate.column in row ||
+                predicate.column.includes('.');
+              if (!columnExists) {
+                throw new Error(`Column not found: ${predicate.column}`);
+              }
+            }
+            columnValidated = true;
+          }
+
+          // Apply filter immediately - only keep matching rows in memory
+          if (!predicates || predicates.length === 0 || this.matchesAllPredicates(row, predicates)) {
+            filteredRows.push(row);
+            memoryTracker.add(estimateMemorySize(row));
+          }
+        }
+
+        // Early termination when we have enough rows (only for simple queries)
+        if (filteredRows.length >= earlyTerminateLimit) break;
+      }
     }
 
     checkAbortSignal(signal);
 
-    const rowsScanned = rows.length;
-    // rowsMatched captured later after filtering
+    // rowsScanned was tracked during partition loading above
     const ioTimeMs = Date.now() - ioStart;
 
     // Aggregations

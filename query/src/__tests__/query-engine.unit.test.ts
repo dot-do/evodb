@@ -893,16 +893,19 @@ describe('EvoDB Query Engine - Bloom Filter Optimization', () => {
       const config = createTestConfig();
       const engine = createQueryEngine(config);
 
+      // Use a user_id value that's within the zone map range (user-1 to user-100)
+      // so the partition isn't pruned by zone maps before bloom filter checks.
+      // Note: 'user-10' is alphabetically between 'user-1' and 'user-100'.
       const query: Query = {
         table: 'com/example/api/users',
         predicates: [
-          { column: 'user_id', operator: 'eq', value: 'specific-user-id' },
+          { column: 'user_id', operator: 'eq', value: 'user-10' },
         ],
       };
 
       const result = await engine.execute(query);
 
-      // Stats should show bloom filter was used
+      // Stats should show bloom filter was used (partition not pruned by zone map)
       expect(result.stats.bloomFilterChecks).toBeGreaterThan(0);
     });
   });

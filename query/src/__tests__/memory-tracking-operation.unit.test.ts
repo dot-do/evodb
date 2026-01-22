@@ -434,9 +434,13 @@ describe('QueryEngine operation memory tracking integration', () => {
       };
 
       const engine = createQueryEngine(config);
+      // Use ORDER BY to disable early termination optimization
+      // Early termination only loads the required number of rows, so limit operation
+      // wouldn't have different input/output counts
       const query: Query = {
         table: 'test_table',
         limit: 10,
+        orderBy: [{ column: 'id', direction: 'asc' }],
       };
 
       const result = await engine.execute(query);
