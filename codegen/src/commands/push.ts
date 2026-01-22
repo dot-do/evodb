@@ -85,7 +85,7 @@ function generateMigrations(schema: Schema): string[] {
 function validateSchema(schema: Schema): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
-  if (!schema.tables || typeof schema.tables !== 'object') {
+  if (!schema.tables || typeof schema.tables !== 'object' || Array.isArray(schema.tables)) {
     errors.push('Schema must have a "tables" object');
     return { valid: false, errors };
   }

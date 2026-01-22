@@ -1023,3 +1023,22 @@ export {
   type MemoryPressureSimulatorOptions,
   type ClockSkewSimulatorOptions,
 } from './chaos-testing.js';
+
+// =============================================================================
+// Dependency Injection Container (Issue evodb-43e4)
+// Lightweight DI for testing with easy mocking support
+// =============================================================================
+
+export {
+  // Container factory functions
+  createContainer,
+  createScope,
+  createTestContainer,
+  // Service keys
+  ServiceKeys,
+  // Types
+  type Container,
+  type ServiceKey,
+  type ServiceFactory,
+  type ServiceKeyValue,
+} from './di-container.js';

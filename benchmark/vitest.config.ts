@@ -30,10 +30,11 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: ['node_modules/', 'dist/', '**/*.test.ts', '**/__tests__/**'],
       thresholds: {
-        statements: 70,
-        branches: 65,
-        functions: 70,
-        lines: 70,
+        // Increased from 70/65/70/70 after gap resolution
+        statements: 75,
+        branches: 70,
+        functions: 75,
+        lines: 75,
       },
     },
   },

@@ -4,13 +4,29 @@
  * This module provides type definitions for distributed tracing.
  * The full implementation is available in @evodb/observability.
  *
- * @example
- * ```typescript
- * import type { Span, TracingContext } from '@evodb/core';
- * import { createTracingContext } from '@evodb/observability';
+ * DECOUPLING PATTERN:
+ * - Core exports only TYPE DEFINITIONS (interfaces, type aliases)
+ * - Implementations and constants are in @evodb/observability
+ * - This allows core to work without observability being installed
  *
- * const tracer: TracingContext = createTracingContext({ serviceName: 'my-service' });
- * const span: Span = tracer.startSpan('handle-request');
+ * For type-only usage (no runtime dependency on observability):
+ * ```typescript
+ * import type { Span, TracingContext, SpanKind, SpanStatusCodeType } from '@evodb/core';
+ *
+ * // Use literal values instead of constants:
+ * const span: Span = {
+ *   kind: 'server',    // instead of SpanKinds.SERVER
+ *   status: { code: 1 }, // instead of { code: SpanStatusCode.OK }
+ * };
+ * ```
+ *
+ * For full implementation with constants:
+ * ```typescript
+ * import { createTracingContext, SpanStatusCode, SpanKinds } from '@evodb/observability';
+ *
+ * const tracer = createTracingContext({ serviceName: 'my-service' });
+ * const span = tracer.startSpan('handle-request', { kind: SpanKinds.SERVER });
+ * tracer.endSpan(span, { code: SpanStatusCode.OK });
  * ```
  */
 
@@ -211,11 +227,21 @@ export interface OTELSpan {
 }
 
 // =============================================================================
-// Constants (exported as values for runtime use)
+// Constants (exported for backward compatibility)
 // =============================================================================
 
 /**
  * Span status code constants (follows OTEL conventions)
+ *
+ * NOTE: For minimal bundle size, prefer using literal values directly:
+ * - 0 for UNSET
+ * - 1 for OK
+ * - 2 for ERROR
+ *
+ * Or import from @evodb/observability for full implementation.
+ *
+ * @deprecated Import from @evodb/observability for new code.
+ * Core package exports these for backward compatibility only.
  */
 export const SpanStatusCode = {
   UNSET: 0 as const,
@@ -225,6 +251,14 @@ export const SpanStatusCode = {
 
 /**
  * Span kind constants
+ *
+ * NOTE: For minimal bundle size, prefer using literal values directly:
+ * - 'internal', 'server', 'client', 'producer', 'consumer'
+ *
+ * Or import from @evodb/observability for full implementation.
+ *
+ * @deprecated Import from @evodb/observability for new code.
+ * Core package exports these for backward compatibility only.
  */
 export const SpanKinds = {
   INTERNAL: 'internal' as const,

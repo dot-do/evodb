@@ -3,6 +3,39 @@
  *
  * Minimal interfaces for the Logger abstraction.
  * Full implementation available in @evodb/observability.
+ *
+ * DECOUPLING PATTERN:
+ * - Core exports only TYPE DEFINITIONS (interfaces, type aliases)
+ * - Implementations are in @evodb/observability
+ * - This allows core to work without observability being installed
+ *
+ * For type-only usage (no runtime dependency on observability):
+ * ```typescript
+ * import type { Logger, LogLevel, LogEntry } from '@evodb/core';
+ *
+ * // Accept logger interface but don't require @evodb/observability
+ * function processRequest(logger?: Logger): void {
+ *   if (logger) {
+ *     logger.info('Processing request');
+ *   }
+ * }
+ *
+ * // Create minimal noop logger inline
+ * const noopLogger: Logger = {
+ *   debug: () => {},
+ *   info: () => {},
+ *   warn: () => {},
+ *   error: () => {},
+ * };
+ * ```
+ *
+ * For full implementation:
+ * ```typescript
+ * import { createConsoleLogger, createTestLogger, withContext } from '@evodb/observability';
+ *
+ * const logger = createConsoleLogger({ format: 'json' });
+ * logger.info('Query executed', { table: 'users', rowsReturned: 42 });
+ * ```
  */
 
 /**

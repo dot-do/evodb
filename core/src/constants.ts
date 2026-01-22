@@ -354,6 +354,110 @@ export const QUERY_ROWS_COMPLEXITY_THRESHOLD = 100_000;
 export const QUERY_ROWS_LIMIT_THRESHOLD = 10_000;
 
 // =============================================================================
+// BACKPRESSURE CONSTANTS
+// =============================================================================
+
+/**
+ * Default maximum pressure level for backpressure controller (percentage scale).
+ * When pressure reaches this level, maximum backpressure is applied.
+ */
+export const BACKPRESSURE_MAX_PRESSURE = 100;
+
+/**
+ * Default high water mark for backpressure (percentage).
+ * Backpressure starts being applied when pressure exceeds this threshold.
+ */
+export const BACKPRESSURE_HIGH_WATER_MARK = 80;
+
+/**
+ * Default low water mark for backpressure (percentage).
+ * Backpressure is released when pressure falls below this threshold.
+ */
+export const BACKPRESSURE_LOW_WATER_MARK = 40;
+
+/**
+ * Entry count threshold for backpressure calculation.
+ * Used as denominator when calculating entry-based pressure.
+ * Default: 10,000 entries at 100% contributes full weight to pressure.
+ */
+export const BACKPRESSURE_ENTRY_THRESHOLD = 10_000;
+
+/**
+ * Weight of entry count in backpressure calculation (percentage points).
+ * Entry pressure contributes up to this amount to total pressure.
+ */
+export const BACKPRESSURE_ENTRY_WEIGHT = 50;
+
+/**
+ * Size threshold for backpressure calculation (4MB).
+ * Used as denominator when calculating size-based pressure.
+ */
+export const BACKPRESSURE_SIZE_THRESHOLD = BUFFER_SIZE_4MB;
+
+/**
+ * Weight of buffer size in backpressure calculation (percentage points).
+ * Size pressure contributes up to this amount to total pressure.
+ */
+export const BACKPRESSURE_SIZE_WEIGHT = 30;
+
+/**
+ * Pending block threshold for backpressure calculation.
+ * Used as denominator when calculating pending-block pressure.
+ */
+export const BACKPRESSURE_PENDING_THRESHOLD = 10;
+
+/**
+ * Weight of pending blocks in backpressure calculation (percentage points).
+ * Pending pressure contributes up to this amount to total pressure.
+ */
+export const BACKPRESSURE_PENDING_WEIGHT = 20;
+
+/**
+ * Minimum backpressure delay in milliseconds.
+ * Applied when backpressure first exceeds the high water mark.
+ */
+export const BACKPRESSURE_MIN_DELAY_MS = 10;
+
+/**
+ * Maximum backpressure delay in milliseconds.
+ * Applied when pressure is at maximum level.
+ */
+export const BACKPRESSURE_MAX_DELAY_MS = 1_000;
+
+// =============================================================================
+// ROW ESTIMATION CONSTANTS
+// =============================================================================
+
+/**
+ * Estimated bytes per row for row count estimation.
+ * Used when estimating row counts from file sizes when actual counts are unavailable.
+ * 100 bytes/row is a reasonable default for typical JSON-like columnar data.
+ */
+export const ESTIMATED_BYTES_PER_ROW = 100;
+
+/**
+ * Default row count for testing/mock scenarios.
+ * Used when actual row counts cannot be determined.
+ */
+export const DEFAULT_MOCK_ROW_COUNT = 100;
+
+/**
+ * Default partition size in bytes for testing/mock scenarios.
+ */
+export const DEFAULT_MOCK_PARTITION_SIZE = 10_000;
+
+// =============================================================================
+// PARTITION INDEX CONSTANTS
+// =============================================================================
+
+/**
+ * Minimum number of files before using partition index optimization.
+ * Below this threshold, linear scan is used instead of building an index.
+ * The overhead of building an index isn't worth it for small file sets.
+ */
+export const PARTITION_INDEX_THRESHOLD = 50;
+
+// =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
 

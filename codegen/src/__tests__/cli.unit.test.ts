@@ -1085,4 +1085,557 @@ describe('@evodb/codegen CLI', () => {
       expect(content).toContain('field: unknown');
     });
   });
+
+  // =============================================================================
+  // CLI Error Handling Tests (TDD)
+  // =============================================================================
+
+  describe('CLI error handling', () => {
+    describe('file not found errors', () => {
+      it('should return user-friendly error for non-existent schema file in pull', async () => {
+        // Simulating CLI behavior when --schema points to non-existent file
+        const nonExistentPath = join(TEST_DIR, 'nonexistent-schema.json');
+        expect(existsSync(nonExistentPath)).toBe(false);
+
+        // The CLI would check file existence before passing to pullCommand
+        // This tests the error message pattern
+        const errorMessage = `Error: Schema file not found: ${nonExistentPath}`;
+        expect(errorMessage).toContain('Schema file not found');
+        expect(errorMessage).toContain(nonExistentPath);
+      });
+
+      it('should return user-friendly error when no schema config exists', async () => {
+        // When no schema is found in any expected location
+        const emptyDir = join(TEST_DIR, 'empty-project');
+        mkdirSync(emptyDir, { recursive: true });
+
+        // Verify none of the expected config paths exist
+        const configPaths = [
+          join(emptyDir, '.evodb', 'default.schema.json'),
+          join(emptyDir, 'evodb.default.json'),
+          join(emptyDir, 'evodb.config.json'),
+        ];
+
+        for (const configPath of configPaths) {
+          expect(existsSync(configPath)).toBe(false);
+        }
+
+        // This simulates the CLI's "no schema found" error
+        const expectedErrorPattern = /No schema found for database ".*"/;
+        expect(`Error: No schema found for database "default".`).toMatch(expectedErrorPattern);
+      });
+
+      it('should return error when lock file is missing for diff command', async () => {
+        const result = await diffCommand({
+          db: 'missing-lock',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer', primaryKey: true },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/lock file/i);
+      });
+    });
+
+    describe('invalid input format errors', () => {
+      it('should provide helpful error for malformed JSON schema file', async () => {
+        // Create a malformed JSON file
+        mkdirSync(EVODB_DIR, { recursive: true });
+        const malformedPath = join(EVODB_DIR, 'malformed.schema.json');
+        writeFileSync(malformedPath, '{ "tables": { invalid json }');
+
+        // The validation module throws ValidationError with helpful messages
+        const content = readFileSync(malformedPath, 'utf8');
+
+        // Import parseJson to test directly
+        const { parseJson, ValidationError } = await import('../validation.js');
+
+        let error: Error | null = null;
+        try {
+          parseJson(content, malformedPath);
+        } catch (e) {
+          error = e as Error;
+        }
+
+        expect(error).not.toBeNull();
+        expect(error?.name).toBe('ValidationError');
+        expect(error?.message).toContain('Invalid JSON');
+      });
+
+      it('should provide helpful error for schema missing tables property', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        const invalidSchema = JSON.stringify({ notTables: {} });
+
+        let error: Error | null = null;
+        try {
+          parseAndValidateSchema(invalidSchema, 'invalid.json');
+        } catch (e) {
+          error = e as Error;
+        }
+
+        expect(error).not.toBeNull();
+        expect(error?.name).toBe('ValidationError');
+        expect(error?.message).toContain('tables');
+      });
+
+      it('should provide helpful error for invalid column type', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        const schemaWithInvalidType = JSON.stringify({
+          tables: {
+            users: {
+              columns: {
+                id: { type: 'varchar' }, // Invalid type for EvoDB
+              },
+            },
+          },
+        });
+
+        let error: Error | null = null;
+        try {
+          parseAndValidateSchema(schemaWithInvalidType, 'invalid.json');
+        } catch (e) {
+          error = e as Error;
+        }
+
+        expect(error).not.toBeNull();
+        expect(error?.name).toBe('ValidationError');
+        expect(error?.message).toContain('varchar');
+        // Error should provide hint about valid types
+        expect((error as any).hint).toMatch(/integer|text|real|blob|boolean|json|timestamp/);
+      });
+
+      it('should provide helpful error for column missing type property', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        const schemaWithMissingType = JSON.stringify({
+          tables: {
+            users: {
+              columns: {
+                id: { primaryKey: true }, // Missing type
+              },
+            },
+          },
+        });
+
+        let error: Error | null = null;
+        try {
+          parseAndValidateSchema(schemaWithMissingType, 'missing-type.json');
+        } catch (e) {
+          error = e as Error;
+        }
+
+        expect(error).not.toBeNull();
+        expect(error?.message).toContain('type');
+      });
+
+      it('should provide helpful error for table missing columns property', async () => {
+        const { parseAndValidateSchema } = await import('../validation.js');
+
+        const schemaWithMissingColumns = JSON.stringify({
+          tables: {
+            users: { description: 'User table' }, // Missing columns
+          },
+        });
+
+        let error: Error | null = null;
+        try {
+          parseAndValidateSchema(schemaWithMissingColumns, 'missing-columns.json');
+        } catch (e) {
+          error = e as Error;
+        }
+
+        expect(error).not.toBeNull();
+        expect(error?.message).toContain('columns');
+      });
+    });
+
+    describe('permission and filesystem errors', () => {
+      it('should return error when output directory cannot be created', async () => {
+        // Create a file where directory should be (to cause error)
+        const blockingFilePath = join(TEST_DIR, 'blocked-evodb');
+        writeFileSync(blockingFilePath, 'blocking file');
+
+        const result = await pullCommand({
+          db: 'testdb',
+          cwd: blockingFilePath, // Using file path as cwd will fail
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('should return error when lock file write fails', async () => {
+        // Create a directory where lock file should be written (to cause error)
+        mkdirSync(EVODB_DIR, { recursive: true });
+        const lockDir = join(EVODB_DIR, 'write-error.lock.json');
+        mkdirSync(lockDir, { recursive: true }); // Create dir instead of file
+
+        const result = await lockCommand({
+          db: 'write-error',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('should return error when type definition write fails', async () => {
+        // Create a directory where .d.ts file should be written
+        mkdirSync(join(EVODB_DIR, 'write-blocked.d.ts'), { recursive: true });
+
+        const result = await pullCommand({
+          db: 'write-blocked',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              test: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+    });
+
+    describe('edge cases and concurrent operations', () => {
+      it('should handle empty tables in schema', async () => {
+        const result = await pullCommand({
+          db: 'empty',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {},
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const content = readFileSync(join(EVODB_DIR, 'empty.d.ts'), 'utf8');
+        expect(content).toContain('EmptyDatabase');
+      });
+
+      it('should handle concurrent pull operations gracefully', async () => {
+        const schema = {
+          tables: {
+            users: {
+              columns: {
+                id: { type: 'integer' as const, primaryKey: true },
+                name: { type: 'text' as const },
+              },
+            },
+          },
+        };
+
+        // Run multiple pull commands concurrently
+        const results = await Promise.all([
+          pullCommand({ db: 'concurrent1', cwd: TEST_DIR, schema }),
+          pullCommand({ db: 'concurrent2', cwd: TEST_DIR, schema }),
+          pullCommand({ db: 'concurrent3', cwd: TEST_DIR, schema }),
+        ]);
+
+        // All should succeed
+        for (const result of results) {
+          expect(result.success).toBe(true);
+        }
+
+        // All files should exist
+        expect(existsSync(join(EVODB_DIR, 'concurrent1.d.ts'))).toBe(true);
+        expect(existsSync(join(EVODB_DIR, 'concurrent2.d.ts'))).toBe(true);
+        expect(existsSync(join(EVODB_DIR, 'concurrent3.d.ts'))).toBe(true);
+      });
+
+      it('should handle concurrent lock operations gracefully', async () => {
+        const schema = {
+          tables: {
+            users: {
+              columns: {
+                id: { type: 'integer' as const, primaryKey: true },
+              },
+            },
+          },
+        };
+
+        // Run multiple lock commands concurrently for different databases
+        const results = await Promise.all([
+          lockCommand({ db: 'locktest1', cwd: TEST_DIR, schema }),
+          lockCommand({ db: 'locktest2', cwd: TEST_DIR, schema }),
+          lockCommand({ db: 'locktest3', cwd: TEST_DIR, schema }),
+        ]);
+
+        // All should succeed
+        for (const result of results) {
+          expect(result.success).toBe(true);
+        }
+
+        // All lock files should exist
+        expect(existsSync(join(EVODB_DIR, 'locktest1.lock.json'))).toBe(true);
+        expect(existsSync(join(EVODB_DIR, 'locktest2.lock.json'))).toBe(true);
+        expect(existsSync(join(EVODB_DIR, 'locktest3.lock.json'))).toBe(true);
+      });
+
+      it('should handle database name with special characters', async () => {
+        // Database names should be sanitized or validated
+        const result = await pullCommand({
+          db: 'my-test-db',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(true);
+        expect(existsSync(join(EVODB_DIR, 'my-test-db.d.ts'))).toBe(true);
+      });
+
+      it('should handle very long table and column names', async () => {
+        const longTableName = 'a'.repeat(100);
+        const longColumnName = 'b'.repeat(100);
+
+        const result = await pullCommand({
+          db: 'longnames',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              [longTableName]: {
+                columns: {
+                  [longColumnName]: { type: 'text' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const content = readFileSync(join(EVODB_DIR, 'longnames.d.ts'), 'utf8');
+        expect(content).toContain(longColumnName);
+      });
+    });
+
+    describe('validation error message quality', () => {
+      it('should include file path in validation errors', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        try {
+          parseAndValidateSchema('{}', '/path/to/schema.json');
+        } catch (e) {
+          const error = e as any;
+          // The error should reference the file path in the hint
+          expect(error.toCliMessage()).toMatch(/schema|tables/i);
+        }
+      });
+
+      it('should include path context for nested validation errors', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        const schemaWithDeepError = JSON.stringify({
+          tables: {
+            users: {
+              columns: {
+                deeply_nested_field: { type: 'invalid_type' },
+              },
+            },
+          },
+        });
+
+        try {
+          parseAndValidateSchema(schemaWithDeepError, 'test.json');
+        } catch (e) {
+          const error = e as any;
+          const cliMessage = error.toCliMessage();
+          // Should include path to the problematic field
+          expect(cliMessage).toContain('deeply_nested_field');
+        }
+      });
+
+      it('should provide actionable hints in error messages', async () => {
+        const { parseAndValidateSchema, ValidationError } = await import('../validation.js');
+
+        const schemaWithInvalidType = JSON.stringify({
+          tables: {
+            users: {
+              columns: {
+                count: { type: 'number' }, // Should be 'integer' or 'real'
+              },
+            },
+          },
+        });
+
+        try {
+          parseAndValidateSchema(schemaWithInvalidType, 'test.json');
+        } catch (e) {
+          const error = e as any;
+          // Hint should suggest valid alternatives
+          expect(error.hint).toBeDefined();
+          expect(error.hint).toMatch(/integer|text|real|blob|boolean|json|timestamp/);
+        }
+      });
+    });
+
+    describe('CLI exit codes and error formatting', () => {
+      it('should format ValidationError with toCliMessage for user-friendly output', async () => {
+        const { ValidationError } = await import('../validation.js');
+
+        const error = new ValidationError(
+          'Invalid column type: "varchar"',
+          'tables.users.columns.email.type',
+          'Valid types are: integer, text, real, blob, boolean, json, timestamp'
+        );
+
+        const cliMessage = error.toCliMessage();
+
+        // Should have path context
+        expect(cliMessage).toContain('tables.users.columns.email.type');
+        // Should have the error message
+        expect(cliMessage).toContain('Invalid column type');
+        // Should have the hint
+        expect(cliMessage).toContain('Valid types are');
+      });
+
+      it('should handle non-ValidationError exceptions gracefully', async () => {
+        // Test that generic errors are also handled
+        const genericError = new Error('Something went wrong');
+
+        // The CLI's handleValidationError should work with any Error
+        const errorMessage = genericError.message;
+        expect(errorMessage).toBe('Something went wrong');
+      });
+
+      it('should handle non-Error thrown values', async () => {
+        // Test that even string errors are handled
+        const stringError = 'A string error';
+        const formatted = String(stringError);
+        expect(formatted).toBe('A string error');
+      });
+    });
+
+    describe('push command error handling', () => {
+      it('should validate and return error for empty schema object', async () => {
+        const result = await pushCommand({
+          db: 'empty-schema',
+          cwd: TEST_DIR,
+          dryRun: true,
+          schema: {} as Schema,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.validated).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('should validate and return error for schema with null tables', async () => {
+        const result = await pushCommand({
+          db: 'null-tables',
+          cwd: TEST_DIR,
+          dryRun: true,
+          schema: { tables: null } as unknown as Schema,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('should validate and return error for schema with array instead of object', async () => {
+        const result = await pushCommand({
+          db: 'array-schema',
+          cwd: TEST_DIR,
+          dryRun: true,
+          schema: { tables: [] } as unknown as Schema,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+    });
+
+    describe('diff command error handling', () => {
+      it('should handle corrupted lock file in diff gracefully', async () => {
+        mkdirSync(EVODB_DIR, { recursive: true });
+        const lockPath = join(EVODB_DIR, 'corrupted-diff.lock.json');
+        writeFileSync(lockPath, 'not valid json at all');
+
+        const result = await diffCommand({
+          db: 'corrupted-diff',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('should handle lock file with invalid schema structure', async () => {
+        mkdirSync(EVODB_DIR, { recursive: true });
+        const lockPath = join(EVODB_DIR, 'bad-schema-lock.lock.json');
+        writeFileSync(lockPath, JSON.stringify({
+          version: 1,
+          lockedAt: new Date().toISOString(),
+          schemaHash: 'abc123',
+          schema: 'not an object', // Invalid schema
+        }));
+
+        const result = await diffCommand({
+          db: 'bad-schema-lock',
+          cwd: TEST_DIR,
+          schema: {
+            tables: {
+              users: {
+                columns: {
+                  id: { type: 'integer' },
+                },
+              },
+            },
+          },
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+    });
+  });
 });

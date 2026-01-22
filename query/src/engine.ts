@@ -192,6 +192,9 @@ import {
   EvoDBError,
   ErrorCode,
   type FilterPredicate,
+  ESTIMATED_BYTES_PER_ROW,
+  DEFAULT_MOCK_ROW_COUNT,
+  DEFAULT_MOCK_PARTITION_SIZE,
 } from '@evodb/core';
 
 // =============================================================================
@@ -236,7 +239,7 @@ export class R2DataSource implements TableDataSource {
       path: obj.key,
       partitionValues: {},
       sizeBytes: obj.size,
-      rowCount: Math.floor(obj.size / 100),
+      rowCount: Math.floor(obj.size / ESTIMATED_BYTES_PER_ROW),
       zoneMap: { columns: {} },
       isCached: false,
     }));
@@ -2295,7 +2298,7 @@ export class QueryPlanner {
         path: obj.key,
         partitionValues: {},
         sizeBytes: obj.size,
-        rowCount: Math.floor(obj.size / 100), // Estimate 100 bytes per row
+        rowCount: Math.floor(obj.size / ESTIMATED_BYTES_PER_ROW),
         zoneMap: { columns: {} },
         isCached: false,
       }));
@@ -2305,8 +2308,8 @@ export class QueryPlanner {
     return [{
       path: `${prefix}default.bin`,
       partitionValues: {},
-      sizeBytes: 10000,
-      rowCount: 100,
+      sizeBytes: DEFAULT_MOCK_PARTITION_SIZE,
+      rowCount: DEFAULT_MOCK_ROW_COUNT,
       zoneMap: { columns: {} },
       isCached: false,
     }];

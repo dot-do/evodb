@@ -4,16 +4,31 @@
  * This module contains only the type definitions for the metrics framework.
  * The full implementation with Prometheus export is available in @evodb/observability.
  *
- * This allows packages that don't need metrics to avoid bundling the full
- * implementation (32KB), while still being able to type-check against the interfaces.
+ * DECOUPLING PATTERN:
+ * - Core exports only TYPE DEFINITIONS (interfaces, type aliases)
+ * - Implementations are in @evodb/observability
+ * - This allows core to work without observability being installed
+ * - Packages that don't need metrics avoid bundling the full implementation
  *
- * @example
+ * For type-only usage (no runtime dependency on observability):
  * ```typescript
- * // For type-only usage (no runtime overhead):
  * import type { MetricsRegistry, Counter, Gauge, Histogram } from '@evodb/core';
  *
- * // For full implementation with Prometheus export:
+ * // Accept metrics interfaces but don't create them
+ * function processRequest(metrics?: MetricsRegistry): void {
+ *   // Metrics are optional - works without @evodb/observability
+ * }
+ * ```
+ *
+ * For full implementation with Prometheus export:
+ * ```typescript
  * import { createMetricsRegistry, createCounter, formatPrometheus } from '@evodb/observability';
+ *
+ * const registry = createMetricsRegistry();
+ * const counter = createCounter(registry, { name: 'requests_total', help: 'Total requests' });
+ *
+ * // Export for /metrics endpoint
+ * const body = formatPrometheus(registry);
  * ```
  */
 

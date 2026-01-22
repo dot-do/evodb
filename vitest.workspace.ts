@@ -22,6 +22,7 @@ export default [
       name: 'unit',
       include: [
         'core/src/__tests__/**/*.unit.test.ts',
+        'config/src/__tests__/**/*.unit.test.ts',
         'reader/src/__tests__/**/*.unit.test.ts',
         'writer/src/__tests__/**/*.unit.test.ts',
         'rpc/src/__tests__/**/*.unit.test.ts',
@@ -44,6 +45,7 @@ export default [
       name: 'integration',
       include: [
         'core/src/__tests__/**/*.integration.test.ts',
+        'config/src/__tests__/**/*.integration.test.ts',
         'reader/src/__tests__/**/*.integration.test.ts',
         'writer/src/__tests__/**/*.integration.test.ts',
         'rpc/src/__tests__/**/*.integration.test.ts',

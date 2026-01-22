@@ -206,7 +206,31 @@ export {
   type OTELSpan,
   type OTELAttribute,
   type OTELEvent,
-  // Constants
+  // Constants (deprecated - import from @evodb/observability instead)
   SpanStatusCode,
   SpanKinds,
 } from './tracing-types.js';
+
+// =============================================================================
+// Observability Provider
+// Unified interface for optional observability injection
+// =============================================================================
+
+export {
+  type ObservabilityProvider,
+  createNoopLogger,
+  noopLogger,
+  getLoggerOrNoop,
+  hasLogger,
+  hasTracer,
+  hasMetrics,
+  getLogger,
+} from './observability-provider.js';
+
+// =============================================================================
+// Plugin Architecture
+// Extensible system for custom encodings, indexes, and storage adapters
+// Issue: evodb-w1m
+// =============================================================================
+
+export * from './plugins/index.js';

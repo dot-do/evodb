@@ -15,6 +15,8 @@ import type {
   QueryFilter,
 } from './types.js';
 
+import { PARTITION_INDEX_THRESHOLD } from '@evodb/core';
+
 // =============================================================================
 // Exhaustiveness Check Helper
 // =============================================================================
@@ -722,14 +724,69 @@ export function getPartitionRange(
 // =============================================================================
 
 /**
- * Partition index for efficient O(1) file lookups by partition value
- * Pre-builds indexes for fast repeated queries
+ * A pre-built index for efficient O(1) file lookups by partition value.
+ *
+ * The PartitionIndex builds hash maps for each partition column, enabling
+ * constant-time lookups by exact value or efficient range queries using
+ * binary search on sorted values.
+ *
+ * Use this class when:
+ * - You have many files (50+) and need to query them repeatedly
+ * - You need fast exact-match lookups by partition value
+ * - You need efficient range queries on numeric partition columns
+ *
+ * For small file sets (<50 files), use `pruneFiles()` directly as the
+ * overhead of building the index is not worthwhile.
+ *
+ * @example Basic usage
+ * ```typescript
+ * import { PartitionIndex, createPartitionIndex } from '@evodb/lakehouse';
+ *
+ * // Build index from manifest files
+ * const index = createPartitionIndex(manifestFiles);
+ *
+ * // O(1) lookup by exact partition value
+ * const files2024 = index.getByValue('year', 2024);
+ *
+ * // O(k) lookup for multiple values
+ * const recentFiles = index.getByValues('month', [11, 12]);
+ *
+ * // O(log n) range query with binary search
+ * const q1Files = index.getByRange('month', 1, 3);
+ * ```
+ *
+ * @example With QueryFilter
+ * ```typescript
+ * import { pruneFilesOptimized } from '@evodb/lakehouse';
+ *
+ * // Automatically uses index for large file sets
+ * const result = pruneFilesOptimized(manifestFiles, {
+ *   partitions: { year: { eq: 2024 }, month: { between: [1, 3] } },
+ *   columns: { status: { eq: 'active' } }
+ * });
+ * ```
  */
 export class PartitionIndex {
   private readonly partitionMaps: Map<string, Map<string | number | null, ManifestFile[]>>;
   private readonly sortedValues: Map<string, (string | number)[]>;
   private readonly files: ManifestFile[];
 
+  /**
+   * Create a new PartitionIndex from an array of manifest files.
+   *
+   * The constructor builds two data structures:
+   * 1. Hash maps for O(1) exact-value lookups
+   * 2. Sorted arrays for O(log n) range queries
+   *
+   * @param files - Array of ManifestFile objects to index
+   *
+   * @example
+   * ```typescript
+   * const index = new PartitionIndex(manifestFiles);
+   * // Or use the factory function:
+   * const index = createPartitionIndex(manifestFiles);
+   * ```
+   */
   constructor(files: ManifestFile[]) {
     this.files = files;
     this.partitionMaps = new Map();
@@ -777,14 +834,47 @@ export class PartitionIndex {
   }
 
   /**
-   * Get files matching exact partition value - O(1)
+   * Get files matching an exact partition value.
+   *
+   * Time Complexity: O(1) average case (hash map lookup)
+   *
+   * @param partitionName - The name of the partition column to filter on
+   * @param value - The exact value to match (can be string, number, or null)
+   * @returns Array of ManifestFile objects matching the partition value.
+   *          Returns empty array if no files match or partition doesn't exist.
+   *
+   * @example
+   * ```typescript
+   * // Get all files for year 2024
+   * const files = index.getByValue('year', 2024);
+   *
+   * // Get files with null partition value
+   * const nullFiles = index.getByValue('region', null);
+   * ```
    */
   getByValue(partitionName: string, value: string | number | null): ManifestFile[] {
     return this.partitionMaps.get(partitionName)?.get(value) ?? [];
   }
 
   /**
-   * Get files matching any of the given values - O(k) where k is number of values
+   * Get files matching any of the given partition values (IN clause semantics).
+   *
+   * Time Complexity: O(k) where k is the number of values in the input array.
+   * Each value lookup is O(1), and results are deduplicated using a Set.
+   *
+   * @param partitionName - The name of the partition column to filter on
+   * @param values - Array of values to match against (OR semantics)
+   * @returns Array of unique ManifestFile objects matching any of the values.
+   *          Files are deduplicated by path to avoid duplicates.
+   *
+   * @example
+   * ```typescript
+   * // Get files for Q4 months (IN clause)
+   * const q4Files = index.getByValues('month', [10, 11, 12]);
+   *
+   * // Get files for specific regions
+   * const files = index.getByValues('region', ['us-east', 'us-west']);
+   * ```
    */
   getByValues(partitionName: string, values: (string | number | null)[]): ManifestFile[] {
     const valueMap = this.partitionMaps.get(partitionName);
@@ -809,7 +899,33 @@ export class PartitionIndex {
   }
 
   /**
-   * Get files in range - uses binary search for efficiency
+   * Get files within a numeric range using binary search.
+   *
+   * Time Complexity: O(log n + m) where n is the number of unique partition values
+   * and m is the number of matching files. Binary search finds the range bounds
+   * in O(log n), then collects matching files in O(m).
+   *
+   * @param partitionName - The name of the partition column to filter on
+   * @param min - Minimum value (inclusive/exclusive based on `inclusive` param).
+   *              Pass null for no lower bound.
+   * @param max - Maximum value (inclusive/exclusive based on `inclusive` param).
+   *              Pass null for no upper bound.
+   * @param inclusive - If true (default), range includes min and max values.
+   *                    If false, range excludes min and max values.
+   * @returns Array of unique ManifestFile objects within the range.
+   *          Files are deduplicated by path.
+   *
+   * @example
+   * ```typescript
+   * // Get files for months 1-6 (inclusive)
+   * const h1Files = index.getByRange('month', 1, 6);
+   *
+   * // Get files for year >= 2020
+   * const recentFiles = index.getByRange('year', 2020, null);
+   *
+   * // Get files for month < 6 (exclusive upper bound)
+   * const earlyMonths = index.getByRange('month', null, 6, false);
+   * ```
    */
   getByRange(
     partitionName: string,
@@ -855,7 +971,16 @@ export class PartitionIndex {
   }
 
   /**
-   * Binary search for lower bound
+   * Binary search for the lower bound index in a sorted array.
+   *
+   * Finds the smallest index where the value is >= target (inclusive)
+   * or > target (exclusive).
+   *
+   * @param arr - Sorted array of partition values
+   * @param target - Target value to search for
+   * @param inclusive - If true, find index of first value >= target.
+   *                    If false, find index of first value > target.
+   * @returns Index of the lower bound (0 to arr.length)
    */
   private binarySearchLowerBound(
     arr: (string | number)[],
@@ -880,7 +1005,16 @@ export class PartitionIndex {
   }
 
   /**
-   * Binary search for upper bound
+   * Binary search for the upper bound index in a sorted array.
+   *
+   * Finds the largest index where the value is <= target (inclusive)
+   * or < target (exclusive).
+   *
+   * @param arr - Sorted array of partition values
+   * @param target - Target value to search for
+   * @param inclusive - If true, find index of last value <= target.
+   *                    If false, find index of last value < target.
+   * @returns Index of the upper bound (-1 to arr.length - 1)
    */
   private binarySearchUpperBound(
     arr: (string | number)[],
@@ -905,7 +1039,24 @@ export class PartitionIndex {
   }
 
   /**
-   * Get all unique values for a partition
+   * Get all unique values for a partition column.
+   *
+   * Useful for discovering the cardinality and distribution of partition values.
+   *
+   * @param partitionName - The name of the partition column
+   * @returns Array of all unique partition values (including null if present).
+   *          Returns empty array if the partition doesn't exist.
+   *
+   * @example
+   * ```typescript
+   * // Get all years in the dataset
+   * const years = index.getUniqueValues('year');
+   * console.log(years); // [2022, 2023, 2024]
+   *
+   * // Get all regions
+   * const regions = index.getUniqueValues('region');
+   * console.log(regions); // ['us-east', 'us-west', 'eu-west', null]
+   * ```
    */
   getUniqueValues(partitionName: string): (string | number | null)[] {
     const valueMap = this.partitionMaps.get(partitionName);
@@ -913,7 +1064,17 @@ export class PartitionIndex {
   }
 
   /**
-   * Get all files
+   * Get all files in the index.
+   *
+   * Returns the original array of files passed to the constructor.
+   *
+   * @returns Array of all ManifestFile objects in the index
+   *
+   * @example
+   * ```typescript
+   * const allFiles = index.getAllFiles();
+   * console.log(`Index contains ${allFiles.length} files`);
+   * ```
    */
   getAllFiles(): ManifestFile[] {
     return this.files;
@@ -921,7 +1082,21 @@ export class PartitionIndex {
 }
 
 /**
- * Create a partition index from files
+ * Factory function to create a PartitionIndex from manifest files.
+ *
+ * This is the recommended way to create a PartitionIndex as it provides
+ * a more functional API and makes the code intention clearer.
+ *
+ * @param files - Array of ManifestFile objects to index
+ * @returns A new PartitionIndex instance
+ *
+ * @example
+ * ```typescript
+ * import { createPartitionIndex } from '@evodb/lakehouse';
+ *
+ * const index = createPartitionIndex(manifestFiles);
+ * const files2024 = index.getByValue('year', 2024);
+ * ```
  */
 export function createPartitionIndex(files: ManifestFile[]): PartitionIndex {
   return new PartitionIndex(files);
@@ -932,19 +1107,63 @@ export function createPartitionIndex(files: ManifestFile[]): PartitionIndex {
 // =============================================================================
 
 /**
- * Optimized pruning using partition index for large file sets.
- * Falls back to linear scan for small sets.
+ * Optimized file pruning that automatically uses a partition index for large file sets.
+ *
+ * This function provides the best of both worlds:
+ * - For small file sets (<threshold), uses linear scan (lower overhead)
+ * - For large file sets (>=threshold), builds a partition index for O(1) lookups
+ *
+ * The function applies two phases of pruning:
+ * 1. Partition pruning: Uses index for O(1) lookups on exact matches, O(log n) for ranges
+ * 2. Column stats pruning: Linear scan on the reduced set using zone map statistics
  *
  * Edge cases handled:
  * - Null/undefined files: returns empty array
  * - Null/undefined filter: returns all files
  * - Very large partition counts: index provides O(1) lookup vs O(n) scan
  * - Single partition: index still works correctly
+ *
+ * @param files - Array of ManifestFile objects to filter
+ * @param filter - QueryFilter containing partition and column filters
+ * @param indexThreshold - Minimum file count to trigger index creation (default: 50).
+ *                         Below this threshold, linear scan is used.
+ * @returns Array of ManifestFile objects that match all filter criteria
+ *
+ * @example Basic usage
+ * ```typescript
+ * import { pruneFilesOptimized } from '@evodb/lakehouse';
+ *
+ * // Filter files for Q1 2024 with active status
+ * const filtered = pruneFilesOptimized(manifestFiles, {
+ *   partitions: {
+ *     year: { eq: 2024 },
+ *     month: { between: [1, 3] }
+ *   },
+ *   columns: {
+ *     status: { eq: 'active' }
+ *   }
+ * });
+ * ```
+ *
+ * @example Custom threshold for very large datasets
+ * ```typescript
+ * // Use index even for smaller file sets in hot paths
+ * const filtered = pruneFilesOptimized(manifestFiles, filter, 20);
+ * ```
+ *
+ * @example Performance comparison
+ * ```typescript
+ * // For 10,000 files with partition on year:
+ * // - pruneFiles(): O(10,000) - scans all files
+ * // - pruneFilesOptimized(): O(1) lookup + index build time
+ * //
+ * // For repeated queries, the index amortizes its build cost
+ * ```
  */
 export function pruneFilesOptimized(
   files: ManifestFile[],
   filter: QueryFilter,
-  indexThreshold = 50,
+  indexThreshold = PARTITION_INDEX_THRESHOLD,
 ): ManifestFile[] {
   // Handle null/undefined files
   if (!files || files.length === 0) return [];

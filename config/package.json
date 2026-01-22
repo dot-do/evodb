@@ -1,0 +1,47 @@
+{
+  "name": "@evodb/config",
+  "version": "0.1.0-rc.1",
+  "description": "Unified configuration schema for EvoDB - consistent naming, validation, and environment support",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "config",
+    "configuration",
+    "schema",
+    "validation",
+    "environment"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "config"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@evodb/test-utils": "workspace:*",
+    "typescript": "^5.3.0",
+    "vitest": "^2.1.0"
+  },
+  "sideEffects": false
+}

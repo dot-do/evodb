@@ -8,7 +8,22 @@
  */
 
 import type { WalEntry } from '@evodb/core';
-import { EvoDBError, ErrorCode, captureStackTrace } from '@evodb/core';
+import {
+  EvoDBError,
+  ErrorCode,
+  captureStackTrace,
+  BACKPRESSURE_MAX_PRESSURE,
+  BACKPRESSURE_HIGH_WATER_MARK,
+  BACKPRESSURE_LOW_WATER_MARK,
+  BACKPRESSURE_ENTRY_THRESHOLD,
+  BACKPRESSURE_ENTRY_WEIGHT,
+  BACKPRESSURE_SIZE_THRESHOLD,
+  BACKPRESSURE_SIZE_WEIGHT,
+  BACKPRESSURE_PENDING_THRESHOLD,
+  BACKPRESSURE_PENDING_WEIGHT,
+  BACKPRESSURE_MIN_DELAY_MS,
+  BACKPRESSURE_MAX_DELAY_MS,
+} from '@evodb/core';
 import type { BufferState, BufferStats, ResolvedWriterOptions } from './types.js';
 
 /**
@@ -638,8 +653,67 @@ export class MultiTableBuffer {
 }
 
 /**
- * Backpressure controller
- * Signals when to slow down CDC ingestion
+ * Backpressure controller for CDC ingestion rate limiting.
+ *
+ * This controller uses a pressure-based algorithm with hysteresis to prevent
+ * oscillation when the system is near capacity. It combines three weighted factors
+ * (defined in @evodb/core constants):
+ *
+ * 1. **Entry count** (BACKPRESSURE_ENTRY_WEIGHT=50%): Number of buffered CDC entries.
+ *    Reaches 50% pressure at BACKPRESSURE_ENTRY_THRESHOLD entries.
+ *
+ * 2. **Buffer size** (BACKPRESSURE_SIZE_WEIGHT=30%): Total memory used by buffered data.
+ *    Reaches 30% pressure at BACKPRESSURE_SIZE_THRESHOLD bytes (4MB).
+ *
+ * 3. **Pending blocks** (BACKPRESSURE_PENDING_WEIGHT=20%): Blocks waiting to be written.
+ *    Reaches 20% pressure at BACKPRESSURE_PENDING_THRESHOLD pending blocks.
+ *
+ * The controller uses high/low water marks to create a "deadband" that prevents
+ * rapid on/off cycling of backpressure:
+ * - Backpressure is **applied** when pressure >= highWaterMark (default: 80)
+ * - Backpressure is **released** when pressure <= lowWaterMark (default: 40)
+ *
+ * @example Basic usage
+ * ```typescript
+ * import { BackpressureController } from '@evodb/writer';
+ *
+ * const controller = new BackpressureController();
+ *
+ * // Update pressure based on current state
+ * controller.update(bufferStats, pendingBlockCount);
+ *
+ * // Check if backpressure should be applied
+ * if (controller.shouldApplyBackpressure()) {
+ *   // Delay CDC ingestion
+ *   const delay = controller.getSuggestedDelay();
+ *   await new Promise(resolve => setTimeout(resolve, delay));
+ * }
+ * ```
+ *
+ * @example Custom thresholds for high-throughput scenarios
+ * ```typescript
+ * const controller = new BackpressureController({
+ *   maxPressure: 100,
+ *   highWaterMark: 90,  // Apply backpressure later (more aggressive)
+ *   lowWaterMark: 50,   // Release backpressure earlier
+ * });
+ * ```
+ *
+ * @example Integration with CDC buffer
+ * ```typescript
+ * async function ingestCDC(buffer: CDCBuffer, entries: WalEntry[]) {
+ *   const bufferStats = buffer.getStats();
+ *   controller.update(bufferStats, pendingWrites.length);
+ *
+ *   if (controller.shouldApplyBackpressure()) {
+ *     const delay = controller.getSuggestedDelay();
+ *     console.log(`Backpressure: ${controller.getPressure()}%, delaying ${delay}ms`);
+ *     await new Promise(r => setTimeout(r, delay));
+ *   }
+ *
+ *   buffer.add(sourceId, entries);
+ * }
+ * ```
  */
 export class BackpressureController {
   private currentPressure = 0;
@@ -647,47 +721,146 @@ export class BackpressureController {
   private readonly highWaterMark: number;
   private readonly lowWaterMark: number;
 
+  /**
+   * Create a new BackpressureController with optional custom thresholds.
+   *
+   * @param options - Configuration options
+   * @param options.maxPressure - Maximum pressure value (default: BACKPRESSURE_MAX_PRESSURE = 100)
+   * @param options.highWaterMark - Pressure level at which backpressure is applied
+   *                                (default: BACKPRESSURE_HIGH_WATER_MARK = 80)
+   * @param options.lowWaterMark - Pressure level at which backpressure is released
+   *                               (default: BACKPRESSURE_LOW_WATER_MARK = 40)
+   *
+   * @example
+   * ```typescript
+   * // Default configuration
+   * const controller = new BackpressureController();
+   *
+   * // Custom thresholds for aggressive backpressure
+   * const aggressiveController = new BackpressureController({
+   *   maxPressure: 100,
+   *   highWaterMark: 60,  // Apply backpressure earlier
+   *   lowWaterMark: 30,
+   * });
+   * ```
+   */
   constructor(options?: { maxPressure?: number; highWaterMark?: number; lowWaterMark?: number }) {
-    this.maxPressure = options?.maxPressure ?? 100;
-    this.highWaterMark = options?.highWaterMark ?? 80;
-    this.lowWaterMark = options?.lowWaterMark ?? 40;
+    this.maxPressure = options?.maxPressure ?? BACKPRESSURE_MAX_PRESSURE;
+    this.highWaterMark = options?.highWaterMark ?? BACKPRESSURE_HIGH_WATER_MARK;
+    this.lowWaterMark = options?.lowWaterMark ?? BACKPRESSURE_LOW_WATER_MARK;
   }
 
   /**
-   * Update pressure based on buffer state
+   * Update pressure based on current buffer state and pending operations.
+   *
+   * Pressure is calculated from three weighted factors (constants from @evodb/core):
+   * - Entry count: contributes BACKPRESSURE_ENTRY_WEIGHT (50%) when at BACKPRESSURE_ENTRY_THRESHOLD
+   * - Buffer size: contributes BACKPRESSURE_SIZE_WEIGHT (30%) when at BACKPRESSURE_SIZE_THRESHOLD (4MB)
+   * - Pending blocks: contributes BACKPRESSURE_PENDING_WEIGHT (20%) when at BACKPRESSURE_PENDING_THRESHOLD
+   *
+   * The total pressure is capped at maxPressure (default: 100).
+   *
+   * @param stats - Current buffer statistics from CDCBuffer.getStats()
+   * @param pendingBlockCount - Number of blocks currently waiting to be written to R2
+   *
+   * @example
+   * ```typescript
+   * const stats = buffer.getStats();
+   * const pendingBlocks = writeQueue.length;
+   * controller.update(stats, pendingBlocks);
+   * console.log(`Current pressure: ${controller.getPressure()}%`);
+   * ```
    */
   update(stats: BufferStats, pendingBlockCount: number): void {
-    // Calculate pressure from multiple factors
-    const entryPressure = (stats.entryCount / 10000) * 50;  // 50% weight
-    const sizePressure = (stats.estimatedSize / (4 * 1024 * 1024)) * 30;  // 30% weight
-    const pendingPressure = (pendingBlockCount / 10) * 20;  // 20% weight
+    // Calculate pressure from multiple factors using named constants
+    const entryPressure = (stats.entryCount / BACKPRESSURE_ENTRY_THRESHOLD) * BACKPRESSURE_ENTRY_WEIGHT;
+    const sizePressure = (stats.estimatedSize / BACKPRESSURE_SIZE_THRESHOLD) * BACKPRESSURE_SIZE_WEIGHT;
+    const pendingPressure = (pendingBlockCount / BACKPRESSURE_PENDING_THRESHOLD) * BACKPRESSURE_PENDING_WEIGHT;
 
     this.currentPressure = Math.min(this.maxPressure, entryPressure + sizePressure + pendingPressure);
   }
 
   /**
-   * Check if backpressure should be applied
+   * Check if backpressure should be applied.
+   *
+   * Returns true when current pressure >= highWaterMark (default: 80).
+   * Use this to decide whether to delay CDC ingestion.
+   *
+   * @returns true if backpressure should be applied, false otherwise
+   *
+   * @example
+   * ```typescript
+   * if (controller.shouldApplyBackpressure()) {
+   *   await delay(controller.getSuggestedDelay());
+   * }
+   * ```
    */
   shouldApplyBackpressure(): boolean {
     return this.currentPressure >= this.highWaterMark;
   }
 
   /**
-   * Check if backpressure can be released
+   * Check if backpressure can be released.
+   *
+   * Returns true when current pressure <= lowWaterMark (default: 40).
+   * Use this to determine when to resume normal ingestion rate.
+   *
+   * The gap between highWaterMark and lowWaterMark creates hysteresis
+   * that prevents rapid on/off cycling of backpressure.
+   *
+   * @returns true if backpressure can be safely released, false otherwise
+   *
+   * @example
+   * ```typescript
+   * // In a background health check loop
+   * if (isBackpressureActive && controller.canReleaseBackpressure()) {
+   *   isBackpressureActive = false;
+   *   console.log('Backpressure released, resuming normal ingestion');
+   * }
+   * ```
    */
   canReleaseBackpressure(): boolean {
     return this.currentPressure <= this.lowWaterMark;
   }
 
   /**
-   * Get current pressure level (0-100)
+   * Get current pressure level.
+   *
+   * @returns Current pressure as a number from 0 to maxPressure (default: 0-100)
+   *
+   * @example
+   * ```typescript
+   * const pressure = controller.getPressure();
+   * metrics.gauge('cdc.backpressure.pressure', pressure);
+   * ```
    */
   getPressure(): number {
     return this.currentPressure;
   }
 
   /**
-   * Get suggested delay for backpressure (ms)
+   * Get suggested delay for backpressure in milliseconds.
+   *
+   * Returns 0 if backpressure is not active. Otherwise, returns a delay
+   * that scales linearly from BACKPRESSURE_MIN_DELAY_MS (10ms) to
+   * BACKPRESSURE_MAX_DELAY_MS (1000ms) based on how far pressure exceeds
+   * the high water mark.
+   *
+   * The delay formula is:
+   * ```
+   * delay = minDelay + (maxDelay - minDelay) * (pressure - highWaterMark) / (maxPressure - highWaterMark)
+   * ```
+   *
+   * @returns Suggested delay in milliseconds (0 if no backpressure needed)
+   *
+   * @example
+   * ```typescript
+   * if (controller.shouldApplyBackpressure()) {
+   *   const delay = controller.getSuggestedDelay();
+   *   console.log(`Applying backpressure: delaying ${delay}ms`);
+   *   await new Promise(resolve => setTimeout(resolve, delay));
+   * }
+   * ```
    */
   getSuggestedDelay(): number {
     if (!this.shouldApplyBackpressure()) return 0;
@@ -697,12 +870,23 @@ export class BackpressureController {
     const maxExcess = this.maxPressure - this.highWaterMark;
     const ratio = excess / maxExcess;
 
-    // 10ms to 1000ms based on pressure
-    return Math.floor(10 + (990 * ratio));
+    // Scale delay from min to max based on pressure ratio
+    const delayRange = BACKPRESSURE_MAX_DELAY_MS - BACKPRESSURE_MIN_DELAY_MS;
+    return Math.floor(BACKPRESSURE_MIN_DELAY_MS + (delayRange * ratio));
   }
 
   /**
-   * Reset pressure to zero
+   * Reset pressure to zero.
+   *
+   * Call this after a successful flush or when restarting the system.
+   *
+   * @example
+   * ```typescript
+   * // After successful flush to R2
+   * await flushToR2(buffer);
+   * controller.reset();
+   * console.log('Buffer flushed, pressure reset');
+   * ```
    */
   reset(): void {
     this.currentPressure = 0;
@@ -710,13 +894,61 @@ export class BackpressureController {
 }
 
 /**
- * Size-based buffer that flushes at specific size thresholds
- * Useful for partition mode configurations
+ * Size-based buffer that flushes at specific size thresholds.
+ *
+ * Unlike CDCBuffer which uses entry count and time-based thresholds,
+ * SizeBasedBuffer focuses purely on byte size, making it ideal for:
+ * - Partition mode configurations with specific block size requirements
+ * - Ensuring consistent block sizes for optimal query performance
+ * - Memory-constrained environments with strict limits
+ *
+ * The buffer has two thresholds:
+ * - **targetSize**: When reached, `add()` returns true to signal a flush is recommended
+ * - **maxSize**: Hard limit checked via `isAtMaxCapacity()` to prevent overflow
+ *
+ * @example Basic usage
+ * ```typescript
+ * import { SizeBasedBuffer } from '@evodb/writer';
+ *
+ * // Create buffer with 1MB target, 2MB max
+ * const buffer = new SizeBasedBuffer(1 * 1024 * 1024, 2 * 1024 * 1024);
+ *
+ * // Add entries and check if flush is needed
+ * const shouldFlush = buffer.add(entries);
+ * if (shouldFlush) {
+ *   const toFlush = buffer.drain();
+ *   await writeBlock(toFlush);
+ * }
+ * ```
+ *
+ * @example With partition modes
+ * ```typescript
+ * // DO-SQLite mode: 2MB blocks
+ * const doBuffer = new SizeBasedBuffer(2 * 1024 * 1024, 4 * 1024 * 1024);
+ *
+ * // Standard mode: 500MB blocks
+ * const stdBuffer = new SizeBasedBuffer(500 * 1024 * 1024, 600 * 1024 * 1024);
+ *
+ * // Enterprise mode: 5GB blocks
+ * const entBuffer = new SizeBasedBuffer(5 * 1024 * 1024 * 1024, 6 * 1024 * 1024 * 1024);
+ * ```
  */
 export class SizeBasedBuffer {
   private entries: WalEntry[] = [];
   private currentSize = 0;
 
+  /**
+   * Create a new SizeBasedBuffer with target and max size thresholds.
+   *
+   * @param targetSize - Size in bytes at which `add()` returns true to signal flush
+   * @param maxSize - Hard limit in bytes checked via `isAtMaxCapacity()`
+   *
+   * @example
+   * ```typescript
+   * // 1MB target, 2MB max
+   * const buffer = new SizeBasedBuffer(1_048_576, 2_097_152);
+   * ```
+   */
   constructor(
     private readonly targetSize: number,
     private readonly maxSize: number

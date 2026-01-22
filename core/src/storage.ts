@@ -161,10 +161,56 @@ export type {
 import type { R2BucketLike } from './types/r2.js';
 
 /**
- * R2 storage adapter implementation
- * Wraps an R2Bucket binding to implement ObjectStorageAdapter
+ * R2 storage adapter implementation.
+ *
+ * Wraps a Cloudflare R2 bucket binding to implement the ObjectStorageAdapter interface.
+ * This adapter handles key prefixing, path validation, and pagination for list operations.
+ *
+ * @deprecated Use R2StorageProvider from @evodb/core/storage instead for new code.
+ *
+ * @example Basic usage in a Cloudflare Worker
+ * ```typescript
+ * import { R2ObjectStorageAdapter } from '@evodb/core';
+ *
+ * export default {
+ *   async fetch(request: Request, env: Env) {
+ *     const adapter = new R2ObjectStorageAdapter(env.MY_BUCKET);
+ *
+ *     // Write data
+ *     await adapter.put('data/file.bin', new Uint8Array([1, 2, 3]));
+ *
+ *     // Read data
+ *     const data = await adapter.get('data/file.bin');
+ *   }
+ * };
+ * ```
+ *
+ * @example With key prefix for multi-tenancy
+ * ```typescript
+ * // All operations will be prefixed with "tenant-123/"
+ * const adapter = new R2ObjectStorageAdapter(env.MY_BUCKET, 'tenant-123');
+ *
+ * // Actually writes to "tenant-123/data.bin"
+ * await adapter.put('data.bin', data);
+ * ```
  */
 export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
+  /**
+   * Create a new R2ObjectStorageAdapter.
+   *
+   * @param bucket - R2Bucket binding or R2BucketLike interface
+   * @param keyPrefix - Optional prefix to prepend to all keys (for multi-tenancy)
+   * @throws ValidationError if keyPrefix contains path traversal patterns
+   *
+   * @example
+   * ```typescript
+   * // Without prefix
+   * const adapter = new R2ObjectStorageAdapter(env.MY_BUCKET);
+   *
+   * // With prefix for isolation
+   * const tenantAdapter = new R2ObjectStorageAdapter(env.MY_BUCKET, 'tenant-123');
+   * ```
+   */
   constructor(private bucket: R2BucketLike, private keyPrefix: string = '') {
     // Validate keyPrefix to prevent path traversal attacks
     validateKeyPrefix(keyPrefix);
@@ -244,8 +290,51 @@ export class R2ObjectStorageAdapter implements ObjectStorageAdapter {
 // =============================================================================
 
 /**
- * In-memory storage adapter for testing
- * Implements the same interface as R2ObjectStorageAdapter but stores data in memory
+ * In-memory storage adapter for testing.
+ *
+ * Implements the ObjectStorageAdapter interface with in-memory storage,
+ * making it ideal for unit tests that don't need real R2 access.
+ *
+ * Features:
+ * - Full ObjectStorageAdapter interface support
+ * - ETag generation for cache validation testing
+ * - Range read support via getRange()
+ * - Utility methods: clear(), size, keys()
+ *
+ * @deprecated Use InMemoryStorageProvider from @evodb/core/storage instead for new code.
+ *
+ * @example Unit testing
+ * ```typescript
+ * import { MemoryObjectStorageAdapter } from '@evodb/core';
+ *
+ * describe('MyService', () => {
+ *   let adapter: MemoryObjectStorageAdapter;
+ *
+ *   beforeEach(() => {
+ *     adapter = new MemoryObjectStorageAdapter();
+ *   });
+ *
+ *   afterEach(() => {
+ *     adapter.clear();
+ *   });
+ *
+ *   it('should store data', async () => {
+ *     await adapter.put('test.bin', new Uint8Array([1, 2, 3]));
+ *     const data = await adapter.get('test.bin');
+ *     expect(data).toEqual(new Uint8Array([1, 2, 3]));
+ *   });
+ * });
+ * ```
+ *
+ * @example Inspecting stored data
+ * ```typescript
+ * const adapter = new MemoryObjectStorageAdapter();
+ * await adapter.put('a.bin', new Uint8Array([1]));
+ * await adapter.put('b.bin', new Uint8Array([2]));
+ *
+ * console.log(adapter.size);  // 2
+ * console.log(adapter.keys()); // ['a.bin', 'b.bin']
+ * ```
  */
 export class MemoryObjectStorageAdapter implements ObjectStorageAdapter {
   private storage = new Map<string, { data: Uint8Array; metadata: ObjectMetadata }>();
@@ -670,12 +759,34 @@ const VALID_TABLE_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
  * Validate a table name to prevent SQL injection.
+ *
  * Table names must:
  * - Start with a letter or underscore
  * - Contain only alphanumeric characters and underscores
  * - Not be empty
  *
+ * This is critical for security when interpolating table names into SQL queries,
+ * as parameterized queries cannot be used for identifiers (table/column names).
+ *
+ * @param tableName - The table name to validate
  * @throws ValidationError if table name is invalid
+ *
+ * @example
+ * ```typescript
+ * import { validateTableName } from '@evodb/core';
+ *
+ * // Valid table names
+ * validateTableName('users');           // OK
+ * validateTableName('order_items');     // OK
+ * validateTableName('_temp_data');      // OK
+ * validateTableName('Table123');        // OK
+ *
+ * // Invalid table names (will throw)
+ * validateTableName('');                // Empty
+ * validateTableName('user-data');       // Contains hyphen
+ * validateTableName('123table');        // Starts with number
+ * validateTableName('users; DROP');     // SQL injection attempt
+ * ```
  */
 export function validateTableName(tableName: string): void {
   if (!tableName || !VALID_TABLE_NAME_REGEX.test(tableName)) {
@@ -690,11 +801,29 @@ export function validateTableName(tableName: string): void {
 
 /**
  * Quote a SQL identifier using double quotes (SQL standard).
+ *
  * This provides defense in depth when combined with validation.
  * Any embedded double quotes are escaped by doubling them.
  *
+ * **Security Note**: Always use validateTableName() FIRST, then quoteIdentifier().
+ * Quoting alone is not sufficient - validation ensures the identifier follows
+ * expected patterns, while quoting provides an additional layer of protection.
+ *
  * @param identifier - The identifier to quote (table name, column name, etc.)
  * @returns The quoted identifier safe for SQL interpolation
+ *
+ * @example
+ * ```typescript
+ * import { validateTableName, quoteIdentifier } from '@evodb/core';
+ *
+ * const tableName = 'user_data';
+ * validateTableName(tableName);  // First: validate
+ * const quoted = quoteIdentifier(tableName);  // Then: quote
+ * console.log(quoted);  // "user_data"
+ *
+ * // Use in SQL
+ * const sql = `SELECT * FROM ${quoted} WHERE id = ?`;
+ * ```
  */
 export function quoteIdentifier(identifier: string): string {
   // Escape any embedded double quotes by doubling them
@@ -911,7 +1040,47 @@ export function validateRangeBounds(dataLength: number, offset: number, length: 
   return start;
 }
 
-/** Create DO SQLite storage adapter */
+/**
+ * Create a Durable Object SQLite storage adapter.
+ *
+ * This adapter stores blocks in a SQLite table within a Durable Object,
+ * providing durable, transactional storage for block data.
+ *
+ * The adapter creates the table if it doesn't exist with schema:
+ * - id: TEXT PRIMARY KEY (block ID)
+ * - data: BLOB (block data)
+ * - created_at: INTEGER (unix timestamp)
+ *
+ * @param sql - Durable Object SQL storage interface (from `this.ctx.storage.sql`)
+ * @param tableName - Name of the table to use (default: 'blocks'). Must pass validation.
+ * @returns A StorageAdapter for reading/writing blocks
+ * @throws ValidationError if tableName is invalid (SQL injection prevention)
+ *
+ * @example In a Durable Object
+ * ```typescript
+ * import { createDOAdapter } from '@evodb/core';
+ *
+ * export class MyDO extends DurableObject {
+ *   private storage: StorageAdapter;
+ *
+ *   constructor(ctx: DurableObjectState, env: Env) {
+ *     super(ctx, env);
+ *     this.storage = createDOAdapter(ctx.storage.sql);
+ *   }
+ *
+ *   async writeData(id: string, data: Uint8Array) {
+ *     await this.storage.writeBlock(id, data);
+ *   }
+ * }
+ * ```
+ *
+ * @example With custom table name
+ * ```typescript
+ * // For multi-purpose DOs with different data types
+ * const walStorage = createDOAdapter(ctx.storage.sql, 'wal_entries');
+ * const blockStorage = createDOAdapter(ctx.storage.sql, 'data_blocks');
+ * ```
+ */
 export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): StorageAdapter {
   // Validate table name to prevent SQL injection (first line of defense)
   validateTableName(tableName);
@@ -950,7 +1119,38 @@ export function createDOAdapter(sql: DOSqlStorage, tableName = 'blocks'): Storag
   };
 }
 
-/** Create DO KV storage adapter (for WAL entries in 128KB values) */
+/**
+ * Create a Durable Object KV storage adapter.
+ *
+ * This adapter uses the DO's key-value storage, which supports values up to 128KB.
+ * It's ideal for WAL entries and smaller data items that don't require SQL queries.
+ *
+ * Unlike the SQL adapter, KV storage:
+ * - Has simpler semantics (just key-value)
+ * - Supports larger values (128KB vs typical row size limits)
+ * - May have better performance for simple get/put operations
+ *
+ * @param storage - Durable Object storage interface (from `this.ctx.storage`)
+ * @returns A StorageAdapter for reading/writing blocks
+ *
+ * @example In a Durable Object
+ * ```typescript
+ * import { createDOKVAdapter } from '@evodb/core';
+ *
+ * export class WalDO extends DurableObject {
+ *   private storage: StorageAdapter;
+ *
+ *   constructor(ctx: DurableObjectState, env: Env) {
+ *     super(ctx, env);
+ *     this.storage = createDOKVAdapter(ctx.storage);
+ *   }
+ *
+ *   async appendWal(id: string, entry: Uint8Array) {
+ *     await this.storage.writeBlock(id, entry);
+ *   }
+ * }
+ * ```
+ */
 export function createDOKVAdapter(storage: DurableObjectStorage): StorageAdapter {
   return {
     async writeBlock(id: string, data: Uint8Array): Promise<void> {
@@ -974,7 +1174,31 @@ export function createDOKVAdapter(storage: DurableObjectStorage): StorageAdapter
   };
 }
 
-/** Memory adapter for testing */
+/**
+ * Create an in-memory storage adapter for testing.
+ *
+ * This adapter stores data in a Map, making it ideal for unit tests
+ * that don't need persistent storage. Data is lost when the adapter
+ * instance is garbage collected.
+ *
+ * @returns A StorageAdapter backed by in-memory Map storage
+ *
+ * @example Unit testing
+ * ```typescript
+ * import { createMemoryAdapter } from '@evodb/core';
+ *
+ * describe('BlockWriter', () => {
+ *   it('should write and read blocks', async () => {
+ *     const storage = createMemoryAdapter();
+ *     const writer = new BlockWriter(storage);
+ *
+ *     await writer.write('block-1', testData);
+ *     const result = await storage.readBlock('block-1');
+ *     expect(result).toEqual(testData);
+ *   });
+ * });
+ * ```
+ */
 export function createMemoryAdapter(): StorageAdapter {
   const store = new Map<string, Uint8Array>();
 
@@ -1022,8 +1246,33 @@ function safeParseBase36(str: string): number {
 
 /**
  * Create a BlockId from components.
- * Format: prefix:timestamp(base36,10-padded):seq(base36,4-padded)
+ *
+ * Block IDs are structured identifiers with the format:
+ * `prefix:timestamp(base36,10-padded):seq(base36,4-padded)`
+ *
+ * The base-36 encoding and padding ensure:
+ * - Lexicographic ordering matches temporal ordering
+ * - Fixed-width format for consistent storage
+ * - Compact representation (base-36 is 20% smaller than hex)
+ *
+ * @param prefix - A string prefix identifying the block type or table
+ * @param timestamp - Unix timestamp in milliseconds
+ * @param seq - Sequence number for blocks with the same timestamp (default: 0)
  * @returns Branded BlockId type for compile-time safety
+ *
+ * @example
+ * ```typescript
+ * import { makeBlockId, parseBlockId } from '@evodb/core';
+ *
+ * // Create a block ID
+ * const id = makeBlockId('users', Date.now(), 0);
+ * console.log(id);  // "users:lk2x4r7m00:0000"
+ *
+ * // Block IDs sort chronologically
+ * const id1 = makeBlockId('data', 1000);
+ * const id2 = makeBlockId('data', 2000);
+ * console.log(id1 < id2);  // true
+ * ```
  */
 export function makeBlockId(prefix: string, timestamp: number, seq = 0): BlockId {
   const ts = timestamp.toString(36).padStart(10, '0');
@@ -1033,8 +1282,30 @@ export function makeBlockId(prefix: string, timestamp: number, seq = 0): BlockId
 
 /**
  * Parse a BlockId into its components.
+ *
+ * Extracts the prefix, timestamp, and sequence number from a block ID string.
+ * Returns null if the format is invalid (wrong number of parts, invalid base-36).
+ *
  * @param id - BlockId or plain string to parse
  * @returns Parsed components or null if invalid format
+ *
+ * @example
+ * ```typescript
+ * import { makeBlockId, parseBlockId } from '@evodb/core';
+ *
+ * const id = makeBlockId('users', 1705000000000, 5);
+ * const parsed = parseBlockId(id);
+ *
+ * if (parsed) {
+ *   console.log(parsed.prefix);     // "users"
+ *   console.log(parsed.timestamp);  // 1705000000000
+ *   console.log(parsed.seq);        // 5
+ * }
+ *
+ * // Invalid format returns null
+ * const invalid = parseBlockId('not-a-valid-id');
+ * console.log(invalid);  // null
+ * ```
  */
 export function parseBlockId(id: BlockId | string): { prefix: string; timestamp: number; seq: number } | null {
   const parts = (id as string).split(':');
@@ -1058,18 +1329,61 @@ export function parseBlockId(id: BlockId | string): { prefix: string; timestamp:
 // =============================================================================
 
 /**
- * Create a WalId from an LSN.
- * Format: wal:lsn(base36,12-padded)
- * @returns WalId string (plain string type - evodb-cn6)
+ * Create a WalId from a Log Sequence Number (LSN).
+ *
+ * WAL IDs are structured identifiers with the format:
+ * `wal:lsn(base36,12-padded)`
+ *
+ * The base-36 encoding and 12-character padding:
+ * - Ensures lexicographic ordering matches LSN ordering
+ * - Supports LSNs up to ~4.7 quintillion (2^62)
+ * - Provides compact, URL-safe identifiers
+ *
+ * @param lsn - Log Sequence Number as a bigint
+ * @returns WalId string identifier
+ *
+ * @example
+ * ```typescript
+ * import { makeWalId, parseWalId } from '@evodb/core';
+ *
+ * // Create a WAL ID from LSN
+ * const id = makeWalId(12345678n);
+ * console.log(id);  // "wal:00000007o6me"
+ *
+ * // WAL IDs sort by LSN order
+ * const id1 = makeWalId(100n);
+ * const id2 = makeWalId(200n);
+ * console.log(id1 < id2);  // true
+ * ```
  */
 export function makeWalId(lsn: bigint): WalId {
   return `wal:${lsn.toString(36).padStart(12, '0')}`;
 }
 
 /**
- * Parse a WalId to extract the LSN.
+ * Parse a WalId to extract the Log Sequence Number (LSN).
+ *
+ * Extracts the LSN from a WAL ID string. Returns null if the format
+ * is invalid (doesn't start with "wal:" or contains invalid base-36).
+ *
  * @param id - WalId or plain string to parse
  * @returns Parsed LSN as bigint or null if invalid format
+ *
+ * @example
+ * ```typescript
+ * import { makeWalId, parseWalId } from '@evodb/core';
+ *
+ * const id = makeWalId(12345678n);
+ * const lsn = parseWalId(id);
+ *
+ * if (lsn !== null) {
+ *   console.log(lsn);  // 12345678n
+ * }
+ *
+ * // Invalid format returns null
+ * const invalid = parseWalId('not-a-wal-id');
+ * console.log(invalid);  // null
+ * ```
  */
 export function parseWalId(id: WalId | string): bigint | null {
   const idStr = id as string;
