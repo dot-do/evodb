@@ -198,15 +198,15 @@ function logCacheError(
   }
 
   // Create structured log entry for metrics tracking
-  const _logEntry: CacheErrorLog = {
+  const logEntry: CacheErrorLog = {
     operation,
     key,
     error: errorMessage,
     timestamp: Date.now(),
   };
 
-  // Error is tracked in metrics above
-  // Note: In production, use @evodb/observability logger for structured logging
+  // Log the error to console for visibility during development/debugging
+  console.error(logEntry);
 }
 
 /**
@@ -440,7 +440,7 @@ async function warmPartitionInternal(
     const contentLength = parseInt(response.headers.get('Content-Length') ?? '0', 10);
     if (!isWithinSizeLimit(contentLength, mode)) {
       // Partition exceeds size limit for the mode - skip caching
-      // Note: In production, use @evodb/observability logger for structured logging
+      console.warn(`[edge-cache] Partition ${partitionPath} exceeds size limit for ${mode} mode`);
       return false;
     }
 

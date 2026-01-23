@@ -946,8 +946,15 @@ describe('Property-Based Tests: Query Result Consistency', () => {
             const cmpAB = compareValues(a, b);
             const cmpBA = compareValues(b, a);
 
-            // sign(cmp(a,b)) == -sign(cmp(b,a))
-            expect(Math.sign(cmpAB)).toBe(-Math.sign(cmpBA));
+            // When a === b, both comparisons return 0, and sign(0) === -sign(0) === 0
+            // We use explicit equality check to avoid +0/-0 distinction by Object.is
+            if (a === b) {
+              expect(cmpAB).toBe(0);
+              expect(cmpBA).toBe(0);
+            } else {
+              // sign(cmp(a,b)) == -sign(cmp(b,a))
+              expect(Math.sign(cmpAB)).toBe(-Math.sign(cmpBA));
+            }
           }
         ),
         { numRuns: 100 }

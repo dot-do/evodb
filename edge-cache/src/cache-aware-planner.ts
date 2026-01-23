@@ -479,17 +479,16 @@ export class CacheAwarePlanner {
       this.prefetchErrors.shift();
     }
 
-    // Error is tracked in prefetchErrors array and metrics
-    // Note: In production, use @evodb/observability logger for structured logging
-    void prefetchError.timestamp; // Acknowledge tracking
-    void this.options.verboseLogging; // Reserved for future use with proper logger
+    // Log the error to console for visibility
+    console.error('[edge-cache] Prefetch error', { message: prefetchError.error.message });
 
     // Call user-provided error callback
     if (this.options.onPrefetchError) {
       try {
         this.options.onPrefetchError(prefetchError);
-      } catch (_callbackError) {
-        // Don't let callback errors propagate - silently ignore
+      } catch (callbackError) {
+        // Log callback errors to prevent silent failures
+        console.error('Error in onPrefetchError callback', callbackError);
       }
     }
   }
@@ -690,9 +689,10 @@ export class CacheAwarePlanner {
     this.prefetchInProgress.add(partitionPath);
 
     try {
-      // Note: Verbose logging reserved for future use with @evodb/observability logger
-      void this.options.verboseLogging;
-      void priority;
+      // Verbose logging for prefetch operations
+      if (this.options.verboseLogging) {
+        console.log(`[edge-cache] Starting prefetch for ${partitionPath} with priority ${priority}`);
+      }
 
       const success = await warmPartition(partitionPath, this.options.partitionMode);
 

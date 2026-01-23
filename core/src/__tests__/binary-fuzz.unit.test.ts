@@ -93,8 +93,8 @@ describe('Fuzz: Bitmap Encoding (encode.ts)', () => {
             if (bits[i]) bytes[i >>> 3] |= 1 << (i & 7);
           }
 
-          // Unpack and verify
-          const unpacked = unpackBits(bytes, bits.length);
+          // Unpack and verify - use toNullArray for NullBitmap conversion (evodb-80q)
+          const unpacked = toNullArray(unpackBits(bytes, bits.length));
           expect(unpacked).toEqual(bits);
         }
       ),
@@ -322,17 +322,16 @@ describe('Fuzz: Delta Encoding (encode.ts)', () => {
         ).map(arr => [...new Set(arr)].sort((a, b) => Number(a - b))),
         (bigValues) => {
           if (bigValues.length === 0) return;
-          const values = bigValues.map(Number);
-          const nulls = values.map(() => false);
-          const column = makeColumn('int64', Type.Int64, values, nulls);
+          // Keep values as bigint for Int64 type (evodb-80q validation)
+          const nulls = bigValues.map(() => false);
+          const column = makeColumn('int64', Type.Int64, bigValues, nulls);
           const [encoded] = encode([column]);
-          const decoded = decode(encoded, values.length);
+          const decoded = decode(encoded, bigValues.length);
 
-          // Int64 may return BigInt or Number, normalize for comparison
-          const decodedNormalized = decoded.values.map(v =>
-            typeof v === 'bigint' ? Number(v) : v
-          );
-          expect(decodedNormalized).toEqual(values);
+          // Int64 returns BigInt, compare as bigint
+          for (let i = 0; i < bigValues.length; i++) {
+            expect(BigInt(decoded.values[i] as bigint | number)).toBe(bigValues[i]);
+          }
         }
       ),
       { numRuns: 50 }
@@ -428,11 +427,10 @@ describe('Fuzz: Fast Decode Paths (encode.ts)', () => {
     expect(result.length).toBe(0);
   });
 
-  it('fastDecodeDeltaInt32 handles insufficient data gracefully', () => {
-    // Data too short for requested row count
+  it('fastDecodeDeltaInt32 throws on insufficient data', () => {
+    // Data too short for requested row count - should throw validation error
     const data = new Uint8Array([1, 2, 3]); // Only 3 bytes
-    const result = fastDecodeDeltaInt32(data, 10);
-    expect(result.length).toBe(10); // Should still return array of requested size
+    expect(() => fastDecodeDeltaInt32(data, 10)).toThrow(/Buffer capacity exceeded/);
   });
 });
 

@@ -130,6 +130,9 @@ class EventEmitter {
           // Convert to Error if needed
           const err = error instanceof Error ? error : new Error(String(error));
 
+          // Always log errors to console for visibility
+          console.error(`EventEmitter error in handler for '${event}':`, err);
+
           // Call custom error handler if provided
           if (this.onHandlerError) {
             try {
@@ -139,8 +142,6 @@ class EventEmitter {
               // Silently ignore to prevent cascade failures
             }
           }
-          // If no custom error handler, errors are silently caught
-          // to prevent handler failures from affecting other handlers
         }
       }
     }
