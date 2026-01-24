@@ -3,6 +3,7 @@ packages:
   - config
   - observability
   - rpc
+  - mcp
   - lakehouse
   - writer
   - reader

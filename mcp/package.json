@@ -1,0 +1,63 @@
+{
+  "name": "@evodb/mcp",
+  "version": "0.1.0-rc.1",
+  "description": "MCP server with oauth.do authentication for EvoDB",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "import": "./dist/auth/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "tools": ["./dist/tools/index.d.ts"],
+      "auth": ["./dist/auth/index.d.ts"]
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "evodb",
+    "mcp",
+    "model-context-protocol",
+    "oauth",
+    "cloudflare",
+    "workers",
+    "durable-objects"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "directory": "mcp"
+  },
+  "dependencies": {
+    "@evodb/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260120.0",
+    "@vitest/coverage-v8": "^1.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^1.0.0"
+  },
+  "sideEffects": false
+}

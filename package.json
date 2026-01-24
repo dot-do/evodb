@@ -23,6 +23,7 @@
     "core",
     "observability",
     "rpc",
+    "mcp",
     "lakehouse",
     "writer",
     "reader",
