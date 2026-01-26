@@ -31,7 +31,8 @@ import {
   isConditionalStep,
 } from './types.js';
 
-import { TIMEOUT_5S } from '@evodb/core';
+/** Default step timeout in milliseconds (5 seconds) */
+const TIMEOUT_5S = 5_000;
 
 // =============================================================================
 // Snippet Registry
