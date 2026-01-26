@@ -34,6 +34,7 @@ import {
   invalidatePartition,
   setFetchFunction as setPrefetchFetch,
   resetFetchFunction as resetPrefetchFetch,
+  logCacheError,
 } from './prefetch.js';
 
 // ============================================================================
@@ -439,7 +440,8 @@ export class CacheInvalidationManager {
             } else {
               failedPaths.push(path);
             }
-          } catch {
+          } catch (error) {
+            logCacheError('delete', path, error);
             failedPaths.push(path);
           }
         }
@@ -641,7 +643,8 @@ export class CacheInvalidationManager {
         } else {
           failedPaths.push(path);
         }
-      } catch {
+      } catch (error) {
+        logCacheError('delete', path, error);
         failedPaths.push(path);
       }
     }

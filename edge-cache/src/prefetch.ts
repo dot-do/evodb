@@ -178,7 +178,7 @@ export function resetCacheErrorMetrics(): void {
  * @param key - The cache key (partition path or table identifier)
  * @param error - The error that occurred
  */
-function logCacheError(
+export function logCacheError(
   operation: 'get' | 'put' | 'delete',
   key: string,
   error: unknown
