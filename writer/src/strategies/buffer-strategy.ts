@@ -68,19 +68,24 @@ export class SizeBasedBufferStrategy implements CDCBufferStrategy {
       this.firstEntryTime = Date.now();
     }
 
+    // Track the maximum LSN seen in this batch for cursor update
+    let batchMaxLsn = entries[0].lsn;
+
     for (const entry of entries) {
       this.entries.push(entry);
       this.currentSize += estimateEntrySize(entry);
 
       if (entry.lsn < this.minLsn) this.minLsn = entry.lsn;
       if (entry.lsn > this.maxLsn) this.maxLsn = entry.lsn;
+
+      // Track max LSN in this batch
+      if (entry.lsn > batchMaxLsn) batchMaxLsn = entry.lsn;
     }
 
-    // Update source cursor
-    const lastEntry = entries[entries.length - 1];
-    const currentCursor = this.sourceCursors.get(sourceDoId) ?? 0n;
-    if (lastEntry.lsn > currentCursor) {
-      this.sourceCursors.set(sourceDoId, lastEntry.lsn);
+    // Update source cursor atomically - only advances if batch max > current cursor
+    const currentCursor = this.sourceCursors.get(sourceDoId);
+    if (currentCursor === undefined || batchMaxLsn > currentCursor) {
+      this.sourceCursors.set(sourceDoId, batchMaxLsn);
     }
 
     return this.currentSize >= this.targetSize;
@@ -179,19 +184,24 @@ export class TimeBasedBufferStrategy implements CDCBufferStrategy {
       this.firstEntryTime = Date.now();
     }
 
+    // Track the maximum LSN seen in this batch for cursor update
+    let batchMaxLsn = entries[0].lsn;
+
     for (const entry of entries) {
       this.entries.push(entry);
       this.estimatedSize += estimateEntrySize(entry);
 
       if (entry.lsn < this.minLsn) this.minLsn = entry.lsn;
       if (entry.lsn > this.maxLsn) this.maxLsn = entry.lsn;
+
+      // Track max LSN in this batch
+      if (entry.lsn > batchMaxLsn) batchMaxLsn = entry.lsn;
     }
 
-    // Update source cursor
-    const lastEntry = entries[entries.length - 1];
-    const currentCursor = this.sourceCursors.get(sourceDoId) ?? 0n;
-    if (lastEntry.lsn > currentCursor) {
-      this.sourceCursors.set(sourceDoId, lastEntry.lsn);
+    // Update source cursor atomically - only advances if batch max > current cursor
+    const currentCursor = this.sourceCursors.get(sourceDoId);
+    if (currentCursor === undefined || batchMaxLsn > currentCursor) {
+      this.sourceCursors.set(sourceDoId, batchMaxLsn);
     }
 
     return this.shouldFlush();
@@ -289,19 +299,24 @@ export class HybridBufferStrategy implements CDCBufferStrategy {
       this.firstEntryTime = Date.now();
     }
 
+    // Track the maximum LSN seen in this batch for cursor update
+    let batchMaxLsn = entries[0].lsn;
+
     for (const entry of entries) {
       this.entries.push(entry);
       this.estimatedSize += estimateEntrySize(entry);
 
       if (entry.lsn < this.minLsn) this.minLsn = entry.lsn;
       if (entry.lsn > this.maxLsn) this.maxLsn = entry.lsn;
+
+      // Track max LSN in this batch
+      if (entry.lsn > batchMaxLsn) batchMaxLsn = entry.lsn;
     }
 
-    // Update source cursor
-    const lastEntry = entries[entries.length - 1];
-    const currentCursor = this.sourceCursors.get(sourceDoId) ?? 0n;
-    if (lastEntry.lsn > currentCursor) {
-      this.sourceCursors.set(sourceDoId, lastEntry.lsn);
+    // Update source cursor atomically - only advances if batch max > current cursor
+    const currentCursor = this.sourceCursors.get(sourceDoId);
+    if (currentCursor === undefined || batchMaxLsn > currentCursor) {
+      this.sourceCursors.set(sourceDoId, batchMaxLsn);
     }
 
     return this.shouldFlush();
